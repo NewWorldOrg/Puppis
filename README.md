@@ -207,6 +207,10 @@ docker run --rm \
 版は `Directory.Build.props` の `Version` で、イメージと同じ番号。\
 `vX.Y.Z` のタグを push すると、CI が `dotnet pack` して nuget.org に出す。
 
+driver 本体も `Puppis.Driver` の package で出す。\
+使う側の統合試験が、driver を自分のプロセスの中に立てて app との組を動かすためのもので、運用で使うのはイメージのほう。\
+版は `Puppis.Contracts` と同じ番号で、同じ番号の `Puppis.Contracts` に依存する。
+
 取り決めの変更は足すだけ。\
 口やイベントを消さず、名前を変えない。\
 新しい口を足したら、driver は挨拶で返すできることの一覧にその名前を足し、app は一覧を見てから頼む。\
@@ -218,7 +222,7 @@ docker run --rm \
 1. `Directory.Build.props` の `Version` を上げる。driver のイメージと package は同じ番号で出る
 2. `master` にマージし、`sha-<commit>` のイメージが出るのを待つ
 3. `vX.Y.Z` のタグを push する。CI が版のタグ・GitHub Release・package を出す
-4. Carina の `Directory.Packages.props` で `Puppis.Contracts` の版を上げる
+4. Carina の `Directory.Packages.props` で `Puppis.Contracts` と `Puppis.Driver` の版を上げる
 
 タグが `Directory.Build.props` の版と違うと、CI は止まる。\
 リリースノートには、足した口とできることの一覧の名前を書く。
