@@ -1,0 +1,73 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  TEST_PROJECTS: 3
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore
+      - run: dotnet build --no-restore -warnaserror
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore
+      - run: dotnet format --no-restore --verify-no-changes
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [Architecture, Contracts, Driver]
+    name: test (${{ matrix.project }})
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: The matrix runs every test project there is on disk
+        run: |
+          on_disk="$(find tests -mindepth 2 -maxdepth 2 -name '*.Tests.csproj' | wc -l)"
+          if [ "${{ strategy.job-total }}" -ne "${TEST_PROJECTS}" ] || [ "${on_disk}" -ne "${TEST_PROJECTS}" ]; then
+            echo "the matrix runs ${{ strategy.job-total }} projects, TEST_PROJECTS says ${TEST_PROJECTS}, and ${on_disk} are on disk" >&2
+            exit 1
+          fi
+      - run: dotnet restore "tests/Puppis.${{ matrix.project }}.Tests"
+      - name: Every test of the project, with no filter
+        run: |
+          set -o pipefail
+          dotnet test "tests/Puppis.${{ matrix.project }}.Tests" --no-restore --logger trx --results-directory results | tee test.log
+      - name: The tests that failed, named from the result files rather than the interleaved output
+        if: failure()
+        run: .github/failed-tests.sh results
+      - name: The project ran tests, rather than passing by having none
+        run: |
+          passed="$(sed -n 's/.*Passed: *\([0-9]\+\).*/\1/p' test.log | awk '{ total += $1 } END { print total + 0 }')"
+          if [ "${passed}" -lt 1 ]; then
+            echo "the project ran ${passed} tests: dotnet test exits 0 when nothing is selected, so this job would be green having verified nothing" >&2
+            exit 1
+          fi
+          echo "${passed} tests ran in Puppis.${{ matrix.project }}.Tests."
