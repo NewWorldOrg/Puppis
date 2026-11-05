@@ -1,0 +1,31 @@
+version: '3'
+
+tasks:
+  up:
+    cmd: docker compose up -d
+  down:
+    cmd: docker compose down
+  stop:
+    cmd: docker compose stop
+  bash:
+    cmd: docker compose exec driver /bin/bash
+  restore:
+    cmd: docker compose exec driver dotnet restore
+  build:
+    cmd: docker compose exec driver dotnet build
+  test:
+    cmd: docker compose exec driver dotnet test
+  format:
+    cmd: docker compose exec driver dotnet format
+  lint:
+    cmd: docker compose exec driver dotnet format --verify-no-changes
+  pack:
+    cmd: docker compose exec driver dotnet pack src/Puppis.Contracts -c Release -o artifacts/packages
+  restart:driver:
+    cmd: docker compose restart driver
+  logs:driver:
+    cmd: docker compose logs -f driver
+  probe:driver:
+    cmd: docker compose exec driver dotnet /driver/bin/Puppis.Driver/debug/Puppis.Driver.dll --probe
+  image:
+    cmd: docker build -t puppis .

@@ -1,0 +1,43 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: '5'
+
+services:
+  driver:
+    logging: *logging
+    build:
+      context: .
+      target: driver-develop
+    working_dir: /code
+    command: ['bash', 'docker/driver.dev.sh']
+    restart: unless-stopped
+    volumes:
+      - .:/code
+      - nuget:/root/.nuget/packages
+      - driver-run:/run/carina
+      - ${PUPPIS_RECORDINGS_DIR:-recordings}:/srv/recordings
+      - driver-build:/driver
+      # pcscd replaces the socket inside this directory whenever it restarts, so bind the directory: a bind mount of the socket file would go on pointing at the one that is gone.
+      - /run/pcscd:/run/pcscd:ro
+    stop_grace_period: 7h
+    healthcheck:
+      test: ['CMD', 'dotnet', '/driver/bin/Puppis.Driver/debug/Puppis.Driver.dll', '--probe']
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 5m
+      start_interval: 10s
+    environment:
+      CARINA_DRIVER_CONFIG: /code/docker/driver.development.json
+      DOTNET_hostBuilder__reloadConfigOnChange: 'false'
+      ASPNETCORE_URLS: ''
+      ASPNETCORE_HTTP_PORTS: ''
+      ASPNETCORE_HTTPS_PORTS: ''
+
+volumes:
+  nuget:
+  driver-run:
+  driver-build:
+  recordings:
