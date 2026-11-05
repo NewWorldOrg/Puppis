@@ -205,7 +205,8 @@ docker run --rm \
 
 `Puppis.Contracts` は nuget.org の package で、Carina の app は版を固定して参照する。\
 版は `Directory.Build.props` の `Version` で、イメージと同じ番号。\
-`vX.Y.Z` のタグを push すると、CI が `dotnet pack` して nuget.org に出す。
+`vX.Y.Z` のタグを push すると、CI が `dotnet pack` して nuget.org に出す。\
+push は secret を持たず、nuget.org の Trusted Publishing の policy(Repository Owner NewWorldOrg・Repository Puppis・Workflow File release.yml)で行う。
 
 driver 本体も `Puppis.Driver` の package で出す。\
 使う側の統合試験が、driver を自分のプロセスの中に立てて app との組を動かすためのもので、運用で使うのはイメージのほう。\
