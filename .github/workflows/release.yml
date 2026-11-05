@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      declared: ${{ steps.declared.outputs.declared }}
+      prerelease: ${{ steps.declared.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: The tag names the version Directory.Build.props declares
+        id: declared
+        run: |
+          declared="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' Directory.Build.props)"
+          if [ "${GITHUB_REF_NAME}" != "v${declared}" ]; then
+            echo "the tag ${GITHUB_REF_NAME} is not v${declared}, the version Directory.Build.props declares" >&2
+            exit 1
+          fi
+          echo "declared=${declared}" >> "${GITHUB_OUTPUT}"
+          case "${declared}" in
+            *-*) echo "prerelease=yes" >> "${GITHUB_OUTPUT}" ;;
+            *) echo "prerelease=no" >> "${GITHUB_OUTPUT}" ;;
+          esac
+
+  image:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: The release names the image master already published, and nothing is built
+        run: .github/release-image.sh "ghcr.io/${GITHUB_REPOSITORY,,}" "sha-$(git rev-parse HEAD | cut -c 1-12)" "${GITHUB_REF_NAME}"
+
+  github-release:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: A GitHub Release for the tag, with the notes generated from the pull requests since the last one
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "the release ${GITHUB_REF_NAME} is already there and is left as it is."
+            exit 0
+          fi
+          flags=""
+          if [ "${PRERELEASE}" = yes ]; then
+            flags="--prerelease"
+          fi
+          gh release create "${GITHUB_REF_NAME}" --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes ${flags}
+
+  package:
+    needs: [version, image]
+    runs-on: ubuntu-latest
+    env:
+      DECLARED: ${{ needs.version.outputs.declared }}
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore src/Puppis.Contracts
+      - run: dotnet pack src/Puppis.Contracts --no-restore -c Release -o packages
+      - name: The package carries the version of the tag
+        run: |
+          if [ ! -f "packages/Puppis.Contracts.${DECLARED}.nupkg" ]; then
+            echo "dotnet pack wrote $(ls packages), not Puppis.Contracts.${DECLARED}.nupkg" >&2
+            exit 1
+          fi
+      - name: The package goes to nuget.org
+        run: |
+          if [ -z "${NUGET_API_KEY}" ]; then
+            echo "the NUGET_API_KEY secret is not set, so the package was built and not pushed" >&2
+            exit 1
+          fi
+          dotnet nuget push "packages/Puppis.Contracts.${DECLARED}.nupkg" --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json --skip-duplicate
