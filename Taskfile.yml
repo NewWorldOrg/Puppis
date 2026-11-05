@@ -20,7 +20,9 @@ tasks:
   lint:
     cmd: docker compose exec driver dotnet format --verify-no-changes
   pack:
-    cmd: docker compose exec driver dotnet pack src/Puppis.Contracts -c Release -o artifacts/packages
+    cmds:
+      - docker compose exec driver dotnet pack src/Puppis.Contracts -c Release -o artifacts/packages
+      - docker compose exec driver dotnet pack src/Puppis.Driver -c Release -o artifacts/packages
   restart:driver:
     cmd: docker compose restart driver
   logs:driver:

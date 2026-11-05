@@ -4,6 +4,14 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <IsAotCompatible>true</IsAotCompatible>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>true</IsPackable>
+    <PackageId>Puppis.Driver</PackageId>
+    <Authors>NewWorldOrg</Authors>
+    <Description>The Puppis driver as a library, so that the integration tests of an app that speaks Puppis.Contracts can host the driver inside their own process.</Description>
+    <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/NewWorldOrg/Puppis</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/NewWorldOrg/Puppis</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>

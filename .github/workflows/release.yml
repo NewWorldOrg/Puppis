@@ -77,26 +77,40 @@ jobs:
   package:
     needs: [version, image]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     env:
       DECLARED: ${{ needs.version.outputs.declared }}
-      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - run: dotnet restore src/Puppis.Contracts
+      - run: dotnet restore src/Puppis.Driver
       - run: dotnet pack src/Puppis.Contracts --no-restore -c Release -o packages
-      - name: The package carries the version of the tag
+      - run: dotnet pack src/Puppis.Driver --no-restore -c Release -o packages
+      - name: Both packages carry the version of the tag, and the driver depends on the contracts of that same version
         run: |
-          if [ ! -f "packages/Puppis.Contracts.${DECLARED}.nupkg" ]; then
-            echo "dotnet pack wrote $(ls packages), not Puppis.Contracts.${DECLARED}.nupkg" >&2
+          for id in Puppis.Contracts Puppis.Driver; do
+            if [ ! -f "packages/${id}.${DECLARED}.nupkg" ]; then
+              echo "dotnet pack wrote $(ls packages), not ${id}.${DECLARED}.nupkg" >&2
+              exit 1
+            fi
+          done
+          if ! unzip -p "packages/Puppis.Driver.${DECLARED}.nupkg" Puppis.Driver.nuspec | grep -qF "<dependency id=\"Puppis.Contracts\" version=\"${DECLARED}\""; then
+            echo "Puppis.Driver.${DECLARED}.nupkg does not depend on Puppis.Contracts ${DECLARED}" >&2
             exit 1
           fi
-      - name: The package goes to nuget.org
+      - name: A key from nuget.org that lives for an hour, through the Trusted Publishing policy of this repository and workflow
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: fyui001
+      - name: The packages go to nuget.org, the contracts first because the driver depends on them
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
         run: |
-          if [ -z "${NUGET_API_KEY}" ]; then
-            echo "the NUGET_API_KEY secret is not set, so the package was built and not pushed" >&2
-            exit 1
-          fi
-          dotnet nuget push "packages/Puppis.Contracts.${DECLARED}.nupkg" --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          for id in Puppis.Contracts Puppis.Driver; do
+            dotnet nuget push "packages/${id}.${DECLARED}.nupkg" --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          done

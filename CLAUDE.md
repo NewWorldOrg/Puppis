@@ -229,9 +229,11 @@ image, starts it once on the synthetic tuners to see that it answers its own
 builds no image: it refuses a tag that is not the version `Directory.Build.props`
 declares, gives the image that commit was already published under the release's
 tag and `latest` when the release is the newest one that is not a prerelease,
-creates the GitHub Release, and packs `Puppis.Contracts` and pushes it to
-nuget.org with the `NUGET_API_KEY` secret. `.github/release-latest.sh` makes the
-`latest` call and its `prove` runs on every pull request.
+creates the GitHub Release, and packs `Puppis.Contracts` and `Puppis.Driver` and
+pushes them to nuget.org. The push holds no secret: `NuGet/login` turns the job's
+OIDC token into a key that lives for an hour, under the Trusted Publishing policy
+nuget.org keeps for this repository and `release.yml`. `.github/release-latest.sh`
+makes the `latest` call and its `prove` runs on every pull request.
 
 `THIRD-PARTY-NOTICES.md` is checked by the image build. `docker/notices/nuget.sh`
 writes the license of every NuGet package and runtime pack the driver was
