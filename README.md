@@ -1,8 +1,11 @@
 # Puppis
 
-日本の地上デジタル放送の録画システム [Carina](https://github.com/NewWorldOrg/Carina) の driver。\
-チューナーを占有し、スクランブルを解いて録画ファイルを書く特権プロセスと、app とのソケットの取り決め `Puppis.Contracts` を置く。\
-番組表・予約・配信の API は Carina の app が、画面は [Vela](https://github.com/NewWorldOrg/Vela) が受け持つ。\
+日本のテレビ放送のチューナーを動かす driver。\
+チューナーを占有し、B-CAS カードでスクランブルを解き、録画ファイルを書く特権プロセスで、録画や視聴を頼む側には Unix ドメインソケットの口で答える。\
+カードやチューナーを家の中の別の機械に貸すこともする。
+
+口の取り決めは `Puppis.Contracts` として Puppis が持ち、nuget.org の package で出す。\
+今この口を使うのは録画システム [Carina](https://github.com/NewWorldOrg/Carina) で、番組表・予約・配信の API は Carina が、画面は [Vela](https://github.com/NewWorldOrg/Vela) が受け持つ。\
 動作を確かめた版の組は [Pyxis](https://github.com/NewWorldOrg/Pyxis) が固定して配る。
 
 ## 構成
@@ -10,7 +13,7 @@
 | プロジェクト | 役割 |
 | --- | --- |
 | `Puppis.Driver` | 特権で動く。チューナーを占有し、スクランブルを解いて TS を録画ファイルに書く。app の求めには Unix ドメインソケットで答える |
-| `Puppis.Contracts` | app と driver が交わすメッセージの形と口の名前。nuget.org の package `Puppis.Contracts` として出し、Carina はそれを参照する |
+| `Puppis.Contracts` | driver の口の取り決め。メッセージの形と口の名前。nuget.org の package `Puppis.Contracts` として出し、使う側はそれを参照する |
 
 driver は app のための TCP ポートを開かない。\
 app と別のプロセスなので、app を入れ替えても進行中の録画は止まらない。\
