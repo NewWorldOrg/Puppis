@@ -57,14 +57,15 @@ health は状態を表示するだけで、unhealthy になっても何も再起
 
 ## 設定
 
-driver は `CARINA_DRIVER_CONFIG` が指す JSON ファイルを 1 つだけ読む。\
+driver は `PUPPIS_DRIVER_CONFIG` が指す JSON ファイルを 1 つだけ読む。\
+古い名前の `CARINA_DRIVER_CONFIG` も読み、両方あるときは `PUPPIS_DRIVER_CONFIG` を使う。\
 既定のパスは無い。\
 読めない項目や知らないキーがあると、問題のある項目を表示して起動を止める。\
 開発用の設定は `docker/driver.development.json` にある。
 
 | キー | 用途 |
 | --- | --- |
-| `socketPath` | app とつなぐ Unix ドメインソケット。`/run/` の下に置く。既定は `/run/carina/driver.sock` |
+| `socketPath` | app とつなぐ Unix ドメインソケット。`/run/` の下に置く。既定は `/run/carina/driver.sock`。既定は使う側の app の既定に合わせてある |
 | `socketGroupId` | ソケットの所有グループの id。既定は 10001。app を動かすグループと同じ値にする |
 | `outputRoots` | 録画の保存先。`name` と絶対パスの `path` の組を 1 つ以上書く |
 | `tuner.backend` | `dvb`(Linux DVB のチューナー)、`usb`(USB のチューナー)か `fake`(合成のチューナー)。既定値は無い |
@@ -172,11 +173,11 @@ task restart:driver   # コード変更の反映
 `Dockerfile` は driver を Native AOT で 1 つのバイナリに組み、libpcsclite1 だけを足した `runtime-deps` のイメージに置く。\
 .NET のランタイムも ffmpeg も入っていない。\
 entrypoint は driver のバイナリそのもので、root で動く。\
-設定は `CARINA_DRIVER_CONFIG` で渡し、pcscd のディレクトリ・録画の置き場・ソケットのディレクトリをホストから渡す。
+設定は `PUPPIS_DRIVER_CONFIG` で渡し、pcscd のディレクトリ・録画の置き場・ソケットのディレクトリをホストから渡す。
 
 ```bash
 docker run --rm \
-  -e CARINA_DRIVER_CONFIG=/etc/puppis/driver.json \
+  -e PUPPIS_DRIVER_CONFIG=/etc/puppis/driver.json \
   -v ./driver.json:/etc/puppis/driver.json:ro \
   -v /run/pcscd:/run/pcscd:ro \
   -v driver-run:/run/carina \
