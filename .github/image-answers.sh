@@ -11,7 +11,7 @@ fail() {
 }
 
 budget="$(docker run --rm \
-  --env "CARINA_DRIVER_CONFIG=${configuration}" \
+  --env "PUPPIS_DRIVER_CONFIG=${configuration}" \
   --volume "${PWD}/docker/driver.development.json:${configuration}:ro" \
   "${image}" --shutdown-budget)" \
   || fail "the image could not read the development configuration, so it is not one to hand out"
@@ -23,7 +23,7 @@ esac
 echo "the image reads the development configuration and plans to wait ${budget}s for a recording when stopped."
 
 docker run --detach --name "${name}" \
-  --env "CARINA_DRIVER_CONFIG=${configuration}" \
+  --env "PUPPIS_DRIVER_CONFIG=${configuration}" \
   --volume "${PWD}/docker/driver.development.json:${configuration}:ro" \
   --tmpfs /run/carina:mode=0755 \
   --tmpfs /srv/recordings:mode=0755 \

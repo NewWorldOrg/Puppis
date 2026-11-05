@@ -167,7 +167,8 @@ invariant, not every way, and its self-check states what walks past it.
   the pair that does not.
 - **Configuration is validated at startup** and the process stops with a message
   naming the offending setting. There is no hot reload. The one file the driver
-  reads is the one `CARINA_DRIVER_CONFIG` names, and the README's defaults are
+  reads is the one `PUPPIS_DRIVER_CONFIG` names (`CARINA_DRIVER_CONFIG`, the former
+  name, is read when the new one is not set), and the README's defaults are
   held equal to the code's.
 - **A stop the driver was asked for exits 0; anything else exits 70.** Coming
   back is the supervisor's half of the deal, which is why `on-failure` is the one

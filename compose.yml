@@ -30,7 +30,7 @@ services:
       start_period: 5m
       start_interval: 10s
     environment:
-      CARINA_DRIVER_CONFIG: /code/docker/driver.development.json
+      PUPPIS_DRIVER_CONFIG: /code/docker/driver.development.json
       DOTNET_hostBuilder__reloadConfigOnChange: 'false'
       ASPNETCORE_URLS: ''
       ASPNETCORE_HTTP_PORTS: ''

@@ -4,9 +4,7 @@ using Puppis.Driver;
 using Puppis.Driver.Configuration;
 using Puppis.Driver.Ipc;
 
-string? configurationPath = Environment.GetEnvironmentVariable(
-    DriverStartup.ConfigurationPathVariable
-);
+string? configurationPath = DriverStartup.ConfigurationPath();
 
 if (args is ["--shutdown-budget"])
 {

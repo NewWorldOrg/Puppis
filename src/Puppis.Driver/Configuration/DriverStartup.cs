@@ -2,11 +2,34 @@ namespace Puppis.Driver.Configuration;
 
 public static class DriverStartup
 {
-    public const string ConfigurationPathVariable = "CARINA_DRIVER_CONFIG";
+    public const string ConfigurationPathVariable = "PUPPIS_DRIVER_CONFIG";
+
+    public const string FormerConfigurationPathVariable = "CARINA_DRIVER_CONFIG";
+
+    private static readonly string[] ConfigurationPathVariables =
+    [
+        ConfigurationPathVariable,
+        FormerConfigurationPathVariable,
+    ];
 
     public const int ConfigurationExitCode = 78;
 
     public const int StoppedEarlyExitCode = 70;
+
+    public static string? ConfigurationPath(Func<string, string?>? environment = null)
+    {
+        Func<string, string?> read = environment ?? Environment.GetEnvironmentVariable;
+
+        foreach (string variable in ConfigurationPathVariables)
+        {
+            if (read(variable) is { Length: > 0 } named)
+            {
+                return named;
+            }
+        }
+
+        return null;
+    }
 
     public static int Report(
         DriverConfigurationResult result,
@@ -21,7 +44,7 @@ public static class DriverStartup
 
         error.WriteLine(
             path is null
-                ? $"{ConfigurationPathVariable} names no configuration file:"
+                ? $"Neither {ConfigurationPathVariable} nor {FormerConfigurationPathVariable} names a configuration file:"
                 : $"The driver configuration at '{path}' is not usable:"
         );
 
