@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Puppis.Contracts/Puppis.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

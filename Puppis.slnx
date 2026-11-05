@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Puppis.Contracts/Puppis.Contracts.csproj" />
+    <Project Path="src/Puppis.Driver/Puppis.Driver.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Puppis.Architecture.Tests/Puppis.Architecture.Tests.csproj" />
+    <Project Path="tests/Puppis.Contracts.Tests/Puppis.Contracts.Tests.csproj" />
+    <Project Path="tests/Puppis.Driver.Tests/Puppis.Driver.Tests.csproj" />
+  </Folder>
+</Solution>

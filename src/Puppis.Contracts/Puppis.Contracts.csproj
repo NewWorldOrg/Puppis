@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsPackable>true</IsPackable>
+    <PackageId>Puppis.Contracts</PackageId>
+    <Authors>NewWorldOrg</Authors>
+    <Description>The contract between the Carina app and the Puppis driver: the endpoints, events and messages the two exchange over the Unix domain socket.</Description>
+    <PackageLicenseExpression>AGPL-3.0-only</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/NewWorldOrg/Puppis</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/NewWorldOrg/Puppis</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,69 @@
+using System.Buffers.Binary;
+
+using Puppis.Driver.Tuning.Dvb;
+
+namespace Puppis.Driver.Tests;
+
+public sealed class DemuxFilterTests
+{
+    [Fact]
+    public void TheFilterAsksForEveryPacketRatherThanOneStream()
+    {
+        byte[] filter = DemuxFilter.EverythingFromTheFrontend();
+
+        Assert.Equal(
+            0x2000,
+            BinaryPrimitives.ReadUInt16LittleEndian(filter.AsSpan(DvbLayout.PesFilterPidAt))
+        );
+    }
+
+    [Fact]
+    public void TheFilterTakesItsInputFromTheFrontendAndNotFromTheReader()
+    {
+        byte[] filter = DemuxFilter.EverythingFromTheFrontend();
+
+        Assert.Equal(
+            0u,
+            BinaryPrimitives.ReadUInt32LittleEndian(filter.AsSpan(DvbLayout.PesFilterInputAt))
+        );
+    }
+
+    [Fact]
+    public void TheFilterRoutesItsOutputToTheTransportStreamReader()
+    {
+        byte[] filter = DemuxFilter.EverythingFromTheFrontend();
+
+        Assert.Equal(
+            2u,
+            BinaryPrimitives.ReadUInt32LittleEndian(filter.AsSpan(DvbLayout.PesFilterOutputAt))
+        );
+    }
+
+    [Fact]
+    public void TheFilterDoesNotAskTheDemuxToInterpretThePayload()
+    {
+        byte[] filter = DemuxFilter.EverythingFromTheFrontend();
+
+        Assert.Equal(
+            20u,
+            BinaryPrimitives.ReadUInt32LittleEndian(filter.AsSpan(DvbLayout.PesFilterPesTypeAt))
+        );
+    }
+
+    [Fact]
+    public void TheFilterStartsWithoutASecondCall()
+    {
+        byte[] filter = DemuxFilter.EverythingFromTheFrontend();
+
+        Assert.Equal(
+            4u,
+            BinaryPrimitives.ReadUInt32LittleEndian(filter.AsSpan(DvbLayout.PesFilterFlagsAt))
+        );
+    }
+
+    [Fact]
+    public void TheFilterIsExactlyAsLongAsTheKernelBlock()
+    {
+        Assert.Equal(DvbLayout.PesFilterBytes, DemuxFilter.EverythingFromTheFrontend().Length);
+    }
+}
