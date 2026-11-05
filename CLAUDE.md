@@ -1,10 +1,12 @@
 # Puppis
 
-The driver of a self-hosted recording system for Japanese digital broadcasting: a
-privileged process that owns the tuner hardware, descrambles the transport stream
-and writes recordings, and the contract it shares with the app that serves the
-HTTP API around it. The app lives in [Carina](https://github.com/NewWorldOrg/Carina)
-and reaches the driver over a Unix domain socket.
+A tuner driver for Japanese television broadcasting: a privileged process that
+owns the tuner hardware, descrambles the transport stream with the B-CAS card,
+writes recordings, lends the card and the tuners inside the household, and
+answers whoever asks over a Unix domain socket. The contract of that socket is
+Puppis's own, published as the `Puppis.Contracts` package. Its first client is
+the recording system [Carina](https://github.com/NewWorldOrg/Carina); nothing
+here references Carina.
 
 Two properties decide most of what follows, and are the argument to answer before
 relaxing any of it:
