@@ -25,8 +25,8 @@ echo "the image reads the development configuration and plans to wait ${budget}s
 docker run --detach --name "${name}" \
   --env "CARINA_DRIVER_CONFIG=${configuration}" \
   --volume "${PWD}/docker/driver.development.json:${configuration}:ro" \
-  --tmpfs /run/carina \
-  --tmpfs /srv/recordings \
+  --tmpfs /run/carina:mode=0755 \
+  --tmpfs /srv/recordings:mode=0755 \
   "${image}" >/dev/null
 trap 'docker rm --force "${name}" >/dev/null' EXIT
 

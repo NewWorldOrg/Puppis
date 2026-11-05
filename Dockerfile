@@ -20,7 +20,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends jq \
     && rm -rf /var/lib/apt/lists/*
 COPY docker/notices/ /notices/
-RUN /notices/nuget.sh /out/notices driver src/Puppis.Driver/obj/project.assets.json
+RUN /notices/nuget.sh /out/notices src/Puppis.Driver/obj/project.assets.json
 
 FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS driver-develop
 RUN apt-get update \
@@ -43,6 +43,9 @@ RUN --mount=type=bind,from=driver-notices,source=/notices,target=/run/notices \
     --mount=type=bind,from=runtime-base,source=/var/lib/dpkg/status,target=/run/base-dpkg-status \
     /run/notices/check.sh /run/base-dpkg-status
 
-ENV DOTNET_hostBuilder__reloadConfigOnChange=false
+ENV DOTNET_hostBuilder__reloadConfigOnChange=false \
+    ASPNETCORE_URLS= \
+    ASPNETCORE_HTTP_PORTS= \
+    ASPNETCORE_HTTPS_PORTS=
 
 ENTRYPOINT ["/opt/puppis/Puppis.Driver"]
