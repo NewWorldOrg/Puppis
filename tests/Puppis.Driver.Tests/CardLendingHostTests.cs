@@ -83,6 +83,7 @@ public sealed class CardLendingHostTests : IDisposable
     {
         using HttpRequestMessage request = new(HttpMethod.Post, $"http://{lender}{path}");
         request.Headers.Host = "lender.example";
+        request.Headers.ConnectionClose = true;
 
         return await client.SendAsync(request);
     }
