@@ -1,11 +1,12 @@
 # Puppis
 
 日本のテレビ放送のチューナーを動かす driver。\
-チューナーを占有し、B-CAS カードでスクランブルを解き、録画ファイルを書く特権プロセスで、録画や視聴を頼む側には Unix ドメインソケットの口で答える。\
-カードやチューナーを家の中の別の機械に貸すこともする。
+チューナーを占有し、B-CAS カードでスクランブルを解いて録画ファイルを書く。\
+録画や視聴を頼む側には Unix ドメインソケットの口で答え、カードやチューナーを家の中の別の機械に貸すこともできる。
 
 口の取り決めは `Puppis.Contracts` として Puppis が持ち、nuget.org の package で出す。\
-今この口を使うのは録画システム [Carina](https://github.com/NewWorldOrg/Carina) で、番組表・予約・配信の API は Carina が、画面は [Vela](https://github.com/NewWorldOrg/Vela) が受け持つ。\
+この口の使い手は今のところ録画システムの [Carina](https://github.com/NewWorldOrg/Carina) だけ。\
+Carina は番組表・予約・配信の API を、[Vela](https://github.com/NewWorldOrg/Vela) は画面を受け持つ。\
 動作を確かめた版の組は [Pyxis](https://github.com/NewWorldOrg/Pyxis) が固定して配る。
 
 ## 構成
