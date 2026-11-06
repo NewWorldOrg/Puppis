@@ -184,7 +184,7 @@ docker run --rm \
   -v driver-run:/run/carina \
   -v /srv/recordings:/srv/recordings \
   --device /dev/dvb/adapter0 \
-  ghcr.io/newworldorg/puppis:v0.1.0
+  ghcr.io/newworldorg/puppis:v0.1.1
 ```
 
 `/run/carina` は app のコンテナと同じボリュームにし、app の `CARINA_DRIVER_SOCKET` を driver の `socketPath` に合わせる。
