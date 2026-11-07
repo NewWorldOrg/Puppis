@@ -84,6 +84,8 @@ public sealed class TunerPool(TimeProvider timeProvider, TimeSpan? grace = null)
     private readonly Dictionary<SessionId, Lease> bySink = [];
     private readonly Lock gate = new();
     private readonly TimeSpan linger = grace ?? DefaultGrace;
+    private ITimer? sweeper;
+    private bool disposed;
 
     public TimeSpan Grace => linger;
 
@@ -395,7 +397,7 @@ public sealed class TunerPool(TimeProvider timeProvider, TimeSpan? grace = null)
             lease.Sinks.Clear();
             lease.TuneFailure = cause;
             lease.Established = false;
-            lease.IdleSince = timeProvider.GetUtcNow();
+            LetLinger(lease);
             lease.Ready.TrySetResult();
         }
     }
@@ -494,7 +496,7 @@ public sealed class TunerPool(TimeProvider timeProvider, TimeSpan? grace = null)
 
             if (lease.IsIdle)
             {
-                lease.IdleSince = timeProvider.GetUtcNow();
+                LetLinger(lease);
             }
         }
     }
@@ -635,6 +637,10 @@ public sealed class TunerPool(TimeProvider timeProvider, TimeSpan? grace = null)
 
         lock (gate)
         {
+            disposed = true;
+            sweeper?.Dispose();
+            sweeper = null;
+
             foreach (Lease lease in leases.Values)
             {
                 Forget(lease, closing);
@@ -651,6 +657,28 @@ public sealed class TunerPool(TimeProvider timeProvider, TimeSpan? grace = null)
         {
             Close(device);
         }
+    }
+
+    /// <summary>
+    /// Marks the lease idle and arranges for the pool to be swept once the grace has passed, so that a device nobody
+    /// came back for is closed then and not on the next request's time.
+    /// </summary>
+    private void LetLinger(Lease lease)
+    {
+        lease.IdleSince = timeProvider.GetUtcNow();
+
+        if (disposed)
+        {
+            return;
+        }
+
+        sweeper ??= timeProvider.CreateTimer(
+            static pool => ((TunerPool)pool!).Sweep(),
+            this,
+            Timeout.InfiniteTimeSpan,
+            Timeout.InfiniteTimeSpan
+        );
+        sweeper.Change(linger + TimeSpan.FromMilliseconds(20), Timeout.InfiniteTimeSpan);
     }
 
     private IEnumerable<Lease> LeasesFor(PoolRequest request)
