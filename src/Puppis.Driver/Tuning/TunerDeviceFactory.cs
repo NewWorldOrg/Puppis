@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.Extensions.Logging;
 
 using Puppis.Contracts;
@@ -28,8 +30,9 @@ public interface ITunerDeviceCheck
     void Check(DeviceSettings device);
 }
 
-public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck
+public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck, IDisposable
 {
+    private readonly CechZd1Standby standby = new();
     private readonly TunerBackend backend;
     private readonly TimeProvider time;
     private readonly Lazy<IDvbSystemCalls> systemCalls;
@@ -133,7 +136,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck
 
                 return;
             case TunerBackend.Usb:
-                CechZd1TunerDevice.OpenAndClose(usbHost.Value, UsbPathOf(device));
+                CechZd1TunerDevice.OpenAndClose(usbHost.Value, UsbPathOf(device), standby);
 
                 return;
             default:
@@ -174,11 +177,14 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck
                     DvbFrequency.TerrestrialHertz(channel.PhysicalChannel),
                     pacing,
                     settings.BytePatience,
-                    logger
+                    logger,
+                    standby
                 ),
             hold
         );
     }
+
+    public void Dispose() => standby.Dispose();
 
     private static ITunerDevice Synthetic(TuningRequest tuning) =>
         new FakeTunerDevice(tuning.PhysicalChannel, tuning.ServiceId);
@@ -208,6 +214,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck
     /// </summary>
     private ITunerDevice ThroughTheCard(Func<ITunerDevice> open, HeadHold hold)
     {
+        long started = Stopwatch.GetTimestamp();
         Task<IDescrambler?>? asking = descramblers.Unscrambles ? Task.Run(() => descramblers.Open(hold)) : null;
         ITunerDevice opened;
 
@@ -227,6 +234,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck
             return opened;
         }
 
+        TimeSpan tuned = Stopwatch.GetElapsedTime(started);
         IDescrambler? descrambler;
 
         try
@@ -239,6 +247,12 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck
 
             throw;
         }
+
+        logger?.LogInformation(
+            "The tuner was open after {Tuned:0.000} s and the card was in hand after {Card:0.000} s.",
+            tuned.TotalSeconds,
+            Stopwatch.GetElapsedTime(started).TotalSeconds
+        );
 
         return Unscrambling(opened, descrambler, hold);
     }

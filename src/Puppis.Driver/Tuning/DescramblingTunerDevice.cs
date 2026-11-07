@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.Extensions.Logging;
 
 using Puppis.Driver.Descrambling;
@@ -25,6 +27,12 @@ public sealed class DescramblingTunerDevice : ITunerDevice
     private DateTimeOffset asksAgainAt;
 
     private Task<IDescrambler?>? asking;
+
+    private readonly long opened = Stopwatch.GetTimestamp();
+
+    private int scrambledReads;
+
+    private bool firstReadableReported;
 
     private bool closed;
 
@@ -103,9 +111,12 @@ public sealed class DescramblingTunerDevice : ITunerDevice
 
             if (readable.Length > 0)
             {
+                ReportFirstReadable(readable.Length);
+
                 return readable;
             }
 
+            scrambledReads++;
             cancellationToken.ThrowIfCancellationRequested();
         }
     }
@@ -155,6 +166,22 @@ public sealed class DescramblingTunerDevice : ITunerDevice
 
             return null;
         }
+    }
+
+    private void ReportFirstReadable(int bytes)
+    {
+        if (firstReadableReported)
+        {
+            return;
+        }
+
+        firstReadableReported = true;
+        logger?.LogInformation(
+            "The first readable bytes, {Bytes} of them, came {Seconds:0.000} s after the card was in hand, after {Reads} reads that gave nothing readable.",
+            bytes,
+            Stopwatch.GetElapsedTime(opened).TotalSeconds,
+            scrambledReads
+        );
     }
 
     private IDescrambler? Ask()
