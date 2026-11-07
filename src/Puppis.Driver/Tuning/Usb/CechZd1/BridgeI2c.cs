@@ -3,7 +3,10 @@ using Puppis.Driver.Tuning.Dvb;
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
 /// <summary>
-/// The bridge's I2C master, driven one byte at a time through memory requests.
+/// The bridge's I2C master, driven one byte at a time through memory requests. Each byte costs three requests: the
+/// data, the control word that sends it, and one read of the status and control words together, which says whether
+/// the byte is done and whether it was acknowledged. A transaction ends by writing the idle control word, and the
+/// next one waits for the bus to be idle before it starts, so the stop condition is waited for once, not twice.
 /// </summary>
 public sealed class BridgeI2c(BridgeMemory memory)
 {
@@ -85,11 +88,7 @@ public sealed class BridgeI2c(BridgeMemory memory)
         }
     }
 
-    private void End()
-    {
-        memory.Write(Control, Idle);
-        WaitUntilIdle(0);
-    }
+    private void End() => memory.Write(Control, Idle);
 
     private void Release() => memory.Write(Control, Idle);
 
@@ -97,19 +96,20 @@ public sealed class BridgeI2c(BridgeMemory memory)
     {
         memory.Write(Data, value);
         memory.Write(Control, control);
-        WaitForTheByte(address);
+        uint status = WaitForTheByte(address);
 
-        if ((memory.Read(Status) & StatusNoAcknowledge) is not 0)
+        if ((status & StatusNoAcknowledge) is not 0)
         {
             throw Fault($"the device at 0x{address:X2} did not acknowledge {what}");
         }
     }
 
-    private void WaitForTheByte(byte address)
+    private uint WaitForTheByte(byte address)
     {
         for (int poll = 0; poll < MostPolls; poll++)
         {
-            uint control = memory.Read(Control);
+            uint[] words = memory.ReadWords(Status, 2);
+            uint control = words[1];
 
             if ((control & ControlBusError) is not 0)
             {
@@ -118,7 +118,7 @@ public sealed class BridgeI2c(BridgeMemory memory)
 
             if ((control & ControlByteDone) is not 0)
             {
-                return;
+                return words[0];
             }
         }
 
