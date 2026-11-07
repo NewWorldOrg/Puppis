@@ -727,3 +727,159 @@ public sealed class UsbDescramblingTests
         }
     }
 }
+
+public sealed class CechZd1StandbyTests
+{
+    private const string Device = "/dev/bus/usb/001/002";
+
+    private static readonly long Channel22 = BroadcastStandards.TerrestrialCentreHz(22);
+
+    private static readonly long Channel27 = BroadcastStandards.TerrestrialCentreHz(27);
+
+    private static (FakeUsbHost Host, FakeBridge Bridge, FakeChip Demodulator, FakeChip Tuner, DevicePacing Pacing) Parts()
+    {
+        (FakeChip demodulator, FakeChip tuner) = UsbTestSupport.LockingChips();
+        FakeBridge bridge = UsbTestSupport.BridgeWith(demodulator, tuner);
+        (DevicePacing pacing, ManualTimeProvider clock, _) = UsbTestSupport.Pacing();
+        bridge.Idle = clock.Advance;
+
+        return (new FakeUsbHost(bridge), bridge, demodulator, tuner, pacing);
+    }
+
+    private static CechZd1TunerDevice Open(FakeUsbHost host, long hertz, DevicePacing pacing, CechZd1Standby standby) =>
+        CechZd1TunerDevice.Open(host, Device, hertz, pacing, TimeSpan.FromSeconds(5), null, standby);
+
+    [Fact]
+    public void AClosedTunerStaysOpenAsleepAndIsWokenAndTunedForTheNextSession()
+    {
+        (FakeUsbHost host, FakeBridge bridge, FakeChip demodulator, FakeChip tuner, DevicePacing pacing) = Parts();
+        using var standby = new CechZd1Standby();
+        CechZd1TunerDevice first = Open(host, Channel22, pacing, standby);
+        first.Dispose();
+        int bridgeStarts = bridge.WritesAt(0xF1010C).Count;
+        int identifications = demodulator.ReadFrom.Count(register => register is 896);
+        int calibrations = tuner.WritesTo(0x07).Count;
+
+        Assert.False(bridge.Disposed);
+        Assert.True(standby.Holds(Device));
+        Assert.Equal(0, demodulator.Last(1286));
+
+        CechZd1TunerDevice second = Open(host, Channel27, pacing, standby);
+
+        Assert.Equal(1, host.Opened);
+        Assert.False(standby.Holds(Device));
+        Assert.Equal(bridgeStarts, bridge.WritesAt(0xF1010C).Count);
+        Assert.Equal(identifications, demodulator.ReadFrom.Count(register => register is 896));
+        Assert.True(tuner.WritesTo(0x07).Count > calibrations);
+        Assert.Equal(0x0400, demodulator.Last(1286));
+        Assert.Equal(0x03000000u, bridge.Word(0xD01040));
+        Assert.Equal(TransportCapture.CoreRunning, bridge.Word(TransportCapture.FirstCore));
+        second.Dispose();
+        Assert.True(standby.Holds(Device));
+    }
+
+    [Fact]
+    public void AKeptTunerThatNoLongerAnswersIsClosedAndTheDeviceStartedAfresh()
+    {
+        (FakeUsbHost host, FakeBridge bridge, _, _, DevicePacing pacing) = Parts();
+        using var standby = new CechZd1Standby();
+        Open(host, Channel22, pacing, standby).Dispose();
+        bridge.NotAcknowledging = true;
+
+        DvbDeviceException refused = UsbTestSupport.Refusal(() => Open(host, Channel22, pacing, standby));
+
+        Assert.Equal(TuningFailure.DeviceUnusable, refused.Failure);
+        Assert.Equal(2, host.Opened);
+        Assert.True(bridge.Disposed);
+        Assert.False(standby.Holds(Device));
+    }
+
+    [Fact]
+    public void AKeptTunerThatDoesNotLockIsClosedAndTheDeviceStartedAfresh()
+    {
+        (FakeUsbHost host, FakeBridge bridge, FakeChip demodulator, _, DevicePacing pacing) = Parts();
+        using var standby = new CechZd1Standby();
+        Open(host, Channel22, pacing, standby).Dispose();
+        int bridgeStarts = bridge.WritesAt(0xF1010C).Count;
+        demodulator.Answer(1284, 0x0001);
+
+        DvbDeviceException refused = UsbTestSupport.Refusal(() => Open(host, Channel27, pacing, standby));
+
+        Assert.Equal(TuningFailure.NoLock, refused.Failure);
+        Assert.Equal(2, host.Opened);
+        Assert.Equal(bridgeStarts + 1, bridge.WritesAt(0xF1010C).Count);
+        Assert.True(bridge.Disposed);
+        Assert.False(standby.Holds(Device));
+    }
+
+    [Fact]
+    public void AWokenTunerWritesItsBandAgainEvenForTheFrequencyItWasOn()
+    {
+        (FakeUsbHost host, _, _, FakeChip tuner, DevicePacing pacing) = Parts();
+        using var standby = new CechZd1Standby();
+        Open(host, Channel22, pacing, standby).Dispose();
+        int bandWrites = tuner.WritesTo(0x0B).Count;
+        int synthesiserWrites = tuner.WritesTo(0x15).Count;
+
+        CechZd1TunerDevice again = Open(host, Channel22, pacing, standby);
+
+        Assert.Equal(bandWrites + 1, tuner.WritesTo(0x0B).Count);
+        Assert.Equal(synthesiserWrites + 1, tuner.WritesTo(0x15).Count);
+        again.Dispose();
+    }
+
+    [Fact]
+    public void CheckingAKeptTunerAsksTheDemodulatorWhoItIsWithoutOpeningTheDeviceAgain()
+    {
+        (FakeUsbHost host, FakeBridge bridge, FakeChip demodulator, _, DevicePacing pacing) = Parts();
+        using var standby = new CechZd1Standby();
+        Open(host, Channel22, pacing, standby).Dispose();
+
+        CechZd1TunerDevice.OpenAndClose(host, Device, standby);
+
+        Assert.Equal(1, host.Opened);
+        Assert.True(standby.Holds(Device));
+
+        demodulator.Answer(896, 0x0000);
+
+        UsbTestSupport.Refusal(() => CechZd1TunerDevice.OpenAndClose(host, Device, standby));
+
+        Assert.False(standby.Holds(Device));
+        Assert.True(bridge.Disposed);
+    }
+
+    [Fact]
+    public void AKeptTunerOnAnotherPathIsClosedWhenThisPathIsOpened()
+    {
+        (FakeUsbHost host, FakeBridge bridge, _, _, DevicePacing pacing) = Parts();
+        using var standby = new CechZd1Standby();
+        Open(host, Channel22, pacing, standby).Dispose();
+
+        CechZd1TunerDevice moved = CechZd1TunerDevice.Open(
+            host,
+            "/dev/bus/usb/001/007",
+            Channel22,
+            pacing,
+            TimeSpan.FromSeconds(5),
+            null,
+            standby
+        );
+
+        Assert.True(bridge.Disposed);
+        Assert.Equal(2, host.Opened);
+        moved.Dispose();
+    }
+
+    [Fact]
+    public void DisposingTheStandbyClosesWhatItKeeps()
+    {
+        (FakeUsbHost host, FakeBridge bridge, _, _, DevicePacing pacing) = Parts();
+        var standby = new CechZd1Standby();
+        Open(host, Channel22, pacing, standby).Dispose();
+
+        standby.Dispose();
+
+        Assert.True(bridge.Disposed);
+        Assert.False(standby.Holds(Device));
+    }
+}

@@ -32,6 +32,8 @@ public sealed class BridgeMemory(IUsbConnection usb)
 
     public string Path => usb.Path;
 
+    public long Requests { get; private set; }
+
     public static UsbSetup SetupFor(byte requestType, uint address) =>
         new(
             requestType,
@@ -59,6 +61,7 @@ public sealed class BridgeMemory(IUsbConnection usb)
 
             lock (gate)
             {
+                Requests++;
                 arrived = usb.ControlIn(SetupFor(ReadRequestType, at), asked, Patience);
             }
 
@@ -98,6 +101,7 @@ public sealed class BridgeMemory(IUsbConnection usb)
 
             lock (gate)
             {
+                Requests++;
                 usb.ControlOut(SetupFor(WriteRequestType, at), bytes.AsSpan(0, taking * WordBytes), Patience);
             }
         }

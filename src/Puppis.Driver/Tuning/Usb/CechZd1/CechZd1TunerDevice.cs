@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 using Microsoft.Extensions.Logging;
 
 using Puppis.Driver.Transport;
@@ -18,33 +20,39 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
 
     public static readonly TimeSpan TransferPatience = TimeSpan.FromMilliseconds(300);
 
+    private readonly CechZd1Standby.KeptTuner kept;
     private readonly IUsbConnection usb;
     private readonly CechZd1Frontend frontend;
     private readonly TransportCapture capture;
     private readonly IUsbBulkReader reader;
     private readonly DevicePacing pacing;
     private readonly TimeSpan bytePatience;
+    private readonly CechZd1Standby? standby;
     private readonly CaptureUnpacker unpacker = new();
     private readonly List<byte> packets = [];
     private readonly byte[] transfer = new byte[TransportCapture.TransferBytes];
     private readonly Lock gate = new();
+    private ILogger? logger;
+    private long opened;
+    private bool firstBytesReported;
     private bool closed;
 
     private CechZd1TunerDevice(
-        IUsbConnection usb,
-        CechZd1Frontend frontend,
-        TransportCapture capture,
+        CechZd1Standby.KeptTuner kept,
         IUsbBulkReader reader,
         DevicePacing pacing,
-        TimeSpan bytePatience
+        TimeSpan bytePatience,
+        CechZd1Standby? standby
     )
     {
-        this.usb = usb;
-        this.frontend = frontend;
-        this.capture = capture;
+        this.kept = kept;
+        usb = kept.Usb;
+        frontend = kept.Frontend;
+        capture = kept.Capture;
         this.reader = reader;
         this.pacing = pacing;
         this.bytePatience = bytePatience;
+        this.standby = standby;
     }
 
     public long Overflows => unpacker.Realignments;
@@ -69,40 +77,72 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         long hertz,
         DevicePacing pacing,
         TimeSpan bytePatience,
-        ILogger? logger = null
+        ILogger? logger = null,
+        CechZd1Standby? standby = null
     )
     {
         Recognise(host, path);
+
+        if (standby?.Take(path) is { } kept)
+        {
+            try
+            {
+                return WakeAndTune(kept, hertz, pacing, bytePatience, logger, standby);
+            }
+            catch (DvbDeviceException fault)
+            {
+                logger?.LogWarning(
+                    fault,
+                    "{Path}: the tuner kept open since the last session did not lock, so it is started afresh.",
+                    path
+                );
+            }
+        }
+
+        return StartAndTune(host, path, hertz, pacing, bytePatience, logger, standby);
+    }
+
+    public static void OpenAndClose(IUsbHost host, string path, CechZd1Standby? standby = null)
+    {
+        Recognise(host, path);
+
+        if (standby?.Holds(path) is true)
+        {
+            standby.Check(path);
+
+            return;
+        }
+
+        host.Open(path, Interface).Dispose();
+    }
+
+    private static CechZd1TunerDevice StartAndTune(
+        IUsbHost host,
+        string path,
+        long hertz,
+        DevicePacing pacing,
+        TimeSpan bytePatience,
+        ILogger? logger,
+        CechZd1Standby? standby
+    )
+    {
+        long started = Stopwatch.GetTimestamp();
         IUsbConnection usb = host.Open(path, Interface);
         CechZd1Frontend? frontend = null;
 
         try
         {
             var memory = new BridgeMemory(usb);
+            var stages = new OpeningStages(started, memory);
             BridgeStartup.Start(memory, pacing);
+            stages.Mark("bridge");
             var i2c = new BridgeI2c(memory);
             frontend = new CechZd1Frontend(new Dib8000Bus(i2c), new Dib0090Bus(i2c), pacing, path);
             frontend.Initialise();
-            var capture = new TransportCapture(memory);
-            capture.Prepare();
+            stages.Mark("frontend");
+            var kept = new CechZd1Standby.KeptTuner(path, usb, memory, frontend, new TransportCapture(memory));
 
-            if (frontend.Tune(hertz) is SearchOutcome.Failed)
-            {
-                throw DvbFailure.NoLock(
-                    $"{path}: the demodulator did not synchronise on {hertz / 1000} kHz. Nothing was received, so no bytes will follow."
-                );
-            }
-
-            IUsbBulkReader reader = usb.ReadBulk(
-                TransportCapture.Endpoint,
-                TransportCapture.TransferBytes,
-                TransportCapture.TransfersInFlight
-            );
-            capture.Start();
-            var device = new CechZd1TunerDevice(usb, frontend, capture, reader, pacing, bytePatience);
-            device.Report(logger, hertz);
-
-            return device;
+            return Tune(kept, hertz, pacing, bytePatience, logger, standby, stages, "started");
         }
         catch
         {
@@ -114,10 +154,87 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    public static void OpenAndClose(IUsbHost host, string path)
+    /// <summary>
+    /// Tunes a tuner kept from the last session. Whatever goes wrong, the kept tuner is closed, so that the device is
+    /// started from its bridge again rather than kept in a state that does not lock.
+    /// </summary>
+    private static CechZd1TunerDevice WakeAndTune(
+        CechZd1Standby.KeptTuner kept,
+        long hertz,
+        DevicePacing pacing,
+        TimeSpan bytePatience,
+        ILogger? logger,
+        CechZd1Standby standby
+    )
     {
-        Recognise(host, path);
-        host.Open(path, Interface).Dispose();
+        var stages = new OpeningStages(Stopwatch.GetTimestamp(), kept.Memory);
+
+        try
+        {
+            return Tune(kept, hertz, pacing, bytePatience, logger, standby, stages, "woken");
+        }
+        catch
+        {
+            Quietly(kept.Frontend.Sleep);
+            Quietly(() => kept.Frontend.Demodulator.LedGreen());
+            kept.Usb.Dispose();
+
+            throw;
+        }
+    }
+
+    private static CechZd1TunerDevice Tune(
+        CechZd1Standby.KeptTuner kept,
+        long hertz,
+        DevicePacing pacing,
+        TimeSpan bytePatience,
+        ILogger? logger,
+        CechZd1Standby? standby,
+        OpeningStages stages,
+        string how
+    )
+    {
+        kept.Capture.Prepare();
+        stages.Mark("capture");
+
+        if (kept.Frontend.Tune(hertz) is SearchOutcome.Failed)
+        {
+            throw DvbFailure.NoLock(
+                $"{kept.Path}: the demodulator did not synchronise on {hertz / 1000} kHz. Nothing was received, so no bytes will follow."
+            );
+        }
+
+        stages.Mark("tune");
+        IUsbBulkReader reader = kept.Usb.ReadBulk(
+            TransportCapture.Endpoint,
+            TransportCapture.TransferBytes,
+            TransportCapture.TransfersInFlight
+        );
+        kept.Capture.Start();
+        stages.Mark("start");
+        var device = new CechZd1TunerDevice(kept, reader, pacing, bytePatience, standby);
+        device.logger = logger;
+        device.opened = stages.Started;
+        device.Report(logger, hertz, stages, how);
+
+        return device;
+    }
+
+    /// <summary>
+    /// Puts the frontend to sleep and keeps it for the next session, or closes the device when it will not sleep.
+    /// </summary>
+    private static void Rest(CechZd1Standby.KeptTuner kept, CechZd1Standby? standby)
+    {
+        bool asleep = Quietly(() => kept.Frontend.Demodulator.LedGreen()) & Quietly(kept.Frontend.Sleep);
+
+        if (asleep && standby is not null)
+        {
+            standby.Keep(kept);
+        }
+        else
+        {
+            kept.Usb.Dispose();
+        }
     }
 
     public SignalQuality Measure()
@@ -149,6 +266,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
             if (arrived > 0)
             {
                 unpacker.Unpack(transfer.AsSpan(0, arrived), packets);
+                ReportFirstBytes(arrived);
             }
             else if (pacing.Now >= deadline)
             {
@@ -175,11 +293,24 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
             }
 
             closed = true;
-            Quietly(capture.Stop);
-            Quietly(reader.Dispose);
-            Quietly(() => frontend.Demodulator.LedGreen());
-            Quietly(frontend.Sleep);
-            usb.Dispose();
+            long began = Stopwatch.GetTimestamp();
+            bool stopped = Quietly(capture.Stop) & Quietly(reader.Dispose);
+
+            if (stopped)
+            {
+                Rest(kept, standby);
+            }
+            else
+            {
+                usb.Dispose();
+            }
+
+            logger?.LogInformation(
+                "{Path}: closing took {Milliseconds:0} ms; the tuner is {State}.",
+                usb.Path,
+                Stopwatch.GetElapsedTime(began).TotalMilliseconds,
+                standby?.Holds(usb.Path) is true ? "kept asleep for the next session" : "closed"
+            );
         }
     }
 
@@ -211,12 +342,30 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
             );
     }
 
-    private void Report(ILogger? logger, long hertz)
+    private void ReportFirstBytes(int arrived)
+    {
+        if (firstBytesReported)
+        {
+            return;
+        }
+
+        firstBytesReported = true;
+        logger?.LogInformation(
+            "{Path}: the first bulk read, {Bytes} bytes, arrived {Seconds:0.000} s after the tuner was opened.",
+            usb.Path,
+            arrived,
+            Stopwatch.GetElapsedTime(opened).TotalSeconds
+        );
+    }
+
+    private void Report(ILogger? logger, long hertz, OpeningStages stages, string how)
     {
         if (logger is null)
         {
             return;
         }
+
+        logger.LogInformation("{Path}: {How} and tuned in {Stages}.", usb.Path, how, stages);
 
         SignalRegisters registers = frontend.ReadSignal();
         double? decibels = CechZd1Signal.Decibels(
@@ -233,17 +382,42 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         );
     }
 
-    private static void Quietly(Action action)
+    private static bool Quietly(Action action)
     {
         try
         {
             action();
+
+            return true;
         }
         catch (DvbDeviceException)
         {
+            return false;
         }
         catch (InvalidOperationException)
         {
+            return false;
         }
     }
+}
+
+internal sealed class OpeningStages(long started, BridgeMemory memory)
+{
+    private readonly List<string> marks = [];
+    private long last = started;
+    private long requests = memory.Requests;
+
+    public long Started { get; } = started;
+
+    public void Mark(string stage)
+    {
+        long now = Stopwatch.GetTimestamp();
+        long sent = memory.Requests;
+        marks.Add($"{stage} {Stopwatch.GetElapsedTime(last, now).TotalMilliseconds:0} ms/{sent - requests} requests");
+        last = now;
+        requests = sent;
+    }
+
+    public override string ToString() =>
+        $"{Stopwatch.GetElapsedTime(Started).TotalMilliseconds:0} ms in all ({string.Join(", ", marks)})";
 }

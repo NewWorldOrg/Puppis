@@ -138,7 +138,19 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
             );
     }
 
-    public void Wake() => t.Modify(0x23, 0, Awake);
+    /// <summary>
+    /// Wakes the tuner. The calibrations are done again and the band and synthesiser are written again at the next
+    /// tune, as they are after power-up, because the calibration clears the enable register that a tune to the
+    /// frequency already requested would otherwise leave as it is.
+    /// </summary>
+    public void Wake()
+    {
+        t.Modify(0x23, 0, Awake);
+        dcPending = true;
+        widebandPending = true;
+        temperaturePending = true;
+        RequestedKilohertz = 0;
+    }
 
     public void RequestTemperature() => temperaturePending = true;
 
