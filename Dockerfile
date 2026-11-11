@@ -1,4 +1,4 @@
-ARG DOTNET_VERSION=10.0
+ARG DOTNET_VERSION=11.0
 
 FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_VERSION} AS driver-build
 ARG RID=linux-x64
