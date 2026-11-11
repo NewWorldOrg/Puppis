@@ -84,9 +84,9 @@ jobs:
       DECLARED: ${{ needs.version.outputs.declared }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: dotnet restore src/Puppis.Driver
       - run: dotnet pack src/Puppis.Contracts --no-restore -c Release -o packages
       - run: dotnet pack src/Puppis.Driver --no-restore -c Release -o packages

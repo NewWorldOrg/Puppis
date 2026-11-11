@@ -23,7 +23,7 @@ This file is for changing it, and does not repeat what is there.
 
 ## Tech Stack
 
-- .NET 10, xUnit. The driver is published by native AOT into one binary.
+- .NET 11, xUnit. The driver is published by native AOT into one binary.
 - The driver reaches the tuner through the Linux DVB API with P/Invoke, a USB tuner
   through usbdevfs, and the card reader through `libpcsclite`, loaded at run time.
   It answers the app over HTTP/1.1 on a Unix domain socket. It binds no TCP port for

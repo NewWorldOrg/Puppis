@@ -35,7 +35,7 @@ host's pcscd. Nothing else is installed over the base image.
 
 ## Packages of the base image
 
-The base image `mcr.microsoft.com/dotnet/runtime-deps` is Ubuntu 24.04. The
+The base image `mcr.microsoft.com/dotnet/runtime-deps` is Ubuntu 26.04. The
 license of each of its packages is `/usr/share/doc/<package>/copyright`, and
 Ubuntu publishes the source of every version at
 `https://launchpad.net/ubuntu/+source/<source package>/<version>`, under the name
