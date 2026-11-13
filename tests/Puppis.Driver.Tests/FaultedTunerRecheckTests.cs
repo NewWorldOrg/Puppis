@@ -4,9 +4,11 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 using Puppis.Contracts;
 using Puppis.Driver.Configuration;
+using Puppis.Driver.Descrambling;
 using Puppis.Driver.Events;
 using Puppis.Driver.Sessions;
 using Puppis.Driver.Tuning;
+using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tests;
 
@@ -50,6 +52,24 @@ public sealed class FaultedTunerRecheckTests
             Tuning = new TuningRequest(TunerKind.Terrestrial, 55, 50001),
             DeviceId = "adapter0",
         };
+
+    private static StartSessionRequest Surveying(string sessionId, int channel) =>
+        new()
+        {
+            SessionId = SessionId.Parse(sessionId),
+            Purpose = SessionPurpose.Survey,
+            Tuning = new TuningRequest(TunerKind.Terrestrial, channel, 50001),
+            DeviceId = "adapter0",
+        };
+
+    private SessionRefusal Refusal(TunerSessionManager manager, StartSessionRequest request)
+    {
+        SessionRefusal refusal = manager.Begin(request).Refusal;
+
+        clock.Advance(TimeSpan.FromSeconds(6));
+
+        return refusal;
+    }
 
     private static void FailOn(TunerSessionManager manager, string sessionId)
     {
@@ -120,7 +140,7 @@ public sealed class FaultedTunerRecheckTests
     }
 
     [Fact]
-    public void ATunerThatFailsAgainWithinHalfAnHourOfComingBackIsNotTriedAgain()
+    public void ATunerThatFailsAgainWithinHalfAnHourOfComingBackIsTriedAgainAfterALongerWait()
     {
         TunerSessionManager manager = Manager();
 
@@ -131,19 +151,71 @@ public sealed class FaultedTunerRecheckTests
         clock.Advance(TimeSpan.FromMinutes(30));
         FailOn(manager, "s-2");
 
-        foreach (int minutes in new[] { 1, 5, 15, 60, 60 })
-        {
-            clock.Advance(TimeSpan.FromMinutes(minutes));
-        }
-
-        Assert.Single(check.Tried);
-        Assert.True(manager.IsFaulted("adapter0", out _));
         Assert.Equal(TunerFaultKind.DeviceFailedAgain, manager.FaultKindOf("adapter0")?.Kind);
 
         SessionStart refused = manager.Begin(Watching("s-3"));
 
         Assert.Equal(SessionRefusal.FaultedDevice, refused.Refusal);
-        Assert.Contains("until the driver restarts", refused.Detail, StringComparison.Ordinal);
+        Assert.Contains((clock.GetUtcNow() + TimeSpan.FromMinutes(5)).ToString("O"), refused.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("restart", refused.Detail, StringComparison.Ordinal);
+
+        Wait(TimeSpan.FromMinutes(5), 1, manager);
+
+        Assert.False(manager.IsFaulted("adapter0", out _));
+    }
+
+    [Fact]
+    public void ATunerThatKeepsFailingRightAfterComingBackWaitsLongerEachTimeAndIsNeverGivenUpOn()
+    {
+        TunerSessionManager manager = Manager();
+        TimeSpan[] waits =
+        [
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromMinutes(5),
+            TimeSpan.FromMinutes(15),
+            TimeSpan.FromMinutes(60),
+            TimeSpan.FromMinutes(60),
+        ];
+
+        for (int round = 0; round < waits.Length; round++)
+        {
+            FailOn(manager, $"s-{round}");
+            Wait(waits[round], round, manager);
+
+            Assert.False(manager.IsFaulted("adapter0", out _));
+        }
+    }
+
+    [Fact]
+    public void ATunerFaultedForFailingOnTwoChannelsIsTriedAgainAndServesOnceItOpens()
+    {
+        var manager = new TunerSessionManager(
+            Configuration,
+            new DeadChannelsDeviceFactory(14, 15),
+            clock,
+            NullLogger<TunerSessionManager>.Instance,
+            events: hub,
+            deviceCheck: check
+        );
+
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Surveying("survey-14", 14)));
+        Assert.Equal(SessionRefusal.NoLock, manager.Begin(Surveying("survey-15", 15)).Refusal);
+
+        Assert.Equal(TunerFaultKind.RepeatedTuneFailure, manager.FaultKindOf("adapter0")?.Kind);
+        Assert.DoesNotContain("restart", manager.Begin(Surveying("survey-20", 20)).Detail, StringComparison.Ordinal);
+
+        Wait(TimeSpan.FromMinutes(1), 0, manager);
+
+        Assert.False(manager.IsFaulted("adapter0", out _));
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Surveying("survey-14-again", 14)));
+        Assert.False(manager.IsFaulted("adapter0", out _));
+
+        Assert.True(manager.Begin(Surveying("survey-20-again", 20)).TryGetSession(out TunerSession? served));
+
+        served.Stop();
+        served.WaitForEnd(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(SessionState.Stopped, served.State);
     }
 
     [Fact]
@@ -261,6 +333,14 @@ public sealed class FaultedTunerRecheckTests
 
         Assert.Equal(SessionRefusal.FaultedDevice, refused.Refusal);
         Assert.Contains("until the driver restarts", refused.Detail, StringComparison.Ordinal);
+    }
+
+    private sealed class DeadChannelsDeviceFactory(params int[] deadChannels) : ITunerDeviceFactory
+    {
+        public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
+            deadChannels.Contains(tuning.PhysicalChannel)
+                ? throw DvbFailure.NoLock("the frontend did not lock within 5 seconds.")
+                : new ScriptedTunerDevice();
     }
 
     private sealed class ScriptedTunerDeviceCheck : ITunerDeviceCheck

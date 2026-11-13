@@ -42,6 +42,7 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
     private readonly TimeProvider time;
     private readonly DvbDevicePaths paths;
     private readonly DvbTunerSettings settings;
+    private readonly DvbChannel channel;
     private readonly DvbFrontend frontend;
     private readonly int demux;
     private readonly int dvr;
@@ -54,6 +55,7 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         TimeProvider time,
         DvbDevicePaths paths,
         DvbTunerSettings settings,
+        DvbChannel channel,
         DvbFrontend frontend,
         int demux,
         int dvr
@@ -63,6 +65,7 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         this.time = time;
         this.paths = paths;
         this.settings = settings;
+        this.channel = channel;
         this.frontend = frontend;
         this.demux = demux;
         this.dvr = dvr;
@@ -126,7 +129,7 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
                 (demux, dvr) = OpenTheStream(calls, paths, settings);
             }
 
-            return new DvbTunerDevice(calls, time, paths, settings, frontend, demux, dvr);
+            return new DvbTunerDevice(calls, time, paths, settings, channel, frontend, demux, dvr);
         }
         catch
         {
@@ -232,19 +235,19 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         if (!frontend.TryStatus(out FrontendStatus status))
         {
             return DvbFailure.Refused(
-                $"{paths.Dvr}: no transport stream bytes arrived within {waited}, and the frontend would not say whether it is still locked. This is left unclassified rather than recorded as a tuner that was locked and delivering nothing."
+                $"{paths.Dvr}: no transport stream bytes arrived from {channel} within {waited}, and the frontend would not say whether it is still locked. This is left unclassified rather than recorded as a tuner that was locked and delivering nothing."
             );
         }
 
         if (!status.HasFlag(FrontendStatus.Lock))
         {
             return DvbFailure.NoLock(
-                $"{paths.Dvr}: no transport stream bytes arrived within {waited}, and the frontend is no longer locked; its status is now {status}."
+                $"{paths.Dvr}: no transport stream bytes arrived from {channel} within {waited}, and the frontend is no longer locked; its status is now {status}."
             );
         }
 
         return DvbFailure.LockedWithoutData(
-            $"{paths.Dvr}: the frontend is still locked ({status}) and no transport stream bytes arrived within {waited}. The tuner is synchronised and the demux is delivering nothing, which is a different fault from failing to lock."
+            $"{paths.Dvr}: the frontend is still locked onto {channel} ({status}) and no transport stream bytes arrived within {waited}. The tuner is synchronised and the demux is delivering nothing, which is a different fault from failing to lock."
         );
     }
 

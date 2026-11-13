@@ -33,7 +33,7 @@ public sealed class TunerSessionManager(
 {
     public const int RetainedSessions = 64;
 
-    public const int RepeatedTuneFailureCeiling = 3;
+    public const int DifferentChannelsThatFaultTheDevice = 2;
 
     public static readonly TimeSpan DefaultHardStopLimit = TimeSpan.FromSeconds(30);
 
@@ -57,9 +57,7 @@ public sealed class TunerSessionManager(
     private readonly ConcurrentQueue<TunerSession> ended = new();
     private readonly ConcurrentDictionary<SessionId, TuningKey> tunings = [];
     private readonly ConcurrentDictionary<string, SessionId> writing = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Dictionary<TuningKey, int>> tuneFailureStreaks = new(
-        StringComparer.Ordinal
-    );
+    private readonly Dictionary<string, List<TuningKey>> tuneFailures = new(StringComparer.Ordinal);
     private readonly Lock streakGate = new();
     private readonly TimeSpan drainCap = TimeSpan.FromHours(
         Math.Max(0, configuration.ShutdownGraceHours)
@@ -713,19 +711,19 @@ public sealed class TunerSessionManager(
                 } failed
             )
             {
-                RecordTuneFailure(deviceId, TuningKey.Of(request), failed);
+                RecordTuneFailure(deviceId, TuningKey.Of(request), failed, request.Purpose);
             }
 
             refusal = error switch
             {
                 DvbDeviceException { Failure: TuningFailure.NoLock } => SessionStart.Refused(
                     SessionRefusal.NoLock,
-                    $"The device '{deviceId}' opened but the frontend did not lock: {error.Message}"
+                    $"The device '{deviceId}' opened but the frontend did not lock on {TuningKey.Of(request)}: {error.Message}"
                 ),
                 DvbDeviceException { Failure: TuningFailure.LockedWithoutData } =>
                     SessionStart.Refused(
                         SessionRefusal.NoData,
-                        $"The device '{deviceId}' locked but delivered nothing: {error.Message}"
+                        $"The device '{deviceId}' locked on {TuningKey.Of(request)} but delivered nothing: {error.Message}"
                     ),
                 _ => SessionStart.Refused(
                     SessionRefusal.DeviceUnavailable,
@@ -1382,7 +1380,7 @@ public sealed class TunerSessionManager(
                 } channel
             )
             {
-                RecordTuneFailure(session.DeviceId, tuning, channel);
+                RecordTuneFailure(session.DeviceId, tuning, channel, session.Purpose);
             }
         }
 
@@ -1399,46 +1397,71 @@ public sealed class TunerSessionManager(
             $"The device failed while serving '{session.SessionId}': "
             + (session.FailureCause?.Message ?? "no cause was recorded.");
 
-        faultedDevices[deviceId] = new DeviceFault(fault, null, DeviceFaultKind.Failed);
-        healthChangedAt[deviceId] = timeProvider.GetUtcNow();
-
-        pool.Discard(deviceId);
-
-        if (recheck is null || draining || DeviceNamed(deviceId) is not { } device)
+        if (FaultUntilItOpens(deviceId, new DeviceFault(fault, null, DeviceFaultKind.Failed)) is not { } plan)
         {
             return;
         }
 
-        if (recheck.Schedule(device, Restore) is { } nextTryAt)
+        if (!plan.Relapsed)
         {
             logger.LogWarning(
                 "The device {DeviceId} failed while serving {SessionId}, so it is not handed out until it opens again; it is tried again at {NextTryAt}.",
                 deviceId,
                 session.SessionId.Value,
-                nextTryAt
+                plan.NextTryAt
             );
 
             return;
         }
 
-        faultedDevices[deviceId] = new DeviceFault(
-            fault
-            + $" It had been handed back out less than {RelapseMinutes} minutes earlier, so it is not tried again.",
-            null,
-            DeviceFaultKind.FailedAgain);
-
         logger.LogError(
-            "The device {DeviceId} failed again while serving {SessionId} within {RelapseMinutes} minutes of being handed back out, so it is not tried again and stays faulted until the driver restarts.",
+            "The device {DeviceId} failed again while serving {SessionId} within {RelapseMinutes} minutes of being handed back out, so it waits longer than last time and is tried again at {NextTryAt}.",
             deviceId,
             session.SessionId.Value,
-            RelapseMinutes
+            RelapseMinutes,
+            plan.NextTryAt
         );
+    }
+
+    private RecheckPlan? FaultUntilItOpens(string deviceId, DeviceFault fault)
+    {
+        faultedDevices[deviceId] = fault;
+        healthChangedAt[deviceId] = timeProvider.GetUtcNow();
+
+        pool.Discard(deviceId);
+
+        events?.Signal(DriverEvents.TunerHealthChanged);
+        events?.Signal(DriverEvents.Tuners);
+
+        if (recheck is null || draining || DeviceNamed(deviceId) is not { } device)
+        {
+            return null;
+        }
+
+        RecheckPlan? plan = recheck.Schedule(device, Restore);
+
+        if (plan is { Relapsed: true } && fault.Kind.Kind is TunerFaultKind.DeviceFailed)
+        {
+            faultedDevices[deviceId] = fault with
+            {
+                Detail = fault.Detail
+                    + $" It had been handed back out less than {RelapseMinutes} minutes earlier, so it waits longer than last time before it is tried again.",
+                Kind = DeviceFaultKind.FailedAgain,
+            };
+        }
+
+        return plan;
     }
 
     private static double RelapseMinutes => FaultedTunerRecheck.RelapseWindow.TotalMinutes;
 
     private void Restore(string deviceId)
     {
+        lock (streakGate)
+        {
+            tuneFailures.Remove(deviceId);
+        }
+
         faultedDevices.TryRemove(deviceId, out _);
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
 
@@ -1481,25 +1504,32 @@ public sealed class TunerSessionManager(
         events?.Signal(DriverEvents.Tuners);
     }
 
-    private void RecordTuneFailure(string deviceId, TuningKey tuning, DvbDeviceException cause)
+    private void RecordTuneFailure(
+        string deviceId,
+        TuningKey tuning,
+        DvbDeviceException cause,
+        SessionPurpose purpose
+    )
     {
-        int streak;
+        bool first;
+        TuningKey[] channels;
 
         lock (streakGate)
         {
-            if (!tuneFailureStreaks.TryGetValue(deviceId, out Dictionary<TuningKey, int>? perChannel))
+            first = !tuneFailures.TryGetValue(deviceId, out List<TuningKey>? counted);
+            counted ??= tuneFailures[deviceId] = [];
+
+            if (purpose is not SessionPurpose.Scan && !counted.Any(seen => OnTheSameChannel(seen, tuning)))
             {
-                perChannel = tuneFailureStreaks[deviceId] = [];
+                counted.Add(tuning);
             }
 
-            streak = perChannel[tuning] = perChannel.TryGetValue(tuning, out int seen)
-                ? seen + 1
-                : 1;
+            channels = [.. counted];
         }
 
-        if (streak < RepeatedTuneFailureCeiling)
+        if (channels.Length < DifferentChannelsThatFaultTheDevice)
         {
-            if (streak is 1)
+            if (first)
             {
                 healthChangedAt[deviceId] = timeProvider.GetUtcNow();
                 events?.Signal(DriverEvents.TunerHealthChanged);
@@ -1509,16 +1539,24 @@ public sealed class TunerSessionManager(
             return;
         }
 
-        Fault(
+        string fault =
+            $"The device failed to receive {string.Join(", ", channels)} one after another without delivering"
+            + $" anything in between; the last failure was: {cause.Message}";
+        RecheckPlan? plan = FaultUntilItOpens(
             deviceId,
-            new DeviceFault(
-                $"The device failed to receive {tuning} {streak} times in a row without delivering"
-                    + $" anything in between; the last failure was: {cause.Message}",
-                TuningFailureTitles.Of(cause.Failure),
-                DeviceFaultKind.RepeatedTuneFailure
-            )
+            new DeviceFault(fault, TuningFailureTitles.Of(cause.Failure), DeviceFaultKind.RepeatedTuneFailure)
+        );
+
+        logger.LogWarning(
+            "The device {DeviceId} failed to receive {Channels} one after another, so it is not handed out until it opens again; it is tried again at {NextTryAt}.",
+            deviceId,
+            string.Join(", ", channels),
+            plan?.NextTryAt
         );
     }
+
+    private static bool OnTheSameChannel(TuningKey one, TuningKey other) =>
+        one.Kind == other.Kind && one.PhysicalChannel == other.PhysicalChannel;
 
     private void ForgiveTuneFailures(string deviceId)
     {
@@ -1526,7 +1564,7 @@ public sealed class TunerSessionManager(
 
         lock (streakGate)
         {
-            forgiven = tuneFailureStreaks.Remove(deviceId);
+            forgiven = tuneFailures.Remove(deviceId);
         }
 
         if (forgiven && !faultedDevices.ContainsKey(deviceId))
@@ -1538,15 +1576,13 @@ public sealed class TunerSessionManager(
     }
 
     /// <summary>
-    /// Whether a channel has failed to tune on this device since it last delivered a session through to its end,
-    /// fewer times than it takes to fault the device.
+    /// Whether a channel has failed to tune on this device since it last delivered a session through to its end.
     /// </summary>
     public bool IsFailingToTune(string deviceId)
     {
         lock (streakGate)
         {
-            return tuneFailureStreaks.TryGetValue(deviceId, out Dictionary<TuningKey, int>? perChannel)
-                   && perChannel.Values.Any(streak => streak > 0);
+            return tuneFailures.ContainsKey(deviceId);
         }
     }
 

@@ -5,6 +5,11 @@ using Puppis.Driver.Tuning;
 
 namespace Puppis.Driver.Sessions;
 
+/// <summary>
+/// When a faulted device is next tried, and whether it failed again soon after it was last handed back out.
+/// </summary>
+public sealed record RecheckPlan(DateTimeOffset NextTryAt, bool Relapsed);
+
 public sealed class FaultedTunerRecheck(
     ITunerDeviceCheck check,
     TimeProvider timeProvider,
@@ -23,11 +28,11 @@ public sealed class FaultedTunerRecheck(
 
     private readonly Lock gate = new();
     private readonly Dictionary<string, Pending> pending = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, DateTimeOffset> restoredAt = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Restoration> restored = new(StringComparer.Ordinal);
 
     private bool disposed;
 
-    public DateTimeOffset? Schedule(DeviceSettings device, Action<string> restore)
+    public RecheckPlan? Schedule(DeviceSettings device, Action<string> restore)
     {
         string deviceId = device.Id!;
         DateTimeOffset now = timeProvider.GetUtcNow();
@@ -39,26 +44,24 @@ public sealed class FaultedTunerRecheck(
                 return null;
             }
 
-            if (restoredAt.TryGetValue(deviceId, out DateTimeOffset restored) && now - restored <= RelapseWindow)
-            {
-                return null;
-            }
-
             if (pending.TryGetValue(deviceId, out Pending? waiting))
             {
-                return waiting.NextTryAt;
+                return new RecheckPlan(waiting.NextTryAt, false);
             }
 
-            var entry = new Pending(device, restore, now + Intervals[0]);
+            int tries = restored.TryGetValue(deviceId, out Restoration? last) && now - last.At <= RelapseWindow
+                ? Math.Min(last.Tries + 1, Intervals.Count - 1)
+                : 0;
+            var entry = new Pending(device, restore, now + Intervals[tries]) { Tries = tries };
             entry.Timer = timeProvider.CreateTimer(
                 _ => TryAgain(entry),
                 null,
-                Intervals[0],
+                Intervals[tries],
                 Timeout.InfiniteTimeSpan
             );
             pending[deviceId] = entry;
 
-            return entry.NextTryAt;
+            return new RecheckPlan(entry.NextTryAt, tries > 0);
         }
     }
 
@@ -135,7 +138,7 @@ public sealed class FaultedTunerRecheck(
             }
 
             pending.Remove(deviceId);
-            restoredAt[deviceId] = timeProvider.GetUtcNow();
+            restored[deviceId] = new Restoration(timeProvider.GetUtcNow(), entry.Tries);
         }
 
         entry.Timer?.Dispose();
@@ -166,6 +169,8 @@ public sealed class FaultedTunerRecheck(
             nextTryAt
         );
     }
+
+    private sealed record Restoration(DateTimeOffset At, int Tries);
 
     private sealed class Pending(DeviceSettings device, Action<string> restore, DateTimeOffset nextTryAt)
     {

@@ -287,6 +287,7 @@ public sealed class DvbTunerDeviceTests
 
         Assert.Contains("still locked", refusal.Message, StringComparison.Ordinal);
         Assert.Contains("/dev/dvb/adapter0/dvr0", refusal.Message, StringComparison.Ordinal);
+        Assert.Contains(DvbChannel.Terrestrial(55).ToString(), refusal.Message, StringComparison.Ordinal);
         Assert.Equal(TuningFailure.LockedWithoutData, refusal.Failure);
     }
 
