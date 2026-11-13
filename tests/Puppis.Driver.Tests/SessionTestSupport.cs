@@ -7,6 +7,7 @@ using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
 using Puppis.Driver.Recording;
 using Puppis.Driver.Tuning;
+using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tests;
 
@@ -190,6 +191,14 @@ public sealed class SelectiveTunerDeviceFactory(string failingDeviceId, int fail
     public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
         device.Id == failingDeviceId
             ? new ScriptedTunerDevice(failAfterReads)
+            : new ScriptedTunerDevice();
+}
+
+public sealed class FailingChannelDeviceFactory(int[] deadChannels) : ITunerDeviceFactory
+{
+    public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
+        deadChannels.Contains(tuning.PhysicalChannel)
+            ? throw DvbFailure.NoLock("the frontend did not lock within 5 seconds.")
             : new ScriptedTunerDevice();
 }
 

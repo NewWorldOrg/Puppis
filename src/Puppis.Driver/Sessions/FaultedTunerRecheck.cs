@@ -49,19 +49,19 @@ public sealed class FaultedTunerRecheck(
                 return new RecheckPlan(waiting.NextTryAt, false);
             }
 
-            int tries = restored.TryGetValue(deviceId, out Restoration? last) && now - last.At <= RelapseWindow
-                ? Math.Min(last.Tries + 1, Intervals.Count - 1)
+            int relapse = restored.TryGetValue(deviceId, out Restoration? last) && now - last.At <= RelapseWindow
+                ? Math.Min(last.Relapse + 1, Intervals.Count - 1)
                 : 0;
-            var entry = new Pending(device, restore, now + Intervals[tries]) { Tries = tries };
+            Pending entry = new(device, restore, now + Intervals[relapse], relapse) { Tries = relapse };
             entry.Timer = timeProvider.CreateTimer(
                 _ => TryAgain(entry),
                 null,
-                Intervals[tries],
+                Intervals[relapse],
                 Timeout.InfiniteTimeSpan
             );
             pending[deviceId] = entry;
 
-            return new RecheckPlan(entry.NextTryAt, tries > 0);
+            return new RecheckPlan(entry.NextTryAt, relapse > 0);
         }
     }
 
@@ -138,7 +138,7 @@ public sealed class FaultedTunerRecheck(
             }
 
             pending.Remove(deviceId);
-            restored[deviceId] = new Restoration(timeProvider.GetUtcNow(), entry.Tries);
+            restored[deviceId] = new Restoration(timeProvider.GetUtcNow(), entry.Relapse);
         }
 
         entry.Timer?.Dispose();
@@ -170,10 +170,12 @@ public sealed class FaultedTunerRecheck(
         );
     }
 
-    private sealed record Restoration(DateTimeOffset At, int Tries);
+    private sealed record Restoration(DateTimeOffset At, int Relapse);
 
-    private sealed class Pending(DeviceSettings device, Action<string> restore, DateTimeOffset nextTryAt)
+    private sealed class Pending(DeviceSettings device, Action<string> restore, DateTimeOffset nextTryAt, int relapse)
     {
+        public int Relapse { get; } = relapse;
+
         public DeviceSettings Device { get; } = device;
 
         public Action<string> Restore { get; } = restore;

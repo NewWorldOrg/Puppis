@@ -1399,6 +1399,13 @@ public sealed class TunerSessionManager(
 
         if (FaultUntilItOpens(deviceId, new DeviceFault(fault, null, DeviceFaultKind.Failed)) is not { } plan)
         {
+            logger.LogError(
+                "The device {DeviceId} failed while serving {SessionId} and {NotTriedAgain}",
+                deviceId,
+                session.SessionId.Value,
+                NotTriedAgain()
+            );
+
             return;
         }
 
@@ -1547,13 +1554,30 @@ public sealed class TunerSessionManager(
             new DeviceFault(fault, TuningFailureTitles.Of(cause.Failure), DeviceFaultKind.RepeatedTuneFailure)
         );
 
+        if (plan is null)
+        {
+            logger.LogError(
+                "The device {DeviceId} failed to receive {Channels} one after another and {NotTriedAgain}",
+                deviceId,
+                string.Join(", ", channels),
+                NotTriedAgain()
+            );
+
+            return;
+        }
+
         logger.LogWarning(
             "The device {DeviceId} failed to receive {Channels} one after another, so it is not handed out until it opens again; it is tried again at {NextTryAt}.",
             deviceId,
             string.Join(", ", channels),
-            plan?.NextTryAt
+            plan.NextTryAt
         );
     }
+
+    private string NotTriedAgain() =>
+        draining
+            ? "the driver is shutting down, so it is not tried again."
+            : "nothing is set to try it again, so it stays faulted until the driver restarts.";
 
     private static bool OnTheSameChannel(TuningKey one, TuningKey other) =>
         one.Kind == other.Kind && one.PhysicalChannel == other.PhysicalChannel;

@@ -388,14 +388,6 @@ public sealed class TuneFailureClassificationTests
         Assert.Equal(TunerDegradedKind.Unspecified, tuner.Health?.DegradedKind);
     }
 
-    private sealed class FailingChannelDeviceFactory(int[] deadChannels) : ITunerDeviceFactory
-    {
-        public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
-            deadChannels.Contains(tuning.PhysicalChannel)
-                ? throw DvbFailure.NoLock("the frontend did not lock within 5 seconds.")
-                : new ScriptedTunerDevice();
-    }
-
     private sealed class SilentChannelDeviceFactory(int[] silentChannels) : ITunerDeviceFactory
     {
         public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
