@@ -34,6 +34,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
     private readonly Lock gate = new();
     private ILogger? logger;
     private long opened;
+    private long hertz;
     private bool firstBytesReported;
     private bool closed;
 
@@ -215,6 +216,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         var device = new CechZd1TunerDevice(kept, reader, pacing, bytePatience, standby);
         device.logger = logger;
         device.opened = stages.Started;
+        device.hertz = hertz;
         device.Report(logger, hertz, stages, how);
 
         return device;
@@ -329,16 +331,16 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         catch (DvbDeviceException)
         {
             return DvbFailure.Refused(
-                $"{usb.Path}: no transport stream arrived within {waited}, and the demodulator would not say whether it is still locked."
+                $"{usb.Path}: no transport stream arrived on {hertz / 1000} kHz within {waited}, and the demodulator would not say whether it is still locked."
             );
         }
 
         return CechZd1Signal.LockedWithData(registers.StatusAfter)
             ? DvbFailure.LockedWithoutData(
-                $"{usb.Path}: the demodulator is locked and no transport stream arrived within {waited}."
+                $"{usb.Path}: the demodulator is locked on {hertz / 1000} kHz and no transport stream arrived within {waited}."
             )
             : DvbFailure.NoLock(
-                $"{usb.Path}: no transport stream arrived within {waited}, and the demodulator is no longer locked (0x{registers.StatusAfter:X4})."
+                $"{usb.Path}: no transport stream arrived on {hertz / 1000} kHz within {waited}, and the demodulator is no longer locked (0x{registers.StatusAfter:X4})."
             );
     }
 

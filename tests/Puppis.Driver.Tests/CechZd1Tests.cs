@@ -460,6 +460,29 @@ public sealed class CechZd1TunerDeviceTests
         DvbDeviceException refused = UsbTestSupport.Refusal(() => device.Read(188, CancellationToken.None));
 
         Assert.Equal(TuningFailure.LockedWithoutData, refused.Failure);
+        Assert.Contains($"{Channel22 / 1000} kHz", refused.Message, StringComparison.Ordinal);
+        device.Dispose();
+    }
+
+    [Fact]
+    public void TheWaitForBytesStartsWhenTheyAreAskedForNotWhenTheTunerWasOpened()
+    {
+        (CechZd1TunerDevice device, FakeBridge bridge, _, ManualTimeProvider clock) = Opened();
+        clock.Advance(TimeSpan.FromSeconds(4));
+        int idle = 0;
+        bridge.Idle = waited =>
+        {
+            clock.Advance(waited);
+
+            if (++idle * waited >= TimeSpan.FromSeconds(4))
+            {
+                bridge.Transfers.Enqueue(UsbTestSupport.Units(50, skip: 30));
+            }
+        };
+
+        byte[] read = device.Read(188, CancellationToken.None);
+
+        Assert.Equal(188, read.Length);
         device.Dispose();
     }
 

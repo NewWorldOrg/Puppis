@@ -26,6 +26,8 @@ public sealed class TuneFailureClassificationTests
         [new DeviceSettings("adapter0", DeviceKind.Terrestrial)]
     );
 
+    private static readonly DriverHello Hello = new(DriverProtocol.Version, "instance-1", []);
+
     private readonly ManualTimeProvider clock = new(Start);
 
     [Fact]
@@ -92,7 +94,7 @@ public sealed class TuneFailureClassificationTests
 
         Assert.Equal(
             SessionRefusalTitles.NoData,
-            SessionViews.Of(silent, new DriverHello(DriverProtocol.Version, "instance-1", [])).FailureTitle
+            SessionViews.Of(silent, Hello).FailureTitle
         );
 
         SessionStart second = manager.Begin(Request("scan-15", 15));
@@ -105,32 +107,157 @@ public sealed class TuneFailureClassificationTests
     }
 
     [Fact]
-    public void AChannelThatKeepsFailingTheSameWayEndsInAFaultTheHealthSurfacesCanSee()
+    public void AChannelThatKeepsDeliveringNothingAfterLockingLeavesTheTunerServingOtherChannels()
     {
-        TunerSessionManager manager = Manager(new ThrowingDeviceFactory(() => DvbFailure.NoLock(
-            "the frontend did not lock within 5 seconds."
-        )));
+        TunerSessionManager manager = Manager(new SilentChannelDeviceFactory(silentChannels: [27]));
 
-        for (int attempt = 1; attempt <= TunerSessionManager.RepeatedTuneFailureCeiling; attempt++)
+        for (int attempt = 1; attempt <= 4; attempt++)
         {
-            SessionStart start = manager.Begin(Request($"scan-{attempt}", 14));
+            SessionStart start = manager.Begin(Request($"survey-{attempt}", 27, SessionPurpose.Survey));
+
+            Assert.True(start.TryGetSession(out TunerSession? session));
+
+            session.WaitForEnd(Deadlock);
+
+            Assert.Equal(SessionState.Failed, session.State);
+            Assert.Equal(SessionRefusalTitles.NoData, SessionViews.Of(session, Hello).FailureTitle);
+            Assert.False(manager.IsFaulted("adapter0", out _));
+
+            clock.Advance(TimeSpan.FromSeconds(6));
+        }
+
+        TunerSnapshot tuner = Assert.Single(SessionViews.Tuners(Configuration, manager));
+
+        Assert.Equal(TunerState.Idle, tuner.State);
+        Assert.Equal(TunerHealthLevel.Degraded, tuner.Health?.Level);
+        Assert.Equal(TunerDegradedKind.TuneFailing, tuner.Health?.DegradedKind);
+
+        SessionStart other = manager.Begin(Request("survey-other", 21, SessionPurpose.Survey));
+
+        Assert.Equal(SessionRefusal.None, other.Refusal);
+        Assert.True(other.TryGetSession(out TunerSession? served));
+
+        served.Stop();
+        served.WaitForEnd(Deadlock);
+
+        Assert.Equal(SessionState.Stopped, served.State);
+    }
+
+    [Fact]
+    public void AChannelThatKeepsFailingToLockIsRefusedEachTimeAndTheTunerStaysInService()
+    {
+        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannels: [14]));
+
+        for (int attempt = 1; attempt <= 4; attempt++)
+        {
+            SessionStart start = manager.Begin(Request($"survey-{attempt}", 14, SessionPurpose.Survey));
 
             Assert.Equal(SessionRefusal.NoLock, start.Refusal);
+            Assert.Contains("terrestrial channel 14", start.Detail, StringComparison.Ordinal);
+
+            clock.Advance(TimeSpan.FromSeconds(6));
+        }
+
+        Assert.False(manager.IsFaulted("adapter0", out _));
+
+        SessionStart other = manager.Begin(Request("survey-other", 20, SessionPurpose.Survey));
+
+        Assert.True(other.TryGetSession(out TunerSession? served));
+
+        served.Stop();
+        served.WaitForEnd(Deadlock);
+    }
+
+    [Fact]
+    public void ARefusalForDeliveringNothingNamesTheChannel()
+    {
+        TunerSessionManager manager = Manager(new ThrowingDeviceFactory(() =>
+            DvbFailure.LockedWithoutData("the frontend is still locked and nothing arrived.")));
+
+        SessionStart start = manager.Begin(Request("survey-1", 14, SessionPurpose.Survey));
+
+        Assert.Equal(SessionRefusal.NoData, start.Refusal);
+        Assert.Contains("terrestrial channel 14", start.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FailingOnTwoDifferentChannelsInARowFaultsTheTuner()
+    {
+        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannels: [14, 15]));
+
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("survey-1", 14, SessionPurpose.Survey)));
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("survey-2", 14, SessionPurpose.Survey)));
+
+        Assert.False(manager.IsFaulted("adapter0", out _));
+
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("survey-3", 15, SessionPurpose.Survey)));
+
+        Assert.True(manager.IsFaulted("adapter0", out string? detail));
+        Assert.Contains("terrestrial channel 14", detail, StringComparison.Ordinal);
+        Assert.Contains("terrestrial channel 15", detail, StringComparison.Ordinal);
+        Assert.Equal(
+            SessionRefusal.FaultedDevice,
+            manager.Begin(Request("survey-4", 20, SessionPurpose.Survey)).Refusal
+        );
+    }
+
+    [Fact]
+    public void ASessionThatDeliveredBetweenTwoFailingChannelsKeepsTheTunerInService()
+    {
+        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannels: [14, 15, 16]));
+
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("before", 14, SessionPurpose.Survey)));
+
+        Assert.True(manager.Begin(Request("delivering", 20, SessionPurpose.Survey)).TryGetSession(out TunerSession? session));
+
+        session.Stop();
+        session.WaitForEnd(Deadlock);
+
+        Assert.Equal(SessionState.Stopped, session.State);
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("after", 15, SessionPurpose.Survey)));
+        Assert.False(manager.IsFaulted("adapter0", out _));
+
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("the-last-straw", 16, SessionPurpose.Survey)));
+        Assert.True(manager.IsFaulted("adapter0", out _));
+    }
+
+    [Fact]
+    public void TwoDifferentChannelsThatGoSilentAfterLockingInARowFaultTheTuner()
+    {
+        TunerSessionManager manager = Manager(new SilentChannelDeviceFactory(silentChannels: [14, 15]));
+
+        foreach (int channel in new[] { 14, 15 })
+        {
+            Assert.True(
+                manager.Begin(Request($"survey-{channel}", channel, SessionPurpose.Survey))
+                    .TryGetSession(out TunerSession? session)
+            );
+
+            session.WaitForEnd(Deadlock);
+
+            Assert.Equal(SessionState.Failed, session.State);
+            Assert.NotEqual(SessionStopReason.DeviceFailed, session.StopReason);
 
             clock.Advance(TimeSpan.FromSeconds(6));
         }
 
         Assert.True(manager.IsFaulted("adapter0", out string? detail));
-        Assert.Contains("channel 14", detail, StringComparison.Ordinal);
-        Assert.Contains(
-            TunerSessionManager.RepeatedTuneFailureCeiling.ToString(),
-            detail,
-            StringComparison.Ordinal
-        );
+        Assert.Contains("terrestrial channel 15", detail, StringComparison.Ordinal);
+    }
 
-        SessionStart refused = manager.Begin(Request("scan-after", 14));
+    [Fact]
+    public void EmptyChannelsAScanMeetsNeitherCountTowardsAFaultNorExcuseTheOthers()
+    {
+        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannels: [14, 15, 16]));
 
-        Assert.Equal(SessionRefusal.FaultedDevice, refused.Refusal);
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("survey-14", 14, SessionPurpose.Survey)));
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("scan-15", 15)));
+
+        Assert.False(manager.IsFaulted("adapter0", out _));
+
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("survey-16", 16, SessionPurpose.Survey)));
+
+        Assert.True(manager.IsFaulted("adapter0", out _));
     }
 
     [Fact]
@@ -153,85 +280,12 @@ public sealed class TuneFailureClassificationTests
     }
 
     [Fact]
-    public void ASessionThatDeliveredResetsTheFailureStreakOfItsDevice()
-    {
-        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannel: 14));
-
-        for (int round = 1; round < TunerSessionManager.RepeatedTuneFailureCeiling; round++)
-        {
-            Assert.Equal(
-                SessionRefusal.NoLock,
-                manager.Begin(Request($"before-{round}", 14)).Refusal
-            );
-
-            clock.Advance(TimeSpan.FromSeconds(6));
-        }
-
-        SessionStart delivered = manager.Begin(Request("delivering", 20));
-
-        Assert.True(delivered.TryGetSession(out TunerSession? session));
-
-        session.Stop();
-        session.WaitForEnd(Deadlock);
-
-        Assert.Equal(SessionState.Stopped, session.State);
-
-        for (int round = 1; round < TunerSessionManager.RepeatedTuneFailureCeiling; round++)
-        {
-            Assert.Equal(
-                SessionRefusal.NoLock,
-                manager.Begin(Request($"after-{round}", 14)).Refusal
-            );
-
-            clock.Advance(TimeSpan.FromSeconds(6));
-        }
-
-        Assert.False(manager.IsFaulted("adapter0", out _));
-
-        Assert.Equal(
-            SessionRefusal.NoLock,
-            manager.Begin(Request("the-last-straw", 14)).Refusal
-        );
-        Assert.True(manager.IsFaulted("adapter0", out _));
-    }
-
-    [Fact]
-    public void AChannelThatKeepsGoingSilentAfterLockAlsoEndsInAFault()
-    {
-        TunerSessionManager manager = Manager(new QueuedDeviceFactory(new ConcurrentQueue<ITunerDevice>(
-            [new SilentAfterLockDevice(), new SilentAfterLockDevice(), new SilentAfterLockDevice()]
-        )));
-
-        for (int attempt = 1; attempt <= TunerSessionManager.RepeatedTuneFailureCeiling; attempt++)
-        {
-            SessionStart start = manager.Begin(Request($"scan-{attempt}", 14));
-
-            Assert.True(start.TryGetSession(out TunerSession? session));
-
-            session.WaitForEnd(Deadlock);
-
-            Assert.Equal(SessionState.Failed, session.State);
-
-            clock.Advance(TimeSpan.FromSeconds(6));
-        }
-
-        Assert.True(manager.IsFaulted("adapter0", out string? detail));
-        Assert.Contains("channel 14", detail, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public void ATunerFaultedForNotLockingSaysSoInItsHealth()
     {
-        TunerSessionManager manager = Manager(new ThrowingDeviceFactory(() => DvbFailure.NoLock(
-            "the frontend did not lock within 5 seconds."
-        )));
+        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannels: [14, 15]));
 
-        for (int attempt = 1; attempt <= TunerSessionManager.RepeatedTuneFailureCeiling; attempt++)
-        {
-            manager.Begin(Request($"scan-{attempt}", 14));
-
-            clock.Advance(TimeSpan.FromSeconds(6));
-        }
+        Refusal(manager, Request("survey-14", 14, SessionPurpose.Survey));
+        Refusal(manager, Request("survey-15", 15, SessionPurpose.Survey));
 
         TunerSnapshot tuner = Assert.Single(SessionViews.Tuners(Configuration, manager));
 
@@ -243,13 +297,14 @@ public sealed class TuneFailureClassificationTests
     [Fact]
     public void ATunerFaultedForDeliveringNothingAfterLockingSaysSoInItsHealth()
     {
-        TunerSessionManager manager = Manager(new QueuedDeviceFactory(new ConcurrentQueue<ITunerDevice>(
-            [new SilentAfterLockDevice(), new SilentAfterLockDevice(), new SilentAfterLockDevice()]
-        )));
+        TunerSessionManager manager = Manager(new SilentChannelDeviceFactory(silentChannels: [14, 15]));
 
-        for (int attempt = 1; attempt <= TunerSessionManager.RepeatedTuneFailureCeiling; attempt++)
+        foreach (int channel in new[] { 14, 15 })
         {
-            Assert.True(manager.Begin(Request($"scan-{attempt}", 14)).TryGetSession(out TunerSession? session));
+            Assert.True(
+                manager.Begin(Request($"survey-{channel}", channel, SessionPurpose.Survey))
+                    .TryGetSession(out TunerSession? session)
+            );
 
             session.WaitForEnd(Deadlock);
 
@@ -299,9 +354,9 @@ public sealed class TuneFailureClassificationTests
     [Fact]
     public void ATunerThatDeliversASessionThroughAfterFailingToTuneIsHealthyAgain()
     {
-        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannel: 14));
+        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannels: [14]));
 
-        Assert.Equal(SessionRefusal.NoLock, manager.Begin(Request("scan-1", 14)).Refusal);
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Request("scan-1", 14)));
         clock.Advance(TimeSpan.FromSeconds(6));
 
         Assert.Equal(
@@ -322,16 +377,10 @@ public sealed class TuneFailureClassificationTests
     [Fact]
     public void ATunerThatFaultedIsFaultedRatherThanDegraded()
     {
-        TunerSessionManager manager = Manager(new ThrowingDeviceFactory(() => DvbFailure.NoLock(
-            "the frontend did not lock within 5 seconds."
-        )));
+        TunerSessionManager manager = Manager(new FailingChannelDeviceFactory(deadChannels: [14, 15]));
 
-        for (int attempt = 1; attempt <= TunerSessionManager.RepeatedTuneFailureCeiling; attempt++)
-        {
-            manager.Begin(Request($"scan-{attempt}", 14));
-
-            clock.Advance(TimeSpan.FromSeconds(6));
-        }
+        Refusal(manager, Request("survey-14", 14, SessionPurpose.Survey));
+        Refusal(manager, Request("survey-15", 15, SessionPurpose.Survey));
 
         TunerSnapshot tuner = Assert.Single(SessionViews.Tuners(Configuration, manager));
 
@@ -339,12 +388,21 @@ public sealed class TuneFailureClassificationTests
         Assert.Equal(TunerDegradedKind.Unspecified, tuner.Health?.DegradedKind);
     }
 
-    private sealed class FailingChannelDeviceFactory(int deadChannel) : ITunerDeviceFactory
+    private sealed class SilentChannelDeviceFactory(int[] silentChannels) : ITunerDeviceFactory
     {
         public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
-            tuning.PhysicalChannel == deadChannel
-                ? throw DvbFailure.NoLock("the frontend did not lock within 5 seconds.")
+            silentChannels.Contains(tuning.PhysicalChannel)
+                ? new SilentAfterLockDevice()
                 : new ScriptedTunerDevice();
+    }
+
+    private SessionRefusal Refusal(TunerSessionManager manager, StartSessionRequest request)
+    {
+        SessionRefusal refusal = manager.Begin(request).Refusal;
+
+        clock.Advance(TimeSpan.FromSeconds(6));
+
+        return refusal;
     }
 
     private TunerSessionManager Manager(ITunerDeviceFactory factory) =>
@@ -355,11 +413,15 @@ public sealed class TuneFailureClassificationTests
             NullLogger<TunerSessionManager>.Instance
         );
 
-    private static StartSessionRequest Request(string sessionId, int channel) =>
+    private static StartSessionRequest Request(
+        string sessionId,
+        int channel,
+        SessionPurpose purpose = SessionPurpose.Scan
+    ) =>
         new()
         {
             SessionId = SessionId.Parse(sessionId),
-            Purpose = SessionPurpose.Scan,
+            Purpose = purpose,
             Tuning = new TuningRequest(TunerKind.Terrestrial, channel, 50001),
             EndsAt = Start.AddHours(1),
         };
