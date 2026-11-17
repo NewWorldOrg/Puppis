@@ -8,6 +8,7 @@ using Puppis.Driver.Descrambling;
 using Puppis.Driver.Tuning.Dvb;
 using Puppis.Driver.Tuning.Usb;
 using Puppis.Driver.Tuning.Usb.CechZd1;
+using Puppis.Driver.Tuning.Usb.PixDt295;
 
 namespace Puppis.Driver.Tuning;
 
@@ -41,6 +42,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     private readonly IDescramblerFactory descramblers;
     private readonly ILogger? logger;
     private readonly DvbTunerSettings settings;
+    private readonly string dt295Handler;
 
     public TunerDeviceFactory(
         DriverConfiguration configuration,
@@ -69,9 +71,11 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         Lazy<IUsbHost> usbHost,
         DevicePacing pacing,
         IDescramblerFactory descramblers,
-        ILogger? logger = null
+        ILogger? logger = null,
+        string dt295Handler = Dt295Startup.HandlerAtPowerOn
     )
     {
+        this.dt295Handler = dt295Handler;
         this.usbHost = usbHost;
         this.pacing = pacing;
         this.logger = logger;
@@ -101,11 +105,14 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             descramblers ?? NoDescrambling.Instance
         );
 
+    /// <param name="dt295Handler">The digest a PIX-DT295's request handling must have, for a simulated one.</param>
     public static TunerDeviceFactory Using(
         DriverConfiguration configuration,
         IUsbHost usbHost,
         DevicePacing pacing,
-        IDescramblerFactory? descramblers = null
+        IDescramblerFactory? descramblers = null,
+        string dt295Handler = Dt295Startup.HandlerAtPowerOn,
+        ILogger? logger = null
     ) =>
         new(
             configuration,
@@ -113,7 +120,9 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             new Lazy<IDvbSystemCalls>(() => new LinuxDvbSystemCalls()),
             new Lazy<IUsbHost>(() => usbHost),
             pacing,
-            descramblers ?? NoDescrambling.Instance
+            descramblers ?? NoDescrambling.Instance,
+            logger,
+            dt295Handler
         );
 
     public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
@@ -136,7 +145,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
                 return;
             case TunerBackend.Usb:
-                CechZd1TunerDevice.OpenAndClose(usbHost.Value, UsbPathOf(device), standby);
+                CheckUsb(UsbPathOf(device));
 
                 return;
             default:
@@ -158,7 +167,81 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         UsbTunerDetector.NodeFor(usbHost.Value, device.Id, device.DevicePath)
         ?? throw DvbFailure.Refused($"devices['{device.Id}']: a usb device needs a devicePath.");
 
+    private void CheckUsb(string path)
+    {
+        if (usbHost.Value.ModelAt(path) == Dt295TunerDevice.Model)
+        {
+            usbHost.Value.Open(path, Dt295TunerDevice.Interface).Dispose();
+
+            return;
+        }
+
+        CechZd1TunerDevice.OpenAndClose(usbHost.Value, path, standby);
+    }
+
     private ITunerDevice OpenUsb(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold)
+    {
+        string path = UsbPathOf(device);
+
+        return usbHost.Value.ModelAt(path) == Dt295TunerDevice.Model
+            ? OpenDt295(device, path, DvbTuneRequest.Resolve(tune, tuning), hold)
+            : OpenCechZd1(device, path, tuning, tune, hold);
+    }
+
+    /// <summary>
+    /// Opens a PIX-DT295, read through the card a lender holds where there is one and through the card in the tuner's
+    /// own slot where there is not.
+    /// </summary>
+    private ITunerDevice OpenDt295(DeviceSettings device, string path, DvbChannel channel, HeadHold hold)
+    {
+        RequireTheDeclaredKind(device, channel);
+
+        Dt295TunerDevice Open() =>
+            Dt295TunerDevice.Open(usbHost.Value, path, channel, pacing, settings.BytePatience, logger, dt295Handler);
+
+        if (descramblers.Unscrambles && descramblers is not SlotCards)
+        {
+            return ThroughTheCard(Open, hold);
+        }
+
+        Dt295TunerDevice opened = Open();
+
+        try
+        {
+            IDescramblerFactory slot = descramblers is SlotCards slots
+                ? slots.Attach(opened)
+                : Descramblers.Over(opened.CardService, logger, time);
+
+            return Unscrambling(opened, slot.Open(hold), slot, hold);
+        }
+        catch
+        {
+            opened.Dispose();
+
+            throw;
+        }
+    }
+
+    private static void RequireTheDeclaredKind(DeviceSettings device, DvbChannel channel)
+    {
+        bool satellite = channel is not TerrestrialChannel;
+
+        if (satellite && device.Kind is DeviceKind.Terrestrial)
+        {
+            throw DvbFailure.Refused(
+                $"devices['{device.Id}']: this tuner is declared terrestrial, and this tune asks for a satellite."
+            );
+        }
+
+        if (!satellite && device.Kind is DeviceKind.Satellite)
+        {
+            throw DvbFailure.Refused(
+                $"devices['{device.Id}']: this tuner is declared satellite, and this tune asks for terrestrial broadcasting."
+            );
+        }
+    }
+
+    private ITunerDevice OpenCechZd1(DeviceSettings device, string path, TuningRequest tuning, TuneParams? tune, HeadHold hold)
     {
         if (DvbTuneRequest.Resolve(tune, tuning) is not TerrestrialChannel channel)
         {
@@ -166,8 +249,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                 $"devices['{device.Id}']: the usb tuner receives terrestrial broadcasting only, and this tune asks for a satellite."
             );
         }
-
-        string path = UsbPathOf(device);
 
         return ThroughTheCard(
             () =>
@@ -215,7 +296,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     private ITunerDevice ThroughTheCard(Func<ITunerDevice> open, HeadHold hold)
     {
         long started = Stopwatch.GetTimestamp();
-        Task<IDescrambler?>? asking = descramblers.Unscrambles ? Task.Run(() => descramblers.Open(hold)) : null;
+        IDescramblerFactory cards = Shared;
+        Task<IDescrambler?>? asking = cards.Unscrambles ? Task.Run(() => cards.Open(hold)) : null;
         ITunerDevice opened;
 
         try
@@ -275,7 +357,16 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             TaskScheduler.Default
         );
 
-    private ITunerDevice Unscrambling(ITunerDevice opened, IDescrambler? descrambler, HeadHold hold)
+    private ITunerDevice Unscrambling(ITunerDevice opened, IDescrambler? descrambler, HeadHold hold) =>
+        Unscrambling(opened, descrambler, Shared, hold);
+
+    /// <summary>
+    /// The cards every tuner of this driver may be read through. The cards in tuners' own slots are not among them:
+    /// each serves only the tuner it sits in.
+    /// </summary>
+    private IDescramblerFactory Shared => descramblers is SlotCards ? NoDescrambling.Instance : descramblers;
+
+    private ITunerDevice Unscrambling(ITunerDevice opened, IDescrambler? descrambler, IDescramblerFactory cards, HeadHold hold)
     {
         if (descrambler is null)
         {
@@ -286,7 +377,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
         try
         {
-            return new DescramblingTunerDevice(opened, descrambler, descramblers, time, logger, hold);
+            return new DescramblingTunerDevice(opened, descrambler, cards, time, logger, hold);
         }
         catch
         {

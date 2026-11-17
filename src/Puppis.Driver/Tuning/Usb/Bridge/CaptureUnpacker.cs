@@ -1,6 +1,6 @@
 using Puppis.Driver.Transport;
 
-namespace Puppis.Driver.Tuning.Usb.CechZd1;
+namespace Puppis.Driver.Tuning.Usb.Bridge;
 
 /// <summary>
 /// Takes the four byte arrival time off each unit the bridge sends and hands on the packet behind it. Reads do not
@@ -22,6 +22,15 @@ public sealed class CaptureUnpacker
     /// How many times the units fell out of step after they had first been found, each of which lost what lay between.
     /// </summary>
     public long Realignments { get; private set; }
+
+    /// <summary>
+    /// Lets go of what is held and looks for the head of a unit again, for a stream the sender says it broke.
+    /// </summary>
+    public void Forget()
+    {
+        held = 0;
+        aligned = false;
+    }
 
     public int Unpack(ReadOnlySpan<byte> arrived, List<byte> packets)
     {

@@ -1,4 +1,5 @@
 using Puppis.Driver.Tuning.Dvb;
+using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
@@ -30,6 +31,7 @@ public static class BridgeStartup
         0x1700000,
     ];
 
+    private const uint I2cDivider = 0x08;
     private const uint InterruptLevels = 0x440;
     private const int InterruptLevelWords = 16;
     private const uint NoInterrupt = 0x1F1F1F1F;
@@ -104,7 +106,7 @@ public static class BridgeStartup
         memory.Write(0xFD80C4, 0);
         memory.WriteHalf(0x90114, 0x8008);
         memory.Write(0xFD8FF8, 0x06);
-        memory.Write(BridgeI2c.Divider, BridgeI2c.DividerValue);
+        memory.Write(BridgeI2c.Divider, I2cDivider);
         memory.Write(BridgeI2c.Clock, 0x3C);
         memory.Write(BridgeI2c.Control, BridgeI2c.Idle);
     }

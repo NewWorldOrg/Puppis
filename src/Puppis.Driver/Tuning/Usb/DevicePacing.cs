@@ -9,6 +9,13 @@ public sealed class DevicePacing(TimeProvider time, Action<TimeSpan> sleep)
 
     public DateTimeOffset Now => time.GetUtcNow();
 
+    /// <summary>
+    /// A reading of the clock that only moves forwards, for measuring how long something took.
+    /// </summary>
+    public long Timestamp => time.GetTimestamp();
+
+    public TimeSpan Since(long timestamp) => time.GetElapsedTime(timestamp);
+
     public void Sleep(TimeSpan span) => sleep(span);
 
     public void SleepMilliseconds(int milliseconds) => sleep(TimeSpan.FromMilliseconds(milliseconds));

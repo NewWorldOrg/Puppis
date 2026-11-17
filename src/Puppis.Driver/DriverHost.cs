@@ -17,6 +17,7 @@ using Puppis.Driver.Ipc;
 using Puppis.Driver.Recording;
 using Puppis.Driver.Sessions;
 using Puppis.Driver.Tuning;
+using Puppis.Driver.Tuning.Usb.PixDt295;
 
 namespace Puppis.Driver;
 
@@ -127,7 +128,13 @@ public static class DriverHost
                 provider.GetRequiredService<DriverConfiguration>(),
                 loan,
                 provider.GetRequiredService<ILogger<Descramblers>>(),
-                provider.GetRequiredService<TimeProvider>()
+                provider.GetRequiredService<TimeProvider>(),
+                SlotCards.For(
+                    provider.GetRequiredService<DriverConfiguration>(),
+                    loan is not null,
+                    provider.GetRequiredService<ILogger<Descramblers>>(),
+                    provider.GetRequiredService<TimeProvider>()
+                )
             )
         );
 

@@ -31,7 +31,7 @@ public sealed class FileSystemRuleTests
         "/Puppis.Driver/Tuning/Dvb/DvbSystemCalls.cs LibraryImport",
         "/Puppis.Driver/Tuning/Dvb/DvbTunerDetector.cs .Replace(",
         "/Puppis.Driver/Tuning/TunerLedgerStore.cs .Replace(",
-        "/Puppis.Driver/Tuning/Usb/CechZd1/CaptureUnpacker.cs .CopyTo(",
+        "/Puppis.Driver/Tuning/Usb/Bridge/CaptureUnpacker.cs .CopyTo(",
         "/Puppis.Driver/Tuning/Usb/CechZd1/CechZd1TunerDevice.cs .CopyTo(",
         "/Puppis.Driver/Tuning/Usb/LinuxUsbBulkReader.cs .CopyTo(",
         "/Puppis.Driver/Tuning/Usb/LinuxUsbConnection.cs LibraryImport",

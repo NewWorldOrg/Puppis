@@ -42,11 +42,13 @@ public sealed class Descramblers : IDescramblerFactory, ICardReaderReport
     /// What a tuner of this driver is read through: a card borrowed from <paramref name="loan"/> where there is one,
     /// otherwise the card in this machine's reader for a DVB tuner, and nothing for a synthetic one.
     /// </summary>
+    /// <param name="slots">The cards in the tuners' own slots, for a usb driver that borrows none.</param>
     public static IDescramblerFactory For(
         DriverConfiguration configuration,
         CardLoan? loan,
         ILogger? logger,
-        TimeProvider? clock = null
+        TimeProvider? clock = null,
+        IDescramblerFactory? slots = null
     )
     {
         ArgumentNullException.ThrowIfNull(configuration);
@@ -62,7 +64,7 @@ public sealed class Descramblers : IDescramblerFactory, ICardReaderReport
             return BorrowedCards.From(loan, logger, clock);
         }
 
-        return backend is TunerBackend.Dvb ? Probe(logger, clock) : NoDescrambling.Instance;
+        return backend is TunerBackend.Dvb ? Probe(logger, clock) : slots ?? NoDescrambling.Instance;
     }
 
     /// <summary>

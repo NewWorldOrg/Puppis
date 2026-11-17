@@ -1,4 +1,5 @@
 using Puppis.Driver.Tuning.Dvb;
+using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
@@ -55,7 +56,7 @@ public static class AddressWidening
         return program.Assemble(origin);
     }
 
-    public static uint LoadOf(uint entry) => ((0x9B0C + (((entry >> 16) & 0xF) * 0x10)) << 16) | (entry & 0xFFFF);
+    public static uint LoadOf(uint entry) => Fr30Assembly.LoadTwentyWord(entry, ScratchRegister);
 
     public static void Widen(BridgeMemory memory)
     {

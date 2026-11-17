@@ -37,13 +37,23 @@ docker run -d --privileged \
 | `socketPath` | ソケットのパス。既定は `/run/carina/driver.sock` |
 | `socketGroupId` | ソケットの所有グループ。既定は 10001。app を動かすグループに合わせます |
 | `outputRoots` | 録画の保存先。`name` と `path` の組を 1 つ以上 |
-| `tuner.backend` | `dvb`、`usb`(CECH-ZD1)、`fake`(合成チューナー)のいずれか。必須です |
+| `tuner.backend` | `dvb`、`usb`(CECH-ZD1 と PIX-DT295)、`fake`(合成チューナー)のいずれか。必須です |
 | `devices` | チューナーの一覧。`id`・`kind`(`terrestrial` か `satellite`)・`devicePath`・`enabled` |
 | `shutdownGraceHours` | 停止時に録画の終了を待つ上限。既定は 6 時間 |
 | `name` | 画面に表示するこの機械の名前。省略すると「この機械」と表示します |
 
 `tuner.backend` が `dvb` のときは、`devicePath` に `/dev/dvb/adapter0/frontend0` のように frontend までのパスを書きます。\
 `usb` のときは `/dev/bus/usb/` の下のデバイスノードを書き、`id` は接続したポートから自動で決まります。
+
+PIX-DT295 は地上波と衛星の両方を受けられますが、1 台は `kind` に書いたどちらか一方だけに使います。\
+1 台で両方を受け分ける使い方には対応していません。\
+本体はアンテナに給電しないので、衛星では外から給電してください。\
+衛星の受信は実機で確かめていません。\
+カードの貸し借りを設定していなければ、本体のスロットに挿した B-CAS カードで解除します。\
+本体のスロットのカードをほかの driver に貸すことはできません。\
+同じ driver のほかのチューナーは本体のスロットのカードを使わないので、カードの貸し借りか自前のカードリーダーが要ります。\
+セッションの間に本体を開いたまま休ませることはせず、開くたびに初めから立ち上げます。\
+電源を入れたあと別のソフトで使った PIX-DT295 は開けないので、抜いて挿し直してください。
 
 ### カードの貸し借り
 

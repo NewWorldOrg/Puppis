@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 
 using Puppis.Driver.Tuning.Dvb;
 
-namespace Puppis.Driver.Tuning.Usb.CechZd1;
+namespace Puppis.Driver.Tuning.Usb.Bridge;
 
 /// <summary>
 /// The bridge's memory, registers included, through its vendor request. Words travel big endian.
@@ -104,6 +104,64 @@ public sealed class BridgeMemory(IUsbConnection usb)
                 Requests++;
                 usb.ControlOut(SetupFor(WriteRequestType, at), bytes.AsSpan(0, taking * WordBytes), Patience);
             }
+        }
+    }
+
+    /// <summary>
+    /// Writes every word in one request, which a bridge whose addresses were never widened takes for as many as two.
+    /// </summary>
+    public void WriteInOneRequest(uint address, ReadOnlySpan<uint> words)
+    {
+        Reachable(address, words.Length);
+        byte[] bytes = new byte[words.Length * WordBytes];
+
+        for (int word = 0; word < words.Length; word++)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(word * WordBytes), words[word]);
+        }
+
+        lock (gate)
+        {
+            Requests++;
+            usb.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
+        }
+    }
+
+    /// <summary>
+    /// Reads a 16 bit register with a request for its two bytes alone.
+    /// </summary>
+    public ushort ReadSixteen(uint address)
+    {
+        Reachable(address, 1);
+        Span<byte> bytes = stackalloc byte[2];
+        int arrived;
+
+        lock (gate)
+        {
+            Requests++;
+            arrived = usb.ControlIn(SetupFor(ReadRequestType, address), bytes, Patience);
+        }
+
+        return arrived is 2
+            ? BinaryPrimitives.ReadUInt16BigEndian(bytes)
+            : throw DvbFailure.Refused(
+                $"{usb.Path}: the bridge answered {arrived} of the 2 bytes asked for at 0x{address:X}."
+            );
+    }
+
+    /// <summary>
+    /// Writes a 16 bit register with a request for its two bytes alone.
+    /// </summary>
+    public void WriteSixteen(uint address, ushort value)
+    {
+        Reachable(address, 1);
+        Span<byte> bytes = stackalloc byte[2];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes, value);
+
+        lock (gate)
+        {
+            Requests++;
+            usb.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
         }
     }
 

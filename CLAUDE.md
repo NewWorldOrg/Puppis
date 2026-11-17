@@ -26,6 +26,8 @@ This file is for changing it, and does not repeat what is there.
 - .NET 11, xUnit. The driver is published by native AOT into one binary.
 - The driver reaches the tuner through the Linux DVB API with P/Invoke, a USB tuner
   through usbdevfs, and the card reader through `libpcsclite`, loaded at run time.
+  A USB tuner with a card slot of its own has its card read through the tuner's
+  bridge instead.
   It answers the app over HTTP/1.1 on a Unix domain socket. It binds no TCP port for
   the app; the one TCP port it can open is card lending's, and only when the
   configuration asks.

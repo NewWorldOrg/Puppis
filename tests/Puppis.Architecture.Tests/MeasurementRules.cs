@@ -23,7 +23,9 @@ public static partial class MeasurementRules
         "Puppis.Driver/Transport/ContinuityCounterTracker.cs",
         "Puppis.Driver/Transport/TsPacketReader.cs",
         "Puppis.Driver/Tuning/FakeTunerDevice.cs",
-        "Puppis.Driver/Tuning/Usb/CechZd1/CaptureUnpacker.cs",
+        "Puppis.Driver/Tuning/Usb/Bridge/CaptureUnpacker.cs",
+        "Puppis.Driver/Tuning/Usb/PixDt295/Dt295Frontend.cs",
+        "Puppis.Driver/Tuning/Usb/PixDt295/Dt295Initialisation.cs",
     ];
 
     public static IReadOnlyList<Regex> Marks =>

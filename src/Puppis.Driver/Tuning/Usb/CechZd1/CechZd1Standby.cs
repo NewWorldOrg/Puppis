@@ -1,4 +1,5 @@
 using Puppis.Driver.Tuning.Dvb;
+using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 

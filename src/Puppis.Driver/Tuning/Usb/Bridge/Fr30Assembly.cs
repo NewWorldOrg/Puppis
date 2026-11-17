@@ -1,4 +1,4 @@
-namespace Puppis.Driver.Tuning.Usb.CechZd1;
+namespace Puppis.Driver.Tuning.Usb.Bridge;
 
 public enum Fr30Condition
 {
@@ -15,6 +15,8 @@ public enum Fr30Condition
     Negative = 0x6,
 
     LowerOrSame = 0xE,
+
+    Higher = 0xF,
 }
 
 /// <summary>
@@ -65,6 +67,20 @@ public sealed class Fr30Assembly
 
     public Fr30Assembly StoreWord(int value, int at) => Pair(0x1400, at, value);
 
+    /// <summary>
+    /// Loads the word at R13 plus <paramref name="from"/>.
+    /// </summary>
+    public Fr30Assembly LoadWordIndexed(int from, int into) => Pair(0x0000, from, into);
+
+    public Fr30Assembly LoadHalfIndexed(int from, int into) => Pair(0x0100, from, into);
+
+    public Fr30Assembly LoadByteIndexed(int from, int into) => Pair(0x0200, from, into);
+
+    /// <summary>
+    /// Stores the word at R13 plus <paramref name="at"/>.
+    /// </summary>
+    public Fr30Assembly StoreWordIndexed(int value, int at) => Pair(0x1000, at, value);
+
     public Fr30Assembly StoreHalf(int value, int at) => Pair(0x1500, at, value);
 
     public Fr30Assembly StoreByte(int value, int at) => Pair(0x1600, at, value);
@@ -97,6 +113,15 @@ public sealed class Fr30Assembly
             >= 16 and < 32 => Halves((ushort)(0xB500 + ((count - 16) * 0x10) + Register(register))),
             _ => throw new ArgumentOutOfRangeException(nameof(count), count, "A shift moves 0 to 31 places."),
         };
+
+    /// <summary>
+    /// The word of an LDI:20 that loads <paramref name="value"/> into <paramref name="register"/>, as it is written over
+    /// an instruction of the bridge's own to divert it.
+    /// </summary>
+    public static uint LoadTwentyWord(uint value, int register) =>
+        value > 0xFFFFF
+            ? throw new ArgumentOutOfRangeException(nameof(value), value, "LDI:20 carries 20 bits.")
+            : ((0x9B00 + (((value >> 16) & 0xF) * 0x10) + (uint)Register(register)) << 16) | (value & 0xFFFF);
 
     public Fr30Assembly Jump(int register) => Halves((ushort)(0x9700 + Register(register)));
 
@@ -278,6 +303,8 @@ public sealed class Fr30Assembly
             Fr30Condition.NotEqual => Fr30Condition.Equal,
             Fr30Condition.Carry => Fr30Condition.NoCarry,
             Fr30Condition.NoCarry => Fr30Condition.Carry,
+            Fr30Condition.LowerOrSame => Fr30Condition.Higher,
+            Fr30Condition.Higher => Fr30Condition.LowerOrSame,
             _ => throw new InvalidOperationException(
                 $"A branch on {condition} is out of reach, and it has no inverse to step over a far jump with."
             ),
