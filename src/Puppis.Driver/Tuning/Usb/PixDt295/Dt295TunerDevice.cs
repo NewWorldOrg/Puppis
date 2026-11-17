@@ -26,6 +26,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
     private readonly TimeSpan bytePatience;
     private readonly string channel;
     private readonly Action<Dt295Bridge>? keep;
+    private readonly ILogger? logger;
     private readonly Lock gate = new();
     private bool closed;
     private bool faulted;
@@ -36,9 +37,11 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         DevicePacing pacing,
         TimeSpan bytePatience,
         string channel,
-        Action<Dt295Bridge>? keep
+        Action<Dt295Bridge>? keep,
+        ILogger? logger
     )
     {
+        this.logger = logger;
         this.bridge = bridge;
         this.stream = stream;
         this.pacing = pacing;
@@ -92,37 +95,55 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         {
             Tune(bridge, channel);
             Dt295Stream stream = bridge.StartStream();
-            var device = new Dt295TunerDevice(bridge, stream, pacing, bytePatience, Describe(channel), keep);
+            var device = new Dt295TunerDevice(bridge, stream, pacing, bytePatience, Describe(channel), keep, logger);
             device.Report(logger, Stopwatch.GetElapsedTime(started));
 
             return device;
         }
         catch (DvbDeviceException failed) when (failed.Failure is TuningFailure.NoLock)
         {
-            LetGo(bridge, keep, faulted: false);
+            LetGo(bridge, keep, faulted: false, logger);
 
             throw;
         }
         catch
         {
-            LetGo(bridge, keep, faulted: true);
+            LetGo(bridge, keep, faulted: true, logger);
 
             throw;
         }
     }
 
-    private static void LetGo(Dt295Bridge bridge, Action<Dt295Bridge>? keep, bool faulted)
+    /// <summary>
+    /// Hands the bridge on at rest or closes it, whatever goes wrong on the way: a bridge is never left neither kept
+    /// nor closed.
+    /// </summary>
+    private static void LetGo(Dt295Bridge bridge, Action<Dt295Bridge>? keep, bool faulted, ILogger? logger)
     {
-        bool stopped = bridge.StopStream();
-
-        if (!faulted && stopped && keep is not null && bridge.Rest())
+        try
         {
-            keep(bridge);
+            bool stopped = bridge.StopStream();
 
-            return;
+            if (!faulted && stopped && keep is not null && bridge.Rest())
+            {
+                keep(bridge);
+
+                return;
+            }
+        }
+        catch (Exception failed) when (failed is not OutOfMemoryException)
+        {
+            logger?.LogWarning("{Path}: the tuner could not be put to rest, so it is closed: {Why}", bridge.Path, failed.GetType().Name);
         }
 
-        bridge.Close();
+        try
+        {
+            bridge.Close();
+        }
+        catch (Exception failed) when (failed is not OutOfMemoryException)
+        {
+            logger?.LogWarning("{Path}: closing the tuner failed: {Why}", bridge.Path, failed.GetType().Name);
+        }
     }
 
     private static void Tune(Dt295Bridge bridge, DvbChannel channel)
@@ -217,7 +238,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             closed = true;
         }
 
-        LetGo(bridge, keep, Volatile.Read(ref faulted) || stream.Faulted);
+        LetGo(bridge, keep, Volatile.Read(ref faulted) || stream.Faulted, logger);
     }
 
     private static string Describe(DvbChannel channel) =>

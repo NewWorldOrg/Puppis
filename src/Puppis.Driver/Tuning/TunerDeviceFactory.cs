@@ -289,23 +289,23 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     {
         string deviceId = device.Id ?? path;
 
-        if (!keeper.Holds(deviceId))
+        lock (opening)
         {
-            lock (opening)
+            if (!keeper.Holds(deviceId))
             {
                 keeper.Keep(deviceId, OpenAfresh(deviceId, path));
+
+                return;
             }
 
-            return;
+            Dt295Bridge kept =
+                keeper.Take(deviceId, path)
+                ?? throw new DvbDeviceException(
+                    $"devices['{deviceId}']: the tuner kept open is no longer as it was left, so it has been closed.",
+                    TuningFailure.DeviceUnusable
+                );
+            keeper.Keep(deviceId, kept);
         }
-
-        Dt295Bridge kept =
-            keeper.Take(deviceId, path)
-            ?? throw new DvbDeviceException(
-                $"devices['{deviceId}']: the tuner kept open is no longer as it was left, so it has been closed.",
-                TuningFailure.DeviceUnusable
-            );
-        keeper.Keep(deviceId, kept);
     }
 
     /// <summary>
@@ -343,9 +343,12 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
         try
         {
+            int session = bridge.Slot.BeginSession();
+            ISmartCardService Cards() => bridge.Slot.Service(session);
+
             slot = descramblers is SlotCards slots
-                ? slots.Attach(deviceId, bridge)
-                : Descramblers.Over(bridge.CardService, logger, time);
+                ? slots.Attach(deviceId, bridge, Cards)
+                : Descramblers.Over(Cards, logger, time);
         }
         catch
         {
@@ -357,12 +360,14 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         return ThroughTheCard(Start, hold, slot);
     }
 
+    /// <summary>
+    /// Opens a PIX-DT295 from power on. It may be kept again afterwards unless it is let go of while it opens.
+    /// </summary>
     private Dt295Bridge OpenAfresh(string deviceId, string path)
     {
-        Dt295Bridge bridge = Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler);
         keeper.Admit(deviceId);
 
-        return bridge;
+        return Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler);
     }
 
     private static void RequireTheDeclaredKind(DeviceSettings device, DvbChannel channel)

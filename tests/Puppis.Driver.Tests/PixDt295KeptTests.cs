@@ -431,3 +431,158 @@ public sealed class Dt295KeptReviewTests
         factory.Dispose();
     }
 }
+
+public sealed class Dt295KeptRaceTests
+{
+    private const string Path = "/dev/bus/usb/001/005";
+
+    private static readonly DeviceSettings Tuner = new("usb1-2", DeviceKind.Terrestrial, Path);
+
+    private static DriverConfiguration Configuration() =>
+        new(
+            OutputRoots: [new OutputRootSettings("primary", "/srv/recordings")],
+            Tuner: new TunerSettings(TunerBackend.Usb),
+            Devices: [Tuner]
+        );
+
+    private static (TunerDeviceFactory Factory, FakeDt295 Fake, SlotCards Slots) Driver()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        fake.Broadcasting = true;
+        (DevicePacing pacing, _) = PixDt295Support.Pacing(fake);
+        var slots = new SlotCards(null);
+
+        return (TunerDeviceFactory.Using(Configuration(), new FakeDt295Host(fake), pacing, slots, fake.HandlerHash()), fake, slots);
+    }
+
+    private static ITunerDevice Session(TunerDeviceFactory factory) =>
+        factory.Create(Tuner, new TuningRequest(TunerKind.Terrestrial, 22), null, HeadHold.EveryProgramme);
+
+    private static void AssertGivenBack(FakeDt295 fake)
+    {
+        Assert.Equal(CopyProgram.HookAtPowerOn, [fake.Word(CopyProgram.HookAt), fake.Word(CopyProgram.HookAt + 4)]);
+        Assert.Equal(BridgeWindow.AtPowerOn, fake.Word(BridgeWindow.ReadWindow));
+        Assert.Equal(BridgeWindow.AtPowerOn, fake.Word(BridgeWindow.WriteWindow));
+        Assert.Equal(0u, fake.Word(CardUart.Power));
+        Assert.True(fake.Disposed);
+    }
+
+    private static void LetGoAsItOpens(FakeDt295 fake, TunerDeviceFactory factory)
+    {
+        bool done = false;
+        fake.BeforeWrite = reached =>
+        {
+            if (reached == Dt295Startup.GpioDirection && !done)
+            {
+                done = true;
+                factory.LetGo(Tuner);
+            }
+        };
+    }
+
+    [Fact]
+    public void ATunerLetGoOfWhileItOpensForASessionIsClosedWhenTheSessionEnds()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, _) = Driver();
+        LetGoAsItOpens(fake, factory);
+
+        Session(factory).Dispose();
+
+        AssertGivenBack(fake);
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void ATunerLetGoOfWhileTheRecheckOpensItIsClosedRatherThanKept()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, _) = Driver();
+        LetGoAsItOpens(fake, factory);
+
+        factory.Check(Tuner);
+
+        AssertGivenBack(fake);
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void ACardRequestLeftOverFromASessionThatEndedNeverReachesTheCard()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        fake.Broadcasting = true;
+        (DevicePacing pacing, _) = PixDt295Support.Pacing(fake);
+        Dt295Bridge bridge = Dt295Bridge.Open(new FakeDt295Host(fake), Path, pacing, null, fake.HandlerHash());
+        Dt295Bridge? kept = null;
+        int first = bridge.Slot.BeginSession();
+        ISmartCardService late = bridge.Slot.Service(first);
+        ConditionalAccessCard inFlight = ConditionalAccessCard.Open(bridge.Slot.Service(first));
+        Dt295TunerDevice device = Dt295TunerDevice.Start(bridge, new TerrestrialChannel(22), pacing, TimeSpan.FromSeconds(5), null, rested => kept = rested);
+
+        device.Dispose();
+        int powerOns = fake.WordsWrittenTo(CardUart.Power).Count(power => power is 1);
+
+        Assert.Same(bridge, kept);
+        Assert.Throws<DescramblingException>(() => ConditionalAccessCard.Open(late));
+        Assert.Throws<DescramblingException>(() => inFlight.Answer([0x01, 0x02, 0x03]));
+        Assert.Equal(0u, fake.Word(CardUart.Power));
+        Assert.Equal(powerOns, fake.WordsWrittenTo(CardUart.Power).Count(power => power is 1));
+
+        int second = bridge.Slot.BeginSession();
+        using (ConditionalAccessCard card = ConditionalAccessCard.Open(bridge.Slot.Service(second)))
+        {
+            Assert.True(card.Answer([0x01, 0x02, 0x03]).Granted);
+        }
+
+        Assert.Equal(powerOns + 1, fake.WordsWrittenTo(CardUart.Power).Count(power => power is 1));
+        bridge.Close();
+    }
+
+    [Fact]
+    public async Task HowTheCardStandsIsAnsweredWhileTheTunerIsBusyStartingItsStream()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, SlotCards slots) = Driver();
+        using var holding = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        fake.BeforeWrite = reached =>
+        {
+            if (reached == 0x01901044)
+            {
+                holding.Set();
+                release.Wait(TimeSpan.FromSeconds(30));
+            }
+        };
+        Task<ITunerDevice> starting = Task.Run(() => Session(factory));
+        Assert.True(holding.Wait(TimeSpan.FromSeconds(30)));
+
+        Task<CardReaderDto> asked = Task.Run(slots.Inspect);
+        Task first = await Task.WhenAny(asked, Task.Delay(TimeSpan.FromSeconds(5)));
+        release.Set();
+
+        Assert.Same(asked, first);
+        fake.BeforeWrite = null;
+        (await starting).Dispose();
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void ARestThatThrowsSomethingUnexpectedClosesTheTuner()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, _) = Driver();
+        ITunerDevice device = Session(factory);
+        bool thrown = false;
+        fake.BeforeWrite = reached =>
+        {
+            if (reached == BridgeI2c.Data && !thrown)
+            {
+                thrown = true;
+
+                throw new ArgumentException("synthetic");
+            }
+        };
+
+        device.Dispose();
+
+        fake.BeforeWrite = null;
+        AssertGivenBack(fake);
+        factory.Dispose();
+    }
+}

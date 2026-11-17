@@ -22,6 +22,7 @@ public sealed class Dt295Bridge
     private readonly Lock gate = new();
     private bool started;
     private bool closed;
+    private volatile bool streaming;
     private bool capturing;
     private EndpointState? endpoint;
     private IUsbBulkReader? reader;
@@ -48,16 +49,7 @@ public sealed class Dt295Bridge
     /// <summary>
     /// Whether a session's stream is running on the bridge.
     /// </summary>
-    public bool InSession
-    {
-        get
-        {
-            lock (gate)
-            {
-                return !closed && stream is not null;
-            }
-        }
-    }
+    public bool InSession => streaming;
 
     public bool IsOpen
     {
@@ -148,6 +140,7 @@ public sealed class Dt295Bridge
             capture.Start();
             stream = new Dt295Stream(usb, new BridgeMemory(usb), capture.Writer, reader, pacing);
             stream.Start();
+            streaming = true;
 
             return stream;
         }
@@ -159,6 +152,8 @@ public sealed class Dt295Bridge
     /// </summary>
     public bool StopStream()
     {
+        streaming = false;
+
         lock (gate)
         {
             bool stopped = Quietly("stopping the copying", () => stream?.Dispose());
@@ -230,7 +225,7 @@ public sealed class Dt295Bridge
             Quietly("putting the window back", window.PutBack);
         }
 
-        usb.Dispose();
+        Quietly("closing the device", usb.Dispose);
     }
 
     private void Start(string knownHandler)
@@ -254,7 +249,7 @@ public sealed class Dt295Bridge
 
             return true;
         }
-        catch (Exception failed) when (failed is DvbDeviceException or InvalidOperationException)
+        catch (Exception failed) when (failed is not OutOfMemoryException)
         {
             logger?.LogWarning("{Path}: {Step} failed: {Why}", usb.Path, step, failed.GetType().Name);
 

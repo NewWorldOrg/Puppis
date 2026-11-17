@@ -18,6 +18,7 @@ public sealed class Dt295CardSlot(CardUart uart)
     private readonly Lock gate = new();
     private bool closed;
     private T1Protocol? speaking;
+    private int session;
 
     public bool Powered { get; private set; }
 
@@ -32,7 +33,37 @@ public sealed class Dt295CardSlot(CardUart uart)
         }
     }
 
-    public ISmartCardService Service() => new SlotService(this);
+    /// <summary>
+    /// The slot for the session going on now, refusing everything once that session is over.
+    /// </summary>
+    public ISmartCardService Service()
+    {
+        lock (gate)
+        {
+            return Service(session);
+        }
+    }
+
+    /// <summary>
+    /// The slot for session <paramref name="ofSession"/>, refusing everything once that session is over.
+    /// </summary>
+    public ISmartCardService Service(int ofSession) => new SlotService(this, ofSession);
+
+    /// <summary>
+    /// Starts a session on the slot, whose first connection powers the card on and reads its answer to reset afresh,
+    /// since a card may have been swapped without the slot saying so. Answers the session's number.
+    /// </summary>
+    public int BeginSession()
+    {
+        lock (gate)
+        {
+            session++;
+            speaking = null;
+            Powered = false;
+
+            return session;
+        }
+    }
 
     /// <summary>
     /// Whether a card is in the slot now, asked of the bridge.
@@ -46,12 +77,16 @@ public sealed class Dt295CardSlot(CardUart uart)
     }
 
     /// <summary>
-    /// Switches the card off between sessions, when it is on.
+    /// Ends the session going on, so that nothing it still has in hand reaches the card, and switches the card off,
+    /// when it is on.
     /// </summary>
     public void Rest()
     {
         lock (gate)
         {
+            session++;
+            speaking = null;
+
             if (closed || !Powered)
             {
                 return;
@@ -85,11 +120,11 @@ public sealed class Dt295CardSlot(CardUart uart)
         }
     }
 
-    private T1Protocol Connect()
+    private T1Protocol Connect(int ofSession)
     {
         lock (gate)
         {
-            Usable();
+            Usable(ofSession);
 
             if (Powered && speaking is not null)
             {
@@ -122,11 +157,11 @@ public sealed class Dt295CardSlot(CardUart uart)
         }
     }
 
-    private byte[] Transmit(T1Protocol protocol, ReadOnlySpan<byte> command)
+    private byte[] Transmit(int ofSession, T1Protocol protocol, ReadOnlySpan<byte> command)
     {
         lock (gate)
         {
-            Usable();
+            Usable(ofSession);
 
             try
             {
@@ -142,20 +177,28 @@ public sealed class Dt295CardSlot(CardUart uart)
         }
     }
 
-    private void SwitchOff()
+    private void SwitchOff(int ofSession)
     {
         lock (gate)
         {
-            Usable();
+            Usable(ofSession);
             Powered = false;
             speaking = null;
             uart.SwitchOff();
         }
     }
 
-    private void Usable()
+    private void Usable(int ofSession)
     {
         ObjectDisposedException.ThrowIf(closed, this);
+
+        if (ofSession != session)
+        {
+            throw new SmartCardException(
+                $"{uart.Path}: the session that asked for the card is over, so the card is not spoken to on its behalf.",
+                SmartCardCodes.CommunicationLost
+            );
+        }
 
         if (!uart.CardIsIn())
         {
@@ -173,7 +216,7 @@ public sealed class Dt295CardSlot(CardUart uart)
         );
     }
 
-    private sealed class SlotService(Dt295CardSlot slot) : ISmartCardService
+    private sealed class SlotService(Dt295CardSlot slot, int ofSession) : ISmartCardService
     {
         public IReadOnlyList<string> Readers() => [ReaderName];
 
@@ -181,22 +224,22 @@ public sealed class Dt295CardSlot(CardUart uart)
 
         public ISmartCardConnection Connect(string reader) =>
             reader is ReaderName
-                ? new SlotConnection(slot, slot.Connect())
+                ? new SlotConnection(slot, ofSession, slot.Connect(ofSession))
                 : throw new SmartCardException($"There is no reader named '{reader}' on this tuner.", SmartCardCodes.NoReadersAvailable);
 
         public void Dispose() { }
     }
 
-    private sealed class SlotConnection(Dt295CardSlot slot, T1Protocol protocol) : ISmartCardConnection
+    private sealed class SlotConnection(Dt295CardSlot slot, int ofSession, T1Protocol protocol) : ISmartCardConnection
     {
         private T1Protocol protocol = protocol;
 
-        public byte[] Transmit(ReadOnlySpan<byte> command) => slot.Transmit(protocol, command);
+        public byte[] Transmit(ReadOnlySpan<byte> command) => slot.Transmit(ofSession, protocol, command);
 
         public void Reconnect()
         {
-            slot.SwitchOff();
-            protocol = slot.Connect();
+            slot.SwitchOff(ofSession);
+            protocol = slot.Connect(ofSession);
         }
 
         public void Dispose() { }

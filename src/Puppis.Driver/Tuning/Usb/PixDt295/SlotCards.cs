@@ -99,9 +99,9 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
     /// The cards of <paramref name="tuner"/>'s slot, for the session about to start on it; the slot is looked at once
     /// on the way, while the tuner is open for the session anyway.
     /// </summary>
-    public IDescramblerFactory Attach(string deviceId, Dt295Bridge tuner)
+    public IDescramblerFactory Attach(string deviceId, Dt295Bridge tuner, Func<ISmartCardService> session)
     {
-        Descramblers cards = Descramblers.Over(tuner.CardService, logger, clock);
+        Descramblers cards = Descramblers.Over(session, logger, clock);
         bool card = tuner.Slot.CardIsIn();
 
         lock (gate)
