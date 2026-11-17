@@ -584,14 +584,6 @@ public sealed class UsbBackendConfigurationTests
     }
 
     [Fact]
-    public void ASatelliteDeviceOnTheUsbBackendIsRefused()
-    {
-        DriverConfigurationResult result = DriverConfigurationReader.Read(Configuration("satellite"));
-
-        Assert.Contains(result.Problems, problem => problem.StartsWith("devices[0].kind:", StringComparison.Ordinal));
-    }
-
-    [Fact]
     public void TheUsbBackendHasItsOwnDetector()
     {
         DriverConfiguration configuration = DriverConfigurationReader.Read(Configuration("terrestrial")).Configuration!;

@@ -33,6 +33,8 @@ public static class SmartCardCodes
 
     public const uint RemovedCard = 0x80100069;
 
+    public const uint CommunicationLost = 0x8010002F;
+
     public static string Describe(uint code) =>
         code switch
         {
@@ -44,6 +46,7 @@ public static class SmartCardCodes
             NoReadersAvailable => "no reader is attached",
             ResetCard => "the card was reset",
             RemovedCard => "the card was removed",
+            CommunicationLost => "what the card sent was lost on the way",
             _ => "an error the service did not name",
         } + $" (0x{code:X8})";
 }

@@ -580,10 +580,10 @@ public static class DriverConfigurationReader
             }
         }
 
-        if (backend is TunerBackend.Usb && device.Kind is DeviceKind.Satellite)
+        if (backend is TunerBackend.Usb && device.LnbPower)
         {
             problems.Add(
-                $"devices[{index}].kind: the usb backend drives a terrestrial tuner only, and this device is declared satellite."
+                $"devices[{index}].lnbPower: no usb tuner this driver knows powers a low-noise block."
             );
         }
 

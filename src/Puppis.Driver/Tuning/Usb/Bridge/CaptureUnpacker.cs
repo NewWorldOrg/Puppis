@@ -23,6 +23,15 @@ public sealed class CaptureUnpacker
     /// </summary>
     public long Realignments { get; private set; }
 
+    /// <summary>
+    /// Lets go of what is held and looks for the head of a unit again, for a stream the sender says it broke.
+    /// </summary>
+    public void Forget()
+    {
+        held = 0;
+        aligned = false;
+    }
+
     public int Unpack(ReadOnlySpan<byte> arrived, List<byte> packets)
     {
         Hold(arrived);

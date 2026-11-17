@@ -107,6 +107,64 @@ public sealed class BridgeMemory(IUsbConnection usb)
         }
     }
 
+    /// <summary>
+    /// Writes every word in one request, which a bridge whose addresses were never widened takes for as many as two.
+    /// </summary>
+    public void WriteInOneRequest(uint address, ReadOnlySpan<uint> words)
+    {
+        Reachable(address, words.Length);
+        byte[] bytes = new byte[words.Length * WordBytes];
+
+        for (int word = 0; word < words.Length; word++)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(word * WordBytes), words[word]);
+        }
+
+        lock (gate)
+        {
+            Requests++;
+            usb.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
+        }
+    }
+
+    /// <summary>
+    /// Reads a 16 bit register with a request for its two bytes alone.
+    /// </summary>
+    public ushort ReadSixteen(uint address)
+    {
+        Reachable(address, 1);
+        Span<byte> bytes = stackalloc byte[2];
+        int arrived;
+
+        lock (gate)
+        {
+            Requests++;
+            arrived = usb.ControlIn(SetupFor(ReadRequestType, address), bytes, Patience);
+        }
+
+        return arrived is 2
+            ? BinaryPrimitives.ReadUInt16BigEndian(bytes)
+            : throw DvbFailure.Refused(
+                $"{usb.Path}: the bridge answered {arrived} of the 2 bytes asked for at 0x{address:X}."
+            );
+    }
+
+    /// <summary>
+    /// Writes a 16 bit register with a request for its two bytes alone.
+    /// </summary>
+    public void WriteSixteen(uint address, ushort value)
+    {
+        Reachable(address, 1);
+        Span<byte> bytes = stackalloc byte[2];
+        BinaryPrimitives.WriteUInt16BigEndian(bytes, value);
+
+        lock (gate)
+        {
+            Requests++;
+            usb.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
+        }
+    }
+
     public ushort ReadHalf(uint address) => (ushort)(Read(address) >> 16);
 
     /// <summary>

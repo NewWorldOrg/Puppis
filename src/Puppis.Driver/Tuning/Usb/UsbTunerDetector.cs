@@ -1,6 +1,5 @@
 using Puppis.Contracts;
 using Puppis.Driver.Configuration;
-using Puppis.Driver.Tuning.Usb.CechZd1;
 
 namespace Puppis.Driver.Tuning.Usb;
 
@@ -31,21 +30,22 @@ public sealed class UsbTunerDetector : ITunerDetector
     public static string? NodeFor(IUsbHost host, string? deviceId, string? recordedPath) =>
         host.List()
             .FirstOrDefault(node =>
-                node.Model == CechZd1TunerDevice.Model && string.Equals(IdOf(node), deviceId, StringComparison.Ordinal))
+                UsbTunerModels.Knows(node.Model) && string.Equals(IdOf(node), deviceId, StringComparison.Ordinal))
             ?.Path
         ?? recordedPath;
 
     public IReadOnlyList<TunerDetection> Detect() =>
     [
         .. host.Value.List()
-            .Where(node => node.Model == CechZd1TunerDevice.Model)
-            .Select(node => new TunerDetection(
-                IdOf(node),
-                [DeviceKind.Terrestrial],
+            .Select(node => (Node: node, Known: UsbTunerModels.Find(node.Model)))
+            .Where(found => found.Known is not null)
+            .Select(found => new TunerDetection(
+                IdOf(found.Node),
+                [.. found.Known!.Receives],
                 DeviceDetection.Detected,
                 null,
-                node.Path,
-                new DeviceHardware(CechZd1TunerDevice.ProductName, null, TunerBus.Usb, node.Port)
+                found.Node.Path,
+                new DeviceHardware(found.Known.ProductName, null, TunerBus.Usb, found.Node.Port)
             )),
     ];
 }

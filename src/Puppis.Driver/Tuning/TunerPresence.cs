@@ -3,7 +3,6 @@ using System.Globalization;
 using Puppis.Contracts;
 using Puppis.Driver.Configuration;
 using Puppis.Driver.Tuning.Usb;
-using Puppis.Driver.Tuning.Usb.CechZd1;
 
 namespace Puppis.Driver.Tuning;
 
@@ -44,8 +43,9 @@ public sealed class UsbPresence(string deviceTree) : ITunerPresence
         string directory = Path.Combine(deviceTree, port);
 
         return Directory.Exists(directory)
-            && Hex(Path.Combine(directory, "idVendor")) == CechZd1TunerDevice.Model.VendorId
-            && Hex(Path.Combine(directory, "idProduct")) == CechZd1TunerDevice.Model.ProductId;
+            && Hex(Path.Combine(directory, "idVendor")) is { } vendor
+            && Hex(Path.Combine(directory, "idProduct")) is { } product
+            && UsbTunerModels.Knows(new UsbModel(vendor, product));
     }
 
     private static string? PortOf(DeviceSettings device, TunerHardwareDto hardware)

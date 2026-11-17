@@ -36,6 +36,7 @@ public sealed class FileSystemRuleTests
         "/Puppis.Driver/Tuning/Usb/LinuxUsbBulkReader.cs .CopyTo(",
         "/Puppis.Driver/Tuning/Usb/LinuxUsbConnection.cs LibraryImport",
         "/Puppis.Driver/Tuning/Usb/LinuxUsbHost.cs LibraryImport",
+        "/Puppis.Driver/Tuning/Usb/PixDt295/Dt295Stream.cs .CopyTo(",
     ];
 
     [Fact]
