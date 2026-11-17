@@ -3,24 +3,34 @@ using Microsoft.Extensions.Logging;
 using Puppis.Contracts;
 using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
-using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
 /// <summary>
-/// The cards in the slots of the PIX-DT295 tuners a driver drives, for a driver that has no other card. A slot is
-/// reached through its tuner, so a card is asked for only as a tuner opens; the driver still says that it unscrambles,
-/// and its card reader is the slot of the tuner opened last, for as long as that tuner stays open, idle or not.
+/// The cards in the slots of the PIX-DT295 tuners a usb driver drives, for a driver that has no other card. What it
+/// says is worked out from what is known now each time it is asked: which of those tuners are plugged in, as the
+/// driver's presence checks last found, and whether each slot held a card when the slot was last spoken to. Answering
+/// asks no device anything.
 /// </summary>
 public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDescramblerFactory, ICardReaderReport
 {
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
     private readonly Lock gate = new();
-    private Descramblers? latest;
-    private Dt295Bridge? latestBridge;
-    private CardIdentity? lastIdentity;
+    private readonly Dictionary<string, Slot> slots = new(StringComparer.Ordinal);
 
-    public bool Unscrambles => true;
+    /// <summary>
+    /// Whether a PIX-DT295 is plugged in now with a card in its slot.
+    /// </summary>
+    public bool Unscrambles
+    {
+        get
+        {
+            lock (gate)
+            {
+                return slots.Values.Any(slot => slot.HoldsACard);
+            }
+        }
+    }
 
     public CardIdentity? CardInHand
     {
@@ -28,68 +38,20 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
         {
             lock (gate)
             {
-                return latest?.CardInHand ?? lastIdentity;
+                return slots.Values
+                    .Where(slot => slot.Present)
+                    .OrderByDescending(slot => slot.AnsweredAt)
+                    .Select(slot => slot.Cards?.CardInHand)
+                    .FirstOrDefault(identity => identity is not null);
             }
         }
     }
 
     /// <summary>
-    /// Whether any device <paramref name="configuration"/> declares on the usb backend is a PIX-DT295 now.
+    /// The slot cards of a usb driver that borrows no card, or null for any other driver.
     /// </summary>
-    public static bool AreConfigured(DriverConfiguration configuration, IUsbHost host)
-    {
-        if (configuration.Tuner?.Backend is not TunerBackend.Usb)
-        {
-            return false;
-        }
-
-        return configuration.Devices?.Any(device => IsDt295(host, device)) is true;
-    }
-
-    /// <summary>
-    /// The slot cards of a usb driver that borrows no card and has a PIX-DT295 among its devices, or null.
-    /// </summary>
-    /// <param name="host">The USB devices to look through, which are this machine's unless a test gives others.</param>
-    public static SlotCards? For(
-        DriverConfiguration configuration,
-        bool borrows,
-        ILogger? logger,
-        TimeProvider? clock,
-        Func<IUsbHost>? host = null
-    )
-    {
-        if (borrows || configuration.Tuner?.Backend is not TunerBackend.Usb)
-        {
-            return null;
-        }
-
-        try
-        {
-            return AreConfigured(configuration, (host ?? (() => new LinuxUsbHost()))()) ? new SlotCards(logger, clock) : null;
-        }
-        catch (Exception failed) when (failed is DvbDeviceException or IOException or UnauthorizedAccessException)
-        {
-            logger?.LogWarning(
-                "The USB devices could not be looked through for a tuner with a card slot of its own, so none is assumed: {Why}",
-                failed.Message
-            );
-
-            return null;
-        }
-    }
-
-    private static bool IsDt295(IUsbHost host, DeviceSettings device)
-    {
-        try
-        {
-            return UsbTunerDetector.NodeFor(host, device.Id, device.DevicePath) is { } path
-                && host.ModelAt(path) == Dt295TunerDevice.Model;
-        }
-        catch (DvbDeviceException)
-        {
-            return false;
-        }
-    }
+    public static SlotCards? For(DriverConfiguration configuration, bool borrows, ILogger? logger, TimeProvider? clock) =>
+        borrows || configuration.Tuner?.Backend is not TunerBackend.Usb ? null : new SlotCards(logger, clock);
 
     /// <summary>
     /// Nothing is asked for without a tuner to reach the slot through.
@@ -97,40 +59,175 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
     public IDescrambler? Open(HeadHold hold) => null;
 
     /// <summary>
-    /// The cards of <paramref name="tuner"/>'s slot, which from now on are the ones this driver reports.
+    /// Writes down that the PIX-DT295 declared as <paramref name="deviceId"/> is plugged in, and whether its slot was
+    /// seen to hold a card, when that was looked at.
     /// </summary>
-    public IDescramblerFactory Attach(Dt295Bridge tuner)
+    public void Present(string deviceId, bool? card)
     {
-        Descramblers slot = Descramblers.Over(tuner.CardService, logger, clock);
+        lock (gate)
+        {
+            Slot slot = SlotOf(deviceId);
+            slot.Present = true;
+            slot.Card = card ?? slot.Card;
+        }
+    }
+
+    /// <summary>
+    /// Whether the slot of <paramref name="deviceId"/> has been seen, with or without a card, since it was last plugged in.
+    /// </summary>
+    public bool Knows(string deviceId)
+    {
+        lock (gate)
+        {
+            return slots.TryGetValue(deviceId, out Slot? slot) && slot.Present && slot.Card is not null;
+        }
+    }
+
+    /// <summary>
+    /// Writes down that <paramref name="deviceId"/> is not plugged in, or is not a PIX-DT295, so its slot no longer
+    /// counts.
+    /// </summary>
+    public void Absent(string deviceId)
+    {
+        lock (gate)
+        {
+            slots.Remove(deviceId);
+        }
+    }
+
+    /// <summary>
+    /// The cards of <paramref name="tuner"/>'s slot, for the session about to start on it; the slot is looked at once
+    /// on the way, while the tuner is open for the session anyway.
+    /// </summary>
+    public IDescramblerFactory Attach(string deviceId, Dt295Bridge tuner)
+    {
+        Descramblers cards = Descramblers.Over(tuner.CardService, logger, clock);
+        bool card = tuner.Slot.CardIsIn();
 
         lock (gate)
         {
-            lastIdentity = latest?.CardInHand ?? lastIdentity;
-            latest = slot;
-            latestBridge = tuner;
+            Slot slot = SlotOf(deviceId);
+            slot.Present = true;
+            slot.Card = card;
+            slot.Cards = cards;
+            slot.Tuner = tuner;
+        }
+
+        return new Noted(cards, () => Answered(deviceId));
+    }
+
+    public CardReaderDto Inspect()
+    {
+        DateTimeOffset now = clock.GetUtcNow();
+        Slot[] present;
+
+        lock (gate)
+        {
+            present = [.. slots.Values.Where(slot => slot.Present).Select(slot => slot.Copy())];
+        }
+
+        if (present.Length is 0)
+        {
+            return new CardReaderDto { Use = CardReaderUse.None, State = CardState.NotUsed, CheckedAt = now };
+        }
+
+        CardReaderSlotDto[] readers =
+        [
+            .. present.Select(slot => new CardReaderSlotDto
+            {
+                Name = Dt295CardSlot.ReaderName,
+                State = StateOf(slot),
+                InUse = slot.HoldsACard && slot.Tuner?.IsOpen is true,
+            }),
+        ];
+
+        return new CardReaderDto
+        {
+            Use = CardReaderUse.Local,
+            State = readers.Any(reader => reader.State is CardState.Inserted) ? CardState.Inserted
+                : readers.All(reader => reader.State is CardState.Empty) ? CardState.Empty
+                : CardState.Unspecified,
+            Readers = readers,
+            LastAnsweredAt = present.Max(slot => slot.AnsweredAt),
+            CheckedAt = now,
+        };
+    }
+
+    private static CardState StateOf(Slot slot) =>
+        slot.Card switch
+        {
+            true => CardState.Inserted,
+            false => CardState.Empty,
+            null => CardState.Unspecified,
+        };
+
+    private void Answered(string deviceId)
+    {
+        lock (gate)
+        {
+            if (slots.TryGetValue(deviceId, out Slot? slot))
+            {
+                slot.AnsweredAt = clock.GetUtcNow();
+                slot.Card = true;
+            }
+        }
+    }
+
+    private Slot SlotOf(string deviceId)
+    {
+        if (!slots.TryGetValue(deviceId, out Slot? slot))
+        {
+            slot = new Slot();
+            slots[deviceId] = slot;
         }
 
         return slot;
     }
 
-    public CardReaderDto Inspect()
+    private sealed class Slot
     {
-        Descramblers? slot;
-        bool open;
+        public bool Present { get; set; }
 
-        lock (gate)
+        public bool? Card { get; set; }
+
+        public Descramblers? Cards { get; set; }
+
+        public Dt295Bridge? Tuner { get; set; }
+
+        public DateTimeOffset? AnsweredAt { get; set; }
+
+        public bool HoldsACard => Present && Card is true;
+
+        public Slot Copy() =>
+            new()
+            {
+                Present = Present,
+                Card = Card,
+                Cards = Cards,
+                Tuner = Tuner,
+                AnsweredAt = AnsweredAt,
+            };
+    }
+
+    /// <summary>
+    /// Passes a slot's cards through, writing down each time one is in hand.
+    /// </summary>
+    private sealed class Noted(IDescramblerFactory cards, Action answered) : IDescramblerFactory
+    {
+        public bool Unscrambles => cards.Unscrambles;
+
+        public CardIdentity? CardInHand => cards.CardInHand;
+
+        public IDescrambler? Open(HeadHold hold)
         {
-            slot = latest;
-            open = latestBridge?.IsOpen is true;
+            IDescrambler? opened = cards.Open(hold);
+
+            if (opened is not null)
+            {
+                answered();
+            }
+
+            return opened;
         }
-
-        if (slot is null)
-        {
-            return new CardReaderDto { Use = CardReaderUse.Local, State = CardState.Unspecified, CheckedAt = clock.GetUtcNow() };
-        }
-
-        CardReaderDto seen = slot.Inspect();
-
-        return open ? seen : seen with { State = CardState.Unspecified, Problem = null, Readers = [] };
     }
 }

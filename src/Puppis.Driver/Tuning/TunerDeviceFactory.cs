@@ -7,6 +7,7 @@ using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
 using Puppis.Driver.Tuning.Dvb;
 using Puppis.Driver.Tuning.Usb;
+using Puppis.Driver.Tuning.Usb.Bridge;
 using Puppis.Driver.Tuning.Usb.CechZd1;
 using Puppis.Driver.Tuning.Usb.PixDt295;
 
@@ -40,6 +41,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 {
     private readonly CechZd1Standby standby = new();
     private readonly Dt295Keeper keeper = new();
+    private readonly Lock opening = new();
     private readonly TunerBackend backend;
     private readonly TimeProvider time;
     private readonly Lazy<IDvbSystemCalls> systemCalls;
@@ -184,6 +186,73 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         }
     }
 
+    /// <summary>
+    /// Takes in what a presence check found for <paramref name="device"/>: a tuner gone is let go of, and a PIX-DT295
+    /// found is written down with its slot, looked at once if nobody has looked since it was plugged in. Nothing here
+    /// throws; a device that cannot be asked counts as not yet looked at.
+    /// </summary>
+    public void Looked(DeviceSettings device, bool present)
+    {
+        if (device.Id is not { } deviceId)
+        {
+            return;
+        }
+
+        SlotCards? slots = descramblers as SlotCards;
+
+        if (!present)
+        {
+            keeper.LetGo(deviceId);
+            slots?.Absent(deviceId);
+
+            return;
+        }
+
+        if (slots is null || backend is not TunerBackend.Usb)
+        {
+            return;
+        }
+
+        try
+        {
+            string path = UsbPathOf(device);
+
+            if (usbHost.Value.ModelAt(path) != Dt295TunerDevice.Model)
+            {
+                slots.Absent(deviceId);
+
+                return;
+            }
+
+            slots.Present(deviceId, keeper.Holds(deviceId) || slots.Knows(deviceId) ? null : PeekAtTheSlot(path));
+        }
+        catch (Exception failed) when (failed is DvbDeviceException or IOException or UnauthorizedAccessException)
+        {
+            logger?.LogWarning("devices['{DeviceId}']: the tuner could not be looked at: {Why}", deviceId, failed.Message);
+        }
+    }
+
+    /// <summary>
+    /// Whether the slot of an idle PIX-DT295 nobody holds open holds a card: one register read, which the bridge
+    /// answers as it powers on, or null when the device would not be opened.
+    /// </summary>
+    private bool? PeekAtTheSlot(string path)
+    {
+        lock (opening)
+        {
+            try
+            {
+                using IUsbConnection usb = usbHost.Value.Open(path, Dt295TunerDevice.Interface);
+
+                return (new BridgeMemory(usb).Read(CardUart.Status) & CardUart.CardInserted) is not 0;
+            }
+            catch (DvbDeviceException)
+            {
+                return null;
+            }
+        }
+    }
+
     private void CheckUsb(DeviceSettings device, string path)
     {
         if (usbHost.Value.ModelAt(path) == Dt295TunerDevice.Model)
@@ -242,8 +311,12 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     {
         RequireTheDeclaredKind(device, channel);
         string deviceId = device.Id ?? path;
-        Dt295Bridge bridge =
-            keeper.Take(deviceId, path) ?? Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler);
+        Dt295Bridge bridge;
+
+        lock (opening)
+        {
+            bridge = keeper.Take(deviceId, path) ?? Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler);
+        }
 
         Dt295TunerDevice Start() =>
             Dt295TunerDevice.Start(
@@ -261,7 +334,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         }
 
         IDescramblerFactory slot = descramblers is SlotCards slots
-            ? slots.Attach(bridge)
+            ? slots.Attach(deviceId, bridge)
             : Descramblers.Over(bridge.CardService, logger, time);
 
         return ThroughTheCard(Start, hold, slot);

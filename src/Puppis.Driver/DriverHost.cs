@@ -216,7 +216,7 @@ public static class DriverHost
                 () => manager.Sessions.Select(session => session.DeviceId),
                 provider.GetRequiredService<TimeProvider>(),
                 provider.GetRequiredService<ILogger<TunerPatrol>>(),
-                provider.GetRequiredService<TunerDeviceFactory>().LetGo
+                provider.GetRequiredService<TunerDeviceFactory>().Looked
             );
         });
         builder.Services.AddHostedService<SocketPermissionGuard>();

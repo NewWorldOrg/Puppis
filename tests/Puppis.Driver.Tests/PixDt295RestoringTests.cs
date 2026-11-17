@@ -193,51 +193,139 @@ public sealed class SlotCardsTests
             Devices: [Tuner]
         );
 
-    [Fact]
-    public void ADriverWithAPixDt295AndNoLoanUnscramblesWithTheSlot()
-    {
-        var host = new FakeDt295Host(FakeDt295.Locking());
-        host.Nodes.Add(new UsbDeviceNode("/dev/bus/usb/001/005", Dt295TunerDevice.Model, "1-2"));
-        var slots = new SlotCards(null);
-
-        Assert.True(SlotCards.AreConfigured(Configuration(), host));
-        Assert.Same(slots, Descramblers.For(Configuration(), loan: null, logger: null, slots: slots));
-        Assert.True(slots.Unscrambles);
-        Assert.Contains(DriverCapabilities.Descrambling, Ipc.DriverGreeting.Unscrambling(slots.Unscrambles));
-    }
-
-    [Fact]
-    public void ADriverWithOnlyTheSonyTunerHasNoSlotCards()
-    {
-        var host = new FakeDt295Host(FakeDt295.Locking());
-        host.Nodes.Add(new UsbDeviceNode("/dev/bus/usb/001/005", Tuning.Usb.CechZd1.CechZd1TunerDevice.Model, "1-2"));
-
-        Assert.False(SlotCards.AreConfigured(Configuration(), host));
-        Assert.Same(NoDescrambling.Instance, Descramblers.For(Configuration(), loan: null, logger: null));
-    }
-
-    [Fact]
-    public void TheSlotIsReportedLikeAnyReaderWhileItsTunerIsOpenIdleOrNotAndItsCardIsRemembered()
+    private static (TunerDeviceFactory Factory, FakeDt295 Fake, SlotCards Slots) Driver()
     {
         FakeDt295 fake = FakeDt295.Locking();
         fake.Broadcasting = true;
         (DevicePacing pacing, _) = PixDt295Support.Pacing(fake);
         var slots = new SlotCards(null);
-        TunerDeviceFactory factory = TunerDeviceFactory.Using(Configuration(), new FakeDt295Host(fake), pacing, slots, fake.HandlerHash());
 
-        CardReaderDto before = CardReaders.Inspect(slots, Configuration(), null, TimeProvider.System);
-        Assert.Equal(CardReaderUse.Local, before.Use);
-        Assert.Equal(CardState.Unspecified, before.State);
+        return (TunerDeviceFactory.Using(Configuration(), new FakeDt295Host(fake), pacing, slots, fake.HandlerHash()), fake, slots);
+    }
+
+    private static CardReaderDto Reader(SlotCards slots) => CardReaders.Inspect(slots, Configuration(), null, TimeProvider.System);
+
+    private static bool Claims(SlotCards slots) =>
+        Ipc.DriverGreeting.Unscrambling(slots.Unscrambles).Contains(DriverCapabilities.Descrambling);
+
+    [Fact]
+    public void AUsbDriverThatBorrowsNoCardReadsThroughTheSlotsWhateverIsPluggedIn()
+    {
+        SlotCards slots = SlotCards.For(Configuration(), borrows: false, null, null)!;
+
+        Assert.Same(slots, Descramblers.For(Configuration(), loan: null, logger: null, slots: slots));
+        Assert.Null(SlotCards.For(Configuration(), borrows: true, null, null));
+        Assert.False(Claims(slots));
+        Assert.Equal(CardState.NotUsed, Reader(slots).State);
+        Assert.Equal(CardReaderUse.None, Reader(slots).Use);
+    }
+
+    [Fact]
+    public void ATunerPluggedInAfterTheDriverStartedBringsItsCardWithIt()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, SlotCards slots) = Driver();
+        Assert.False(Claims(slots));
+
+        factory.Looked(Tuner, present: true);
+
+        Assert.True(Claims(slots));
+        CardReaderDto reader = Reader(slots);
+        Assert.Equal(CardReaderUse.Local, reader.Use);
+        Assert.Equal(CardState.Inserted, reader.State);
+        Assert.Equal(Dt295CardSlot.ReaderName, Assert.Single(reader.Readers).Name);
+        Assert.True(fake.Disposed);
+        Assert.DoesNotContain(fake.WritesSoFar(), write => FakeDt295.AddressOf(write.Setup) == CopyProgram.HookAt);
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void AnEmptySlotDoesNotMakeTheDriverClaimToUnscramble()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, SlotCards slots) = Driver();
+        fake.CardPresent = false;
+
+        factory.Looked(Tuner, present: true);
+
+        Assert.False(Claims(slots));
+        Assert.Equal(CardState.Empty, Reader(slots).State);
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void AnIdleTunerUnpluggedIsLetGoOfAndItsCardNoLongerCounts()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, SlotCards slots) = Driver();
+        factory.Create(Tuner, new TuningRequest(TunerKind.Terrestrial, 22), null, HeadHold.EveryProgramme).Dispose();
+        Assert.True(Claims(slots));
+        Assert.NotNull(slots.CardInHand);
+        fake.FailingRead = _ => true;
+        fake.FailingWrite = _ => true;
+
+        factory.Looked(Tuner, present: false);
+
+        Assert.True(fake.Disposed);
+        Assert.False(Claims(slots));
+        Assert.Equal(CardState.NotUsed, Reader(slots).State);
         Assert.Null(slots.CardInHand);
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void ATunerPluggedInAgainIsStartedAfreshAndCountsAgain()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, SlotCards slots) = Driver();
+        factory.Create(Tuner, new TuningRequest(TunerKind.Terrestrial, 22), null, HeadHold.EveryProgramme).Dispose();
+        factory.Looked(Tuner, present: false);
+
+        factory.Looked(Tuner, present: true);
+        using (ITunerDevice device = factory.Create(Tuner, new TuningRequest(TunerKind.Terrestrial, 22), null, HeadHold.EveryProgramme))
+        {
+            Assert.NotEmpty(device.Read(188 * 10, CancellationToken.None));
+        }
+
+        Assert.True(Claims(slots));
+        Assert.Equal(2, fake.WritesSoFar().Count(write => FakeDt295.AddressOf(write.Setup) == CopyProgram.HookAt && write.Data[0] is 0x9B));
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void ADeviceThatCannotBeLookedAtThrowsNothingAndCountsForNothing()
+    {
+        var logger = new CapturingLogger<TunerDeviceFactory>();
+        var slots = new SlotCards(null);
+        (DevicePacing pacing, _, _) = UsbTestSupport.Pacing();
+        TunerDeviceFactory factory = TunerDeviceFactory.Using(Configuration(), new UnreadableHost(new IOException("bus gone")), pacing, slots, logger: logger);
+
+        factory.Looked(Tuner, present: true);
+
+        Assert.False(Claims(slots));
+        Assert.Contains(logger.Lines, line => line.StartsWith("Warning", StringComparison.Ordinal));
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void AskingHowTheCardStandsAsksNoIdleTunerAnything()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake, SlotCards slots) = Driver();
+        factory.Create(Tuner, new TuningRequest(TunerKind.Terrestrial, 22), null, HeadHold.EveryProgramme).Dispose();
+        long before = fake.Requests;
+
+        Assert.True(Claims(slots));
+        Assert.Equal(CardState.Inserted, Reader(slots).State);
+        Assert.NotNull(slots.CardInHand);
+
+        Assert.Equal(before, fake.Requests);
+        factory.Dispose();
+    }
+
+    [Fact]
+    public void TheSlotIsReportedLikeAnyReaderWhileItsTunerIsInUse()
+    {
+        (TunerDeviceFactory factory, _, SlotCards slots) = Driver();
 
         ITunerDevice device = factory.Create(Tuner, new TuningRequest(TunerKind.Terrestrial, 22), null, HeadHold.EveryProgramme);
-        CardReaderDto open = CardReaders.Inspect(slots, Configuration(), null, TimeProvider.System);
+        CardReaderDto open = Reader(slots);
         device.Dispose();
-        CardReaderDto idle = CardReaders.Inspect(slots, Configuration(), null, TimeProvider.System);
-        factory.Dispose();
-        CardReaderDto closed = CardReaders.Inspect(slots, Configuration(), null, TimeProvider.System);
-
-        Assert.Equal(CardState.Inserted, idle.State);
 
         Assert.Equal(CardState.Inserted, open.State);
         CardReaderSlotDto reader = Assert.Single(open.Readers);
@@ -245,9 +333,16 @@ public sealed class SlotCardsTests
         Assert.True(reader.InUse);
         Assert.NotNull(open.LastAnsweredAt);
         Assert.Equal(SyntheticCardKeys.CaSystemId, slots.CardInHand!.CaSystemId);
-        Assert.Equal(CardState.Unspecified, closed.State);
-        Assert.Equal(open.LastAnsweredAt, closed.LastAnsweredAt);
-        Assert.NotNull(slots.CardInHand);
+        factory.Dispose();
+    }
+
+    private sealed class UnreadableHost(Exception failure) : IUsbHost
+    {
+        public IReadOnlyList<UsbDeviceNode> List() => throw failure;
+
+        public UsbModel ModelAt(string path) => throw failure;
+
+        public IUsbConnection Open(string path, byte interfaceNumber) => throw failure;
     }
 }
 
@@ -352,21 +447,6 @@ public sealed class Dt295SecondReviewTests
     }
 
     [Fact]
-    public void AStartUpThatCannotLookThroughTheUsbDevicesAssumesNoSlotAndSaysSo()
-    {
-        var logger = new CapturingLogger<SlotCards>();
-        var configuration = new DriverConfiguration(
-            OutputRoots: [new OutputRootSettings("primary", "/srv/recordings")],
-            Tuner: new TunerSettings(TunerBackend.Usb),
-            Devices: [new DeviceSettings("usb1-2", DeviceKind.Terrestrial, Path)]
-        );
-
-        Assert.Null(SlotCards.For(configuration, false, logger, null, () => new UnreadableHost(new IOException("bus gone"))));
-        Assert.Null(SlotCards.For(configuration, false, logger, null, () => new UnreadableHost(new UnauthorizedAccessException("no"))));
-        Assert.Equal(2, logger.Lines.Count(line => line.StartsWith("Warning", StringComparison.Ordinal)));
-    }
-
-    [Fact]
     public void TheSonyTunerBesideAPixDt295IsReadBareWithoutAskingTheSlot()
     {
         (FakeChip demodulator, FakeChip tuner) = UsbTestSupport.LockingChips();
@@ -380,7 +460,6 @@ public sealed class Dt295SecondReviewTests
             Tuner: new TunerSettings(TunerBackend.Usb),
             Devices: [sonyDevice, new DeviceSettings("usb1-2", DeviceKind.Terrestrial, Path)]
         );
-        Assert.True(SlotCards.AreConfigured(configuration, sony));
         var logger = new CapturingLogger<TunerDeviceFactory>();
         var slots = new SlotCards(null);
         TunerDeviceFactory factory = TunerDeviceFactory.Using(configuration, sony, pacing, slots, logger: logger);
@@ -389,14 +468,5 @@ public sealed class Dt295SecondReviewTests
 
         Assert.IsNotType<DescramblingTunerDevice>(device);
         Assert.DoesNotContain(logger.Lines, line => line.Contains("No card answered", StringComparison.Ordinal));
-    }
-
-    private sealed class UnreadableHost(Exception failure) : IUsbHost
-    {
-        public IReadOnlyList<UsbDeviceNode> List() => throw failure;
-
-        public UsbModel ModelAt(string path) => throw failure;
-
-        public IUsbConnection Open(string path, byte interfaceNumber) => throw failure;
     }
 }

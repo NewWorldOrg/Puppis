@@ -218,7 +218,7 @@ public sealed class Dt295KeptTests
     }
 
     [Fact]
-    public void ATunerThePatrolFindsGoneIsLetGoOf()
+    public void WhatThePatrolFindsIsHandedOn()
     {
         var device = new DeviceSettings("usb1-2", DeviceKind.Terrestrial, Path);
         var configuration = new DriverConfiguration("/run/carina/driver.sock", [], 6, new TunerSettings(TunerBackend.Usb), [device]);
@@ -230,12 +230,12 @@ public sealed class Dt295KeptTests
             () => [],
             TimeProvider.System,
             null,
-            gone => letGo.Add(gone.Id!)
+            (seen, present) => letGo.Add($"{seen.Id} {present}")
         );
 
         patrol.Walk();
 
-        Assert.Equal(["usb1-2"], letGo);
+        Assert.Equal(["usb1-2 False"], letGo);
     }
 
     private sealed class RecordingCheck : ITunerDeviceCheck

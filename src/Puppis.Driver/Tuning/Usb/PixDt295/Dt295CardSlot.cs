@@ -34,6 +34,17 @@ public sealed class Dt295CardSlot(CardUart uart)
     public ISmartCardService Service() => new SlotService(this);
 
     /// <summary>
+    /// Whether a card is in the slot now, asked of the bridge.
+    /// </summary>
+    public bool CardIsIn()
+    {
+        lock (gate)
+        {
+            return !closed && uart.CardIsIn();
+        }
+    }
+
+    /// <summary>
     /// Switches the card off, once the tuner is closing, and refuses the slot from then on.
     /// </summary>
     public void Close()
