@@ -41,6 +41,8 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
     public ISignalQualitySource? Quality => this;
 
+    public bool IsOpen => !Volatile.Read(ref closed);
+
     /// <summary>
     /// The card slot of this tuner as a smart-card service, valid while the tuner is open.
     /// </summary>
@@ -64,7 +66,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         }
 
         long started = Stopwatch.GetTimestamp();
-        Parts parts = new(new TurnTakingConnection(host.Open(path, Interface)), pacing);
+        Parts parts = new(new TurnTakingConnection(host.Open(path, Interface)), pacing, logger);
 
         try
         {
@@ -103,6 +105,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
     public byte[] Read(int count, CancellationToken cancellationToken)
     {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref closed), this);
         byte[] taken = stream.Take(count, bytePatience, cancellationToken);
 
         return taken.Length > 0 ? taken : throw NothingArrived();
@@ -141,6 +144,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         {
             lock (gate)
             {
+                ObjectDisposedException.ThrowIf(closed, this);
                 locked = parts.Frontend.Locked();
             }
         }
@@ -185,17 +189,18 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         private readonly BridgeWindow window;
         private readonly Dt295Capture capture;
         private readonly Fr30Program program = CopyProgram.Build();
+        private readonly ILogger? logger;
         private bool started;
-        private bool hooked;
         private bool capturing;
         private EndpointState? endpoint;
         private IUsbBulkReader? reader;
         private Dt295Stream? stream;
 
-        public Parts(TurnTakingConnection usb, DevicePacing pacing)
+        public Parts(TurnTakingConnection usb, DevicePacing pacing, ILogger? logger)
         {
             this.usb = usb;
             this.pacing = pacing;
+            this.logger = logger;
             memory = new BridgeMemory(usb);
             window = new BridgeWindow(memory);
             capture = new Dt295Capture(window, memory);
@@ -220,7 +225,6 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             Frontend.Identify(usb.Path);
             Frontend.Initialise();
             CopyProgram.Install(memory, program, () => Dt295Stream.Instruct(usb, memory, 0, CopyCommand.Answer, 0, 0));
-            hooked = true;
         }
 
         public void Tune(DvbChannel channel)
@@ -230,11 +234,13 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
                 TerrestrialChannel terrestrial => Frontend.TuneTerrestrial(DvbFrequency.TerrestrialHertz(terrestrial.PhysicalChannel)),
                 BroadcastSatelliteChannel broadcast => Frontend.TuneSatellite(
                     DvbFrequency.BroadcastSatelliteKilohertz(broadcast.Slot),
-                    broadcast.TransportStreamId
+                    broadcast.TransportStreamId,
+                    usb.Path
                 ),
                 CommunicationSatelliteChannel communication => Frontend.TuneSatellite(
                     DvbFrequency.CommunicationSatelliteKilohertz(communication.Slot),
-                    null
+                    null,
+                    usb.Path
                 ),
                 _ => throw DvbFailure.Refused($"{usb.Path}: {channel} is not a channel this tuner receives."),
             };
@@ -250,7 +256,8 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         public Dt295Stream Stream()
         {
             capture.Prepare();
-            endpoint = capture.ReadyTheEndpoint();
+            endpoint = capture.KeepTheEndpoint();
+            capture.ReadyTheEndpoint(endpoint);
             reader = usb.ReadBulk(Dt295Capture.Endpoint, Dt295Capture.TransferBytes, Dt295Capture.TransfersInFlight);
             capturing = true;
             capture.Start();
@@ -260,36 +267,35 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             return stream;
         }
 
+        /// <summary>
+        /// Gives the bridge back step by step, carrying on past a step that fails and saying which one did.
+        /// </summary>
         public void Close()
         {
-            Quietly(() => stream?.Dispose());
+            Quietly("stopping the copying", () => stream?.Dispose());
 
             if (capturing)
             {
-                Quietly(capture.Stop);
+                Quietly("stopping the capture", capture.Stop);
             }
 
-            Quietly(() => reader?.Dispose());
+            Quietly("cancelling the bulk reads", () => reader?.Dispose());
 
             if (endpoint is not null)
             {
-                Quietly(() => capture.RestoreTheEndpoint(endpoint));
-            }
-
-            if (hooked)
-            {
-                Quietly(() => CopyProgram.Unhook(memory));
+                Quietly("putting the endpoint back", () => capture.RestoreTheEndpoint(endpoint));
             }
 
             if (started)
             {
-                Quietly(Slot.Close);
+                Quietly("taking the hook out", () => CopyProgram.UnhookIfOurs(memory));
+                Quietly("switching the card off", Slot.Close);
             }
 
             usb.Dispose();
         }
 
-        private static bool Quietly(Action action)
+        private bool Quietly(string step, Action action)
         {
             try
             {
@@ -297,12 +303,10 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
                 return true;
             }
-            catch (DvbDeviceException)
+            catch (Exception failed) when (failed is DvbDeviceException or InvalidOperationException)
             {
-                return false;
-            }
-            catch (InvalidOperationException)
-            {
+                logger?.LogWarning("{Path}: {Step} failed while the tuner closed: {Why}", usb.Path, step, failed.GetType().Name);
+
                 return false;
             }
         }

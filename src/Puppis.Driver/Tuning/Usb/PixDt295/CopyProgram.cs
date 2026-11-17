@@ -293,7 +293,9 @@ public static class CopyProgram
             throw BridgeWindow.Unplug(memory.Path, $"the bridge's write handling at 0x{HookAt:X} holds 0x{hook[0]:X8} 0x{hook[1]:X8}");
         }
 
-        if (!ours || !memory.ReadWords(Entry, program.Words.Count).SequenceEqual(program.Words))
+        bool inPlace = ours && memory.ReadWords(Entry, program.Words.Count).SequenceEqual(program.Words);
+
+        if (!inPlace)
         {
             if (ours)
             {
@@ -301,11 +303,15 @@ public static class CopyProgram
             }
 
             Place(memory, program);
-            memory.WriteInOneRequest(HookAt, [Hook[0], Hook[1]]);
         }
 
         try
         {
+            if (!inPlace)
+            {
+                memory.WriteInOneRequest(HookAt, [Hook[0], Hook[1]]);
+            }
+
             uint[] placed = memory.ReadWords(HookAt, 2);
 
             if (!IsOurHook(placed[0], placed[1]))
@@ -317,11 +323,25 @@ public static class CopyProgram
 
             Ping(memory, ping);
         }
-        catch
+        catch (DvbDeviceException)
+        {
+            TryToUnhook(memory);
+
+            throw;
+        }
+    }
+
+    private static bool TryToUnhook(BridgeMemory memory)
+    {
+        try
         {
             Unhook(memory);
 
-            throw;
+            return true;
+        }
+        catch (DvbDeviceException)
+        {
+            return false;
         }
     }
 
@@ -346,6 +366,20 @@ public static class CopyProgram
     /// Puts the two words the hook replaced back as they were at power on, in one request.
     /// </summary>
     public static void Unhook(BridgeMemory memory) => memory.WriteInOneRequest(HookAt, [HookAtPowerOn[0], HookAtPowerOn[1]]);
+
+    /// <summary>
+    /// Takes the hook out when the two words are ours, and leaves them as they are when they are not, which is the
+    /// state to close in whether or not a write of the hook went through.
+    /// </summary>
+    public static void UnhookIfOurs(BridgeMemory memory)
+    {
+        uint[] hook = memory.ReadWords(HookAt, 2);
+
+        if (IsOurHook(hook[0], hook[1]))
+        {
+            Unhook(memory);
+        }
+    }
 
     public static byte[] Instruction(uint sequence, CopyCommand command, uint position, uint limit)
     {

@@ -121,14 +121,14 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
     /// Tunes the satellite side to the intermediate frequency and answers whether it locked on the transport stream.
     /// Without a transport stream id, the first one the demodulator offers once it has a signal is taken.
     /// </summary>
-    public bool TuneSatellite(long kilohertz, int? transportStreamId)
+    public bool TuneSatellite(long kilohertz, int? transportStreamId, string path)
     {
         if (Tuned is Dt295Side.Terrestrial)
         {
             LeaveTheTerrestrialSide();
         }
 
-        SatellitePlan plan = SatellitePlan.For(kilohertz);
+        SatellitePlan plan = SatellitePlan.For(kilohertz, path);
         chips.WriteS(0x1E, (byte)((chips.ReadS(0x1E, 1)[0] & 0xCF) | 0x20));
         chips.WriteRS(0x11, 0x00, 0xA7);
         chips.WriteRS(0x2A, 0xB9);
@@ -313,7 +313,7 @@ public sealed record SatellitePlan(byte[] Pll, byte Band)
         (2_151_000, 0x00, 0),
     ];
 
-    public static SatellitePlan For(long kilohertz)
+    public static SatellitePlan For(long kilohertz, string path)
     {
         long rounded = (long)Math.Round(kilohertz / 1000.0, MidpointRounding.AwayFromZero) * 1000;
         bool low = rounded <= LowBandCeiling;
@@ -331,7 +331,7 @@ public sealed record SatellitePlan(byte[] Pll, byte Band)
         }
 
         throw DvbFailure.Refused(
-            $"{kilohertz} kHz is above the satellite tuner's highest band, so there is nothing to tune it to."
+            $"{path}: {kilohertz} kHz is above the satellite tuner's highest band, so there is nothing to tune it to."
         );
     }
 }

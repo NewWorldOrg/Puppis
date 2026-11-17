@@ -103,6 +103,21 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
     public bool InstructionsTimeOut { get; set; }
 
     /// <summary>
+    /// Says, for the address a write reaches, whether the request fails; the write lands first when
+    /// <see cref="WritesLandBeforeFailing"/> says so.
+    /// </summary>
+    public Func<uint, bool>? FailingWrite { get; set; }
+
+    public bool WritesLandBeforeFailing { get; set; }
+
+    /// <summary>
+    /// Says, for the address a read reaches, whether the request fails.
+    /// </summary>
+    public Func<uint, bool>? FailingRead { get; set; }
+
+    public long Requests { get; private set; }
+
+    /// <summary>
     /// Whether the capture block writes one more unit each time its writer's position is read, as a broadcast keeps
     /// it moving.
     /// </summary>
@@ -236,7 +251,13 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
     {
         lock (sync)
         {
+            Requests++;
             uint address = Reached(AddressOf(setup), BridgeWindow.ReadWindow);
+
+            if (FailingRead?.Invoke(address) is true)
+            {
+                throw Failed("reading from the control endpoint");
+            }
 
             if (data.Length is 2)
             {
@@ -263,41 +284,68 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
                 throw DvbFailure.AtDevice(Path, "writing to the control endpoint", 110, "The device stopped answering the host.");
             }
 
+            Requests++;
             Writes.Add((setup, data.ToArray()));
-            Stage(setup, data);
+            uint reached = Reached(AddressOf(setup), BridgeWindow.WriteWindow);
+            bool failing = FailingWrite?.Invoke(reached) is true;
 
-            if (Hooked())
+            if (failing && !WritesLandBeforeFailing)
             {
-                uint exit = RunTheHook(setup, data);
-
-                if (exit == CopyProgram.Leave)
-                {
-                    return;
-                }
-
-                PassThroughExits.Add(exit);
+                throw Failed("writing to the control endpoint");
             }
 
-            uint address = Reached(AddressOf(setup), BridgeWindow.WriteWindow);
-
-            if (data.Length is 2)
+            try
             {
-                ushort value = BinaryPrimitives.ReadUInt16BigEndian(data);
-
-                if (address == Dt295Startup.GpioValue && (value & Dt295Startup.DemodulatorReset) is 0)
+                Land(setup, data);
+            }
+            finally
+            {
+                if (failing)
                 {
-                    Demodulator[0x0E] = Dt295Frontend.DemodulatorIdentity;
+                    throw Failed("writing to the control endpoint");
                 }
+            }
+        }
+    }
 
-                WriteHalf(address, value);
+    private DvbDeviceException Failed(string operation) =>
+        DvbFailure.AtDevice(Path, operation, 110, "The device stopped answering the host.");
 
+    private void Land(UsbSetup setup, ReadOnlySpan<byte> data)
+    {
+        Stage(setup, data);
+
+        if (Hooked())
+        {
+            uint exit = RunTheHook(setup, data);
+
+            if (exit == CopyProgram.Leave)
+            {
                 return;
             }
 
-            for (int at = 0; at < data.Length; at += 4)
+            PassThroughExits.Add(exit);
+        }
+
+        uint address = Reached(AddressOf(setup), BridgeWindow.WriteWindow);
+
+        if (data.Length is 2)
+        {
+            ushort value = BinaryPrimitives.ReadUInt16BigEndian(data);
+
+            if (address == Dt295Startup.GpioValue && (value & Dt295Startup.DemodulatorReset) is 0)
             {
-                WriteWord(address + (uint)at, BinaryPrimitives.ReadUInt32BigEndian(data[at..]));
+                Demodulator[0x0E] = Dt295Frontend.DemodulatorIdentity;
             }
+
+            WriteHalf(address, value);
+
+            return;
+        }
+
+        for (int at = 0; at < data.Length; at += 4)
+        {
+            WriteWord(address + (uint)at, BinaryPrimitives.ReadUInt32BigEndian(data[at..]));
         }
     }
 

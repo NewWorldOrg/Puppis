@@ -96,7 +96,30 @@ public sealed class BridgeWindow(BridgeMemory memory)
             throw Unplug(memory.Path, $"the window word at 0x{window:X} holds 0x{found:X8}");
         }
 
-        Place(window, address & Region);
+        try
+        {
+            Place(window, address & Region);
+        }
+        catch (DvbDeviceException)
+        {
+            PutBackQuietly(window);
+
+            throw;
+        }
+    }
+
+    private bool PutBackQuietly(uint window)
+    {
+        try
+        {
+            memory.Write(window, AtPowerOn);
+
+            return true;
+        }
+        catch (DvbDeviceException)
+        {
+            return false;
+        }
     }
 
     private void Close(uint window) => Place(window, AtPowerOn);

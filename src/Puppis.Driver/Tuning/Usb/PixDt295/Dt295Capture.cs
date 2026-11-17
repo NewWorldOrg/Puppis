@@ -91,12 +91,22 @@ public sealed class Dt295Capture(BridgeWindow window, BridgeMemory memory)
     }
 
     /// <summary>
-    /// Sets the endpoint up for the copying program and answers what it held before, to be put back.
+    /// Reads what the endpoint holds before anything is written to it, refusing a USB core whose register group is not
+    /// at rest.
     /// </summary>
-    public EndpointState ReadyTheEndpoint()
+    public EndpointState KeepTheEndpoint()
     {
         var kept = new EndpointState(memory.Read(EndpointMode), memory.Read(EndpointBuffer), memory.Read(EndpointReset));
         RequireGroupAtRest();
+
+        return kept;
+    }
+
+    /// <summary>
+    /// Sets the endpoint up for the copying program from what <see cref="KeepTheEndpoint"/> read.
+    /// </summary>
+    public void ReadyTheEndpoint(EndpointState kept)
+    {
         InGroup(1, EndpointMode, 0x85000000);
         InGroup(8, EndpointReset, 1);
         InGroup(6, EndpointReset, 0x00FF6000);
@@ -104,18 +114,39 @@ public sealed class Dt295Capture(BridgeWindow window, BridgeMemory memory)
         uint buffer = kept.Buffer & 0xFFFDFFFD;
         InGroup(2, EndpointBuffer, buffer);
         InGroup(8, EndpointBuffer, buffer);
-
-        return kept;
     }
 
+    /// <summary>
+    /// Puts back what the endpoint held, carrying on past a write that fails and saying at the end which did.
+    /// </summary>
     public void RestoreTheEndpoint(EndpointState kept)
     {
-        InGroup(8, EndpointReset, 1);
-        InGroup(6, EndpointReset, kept.Reset);
-        InGroup(2, EndpointBuffer, kept.Buffer);
-        InGroup(8, EndpointBuffer, kept.Buffer);
-        InGroup(1, EndpointMode, kept.Mode);
-        RequireGroupAtRest();
+        List<string> failed = [];
+        Attempt(failed, () => InGroup(8, EndpointReset, 1));
+        Attempt(failed, () => InGroup(6, EndpointReset, kept.Reset));
+        Attempt(failed, () => InGroup(2, EndpointBuffer, kept.Buffer));
+        Attempt(failed, () => InGroup(8, EndpointBuffer, kept.Buffer));
+        Attempt(failed, () => InGroup(1, EndpointMode, kept.Mode));
+        Attempt(failed, RequireGroupAtRest);
+
+        if (failed.Count > 0)
+        {
+            throw DvbFailure.Refused(
+                $"{memory.Path}: {failed.Count} of the steps putting the endpoint back failed: {string.Join("; ", failed)}"
+            );
+        }
+    }
+
+    private static void Attempt(List<string> failed, Action step)
+    {
+        try
+        {
+            step();
+        }
+        catch (DvbDeviceException fault)
+        {
+            failed.Add(fault.Message);
+        }
     }
 
     public void Start()
@@ -138,9 +169,15 @@ public sealed class Dt295Capture(BridgeWindow window, BridgeMemory memory)
 
     private void InGroup(uint group, uint at, uint value)
     {
-        memory.Write(CopyProgram.UsbGroup, group);
-        memory.Write(at, value);
-        memory.Write(CopyProgram.UsbGroup, CopyProgram.UsbGroupAtRest);
+        try
+        {
+            memory.Write(CopyProgram.UsbGroup, group);
+            memory.Write(at, value);
+        }
+        finally
+        {
+            memory.Write(CopyProgram.UsbGroup, CopyProgram.UsbGroupAtRest);
+        }
     }
 
     private void RequireGroupAtRest()

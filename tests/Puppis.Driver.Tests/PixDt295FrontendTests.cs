@@ -220,7 +220,7 @@ public sealed class Dt295SatelliteFollowsTheSpecOnlyTests
     [Fact]
     public void TheLowBandDoublesTheDividerAndSetsItsFlag()
     {
-        SatellitePlan plan = SatellitePlan.For(BroadcastStandards.BsCentreKHz(1));
+        SatellitePlan plan = SatellitePlan.For(BroadcastStandards.BsCentreKHz(1), "/dev/x");
 
         Assert.Equal([0x10, 0x64, 0x00, 0x00, 0x80], plan.Pll);
         Assert.Equal(0x58, plan.Band);
@@ -229,7 +229,7 @@ public sealed class Dt295SatelliteFollowsTheSpecOnlyTests
     [Fact]
     public void AboveTheLowBandTheDividerIsTheFrequencyInMegahertz()
     {
-        SatellitePlan plan = SatellitePlan.For(BroadcastStandards.Cs110CentreKHz(2));
+        SatellitePlan plan = SatellitePlan.For(BroadcastStandards.Cs110CentreKHz(2), "/dev/x");
 
         Assert.Equal([0x0C, 0x9A, 0x00, 0x00, 0x00], plan.Pll);
         Assert.Equal(0x44, plan.Band);
@@ -244,7 +244,7 @@ public sealed class Dt295SatelliteFollowsTheSpecOnlyTests
         device.Satellite[0xE6] = 0x40;
         device.Satellite[0xE7] = 0x10;
 
-        bool locked = frontend.TuneSatellite(BroadcastStandards.BsCentreKHz(1), 0x4010);
+        bool locked = frontend.TuneSatellite(BroadcastStandards.BsCentreKHz(1), 0x4010, "/dev/x");
 
         Assert.True(locked);
         Assert.Equal(PixDt295Support.Expected(BsOneOnStream), PixDt295Support.Written(device));
@@ -257,7 +257,7 @@ public sealed class Dt295SatelliteFollowsTheSpecOnlyTests
         device.Satellite[0xE6] = 0x40;
         device.Satellite[0xE7] = 0x11;
 
-        Assert.False(frontend.TuneSatellite(BroadcastStandards.BsCentreKHz(1), 0x4010));
+        Assert.False(frontend.TuneSatellite(BroadcastStandards.BsCentreKHz(1), 0x4010, "/dev/x"));
     }
 
     [Fact]
@@ -271,7 +271,7 @@ public sealed class Dt295SatelliteFollowsTheSpecOnlyTests
         device.Satellite[0xE6] = 0x60;
         device.Satellite[0xE7] = 0x20;
 
-        Assert.True(frontend.TuneSatellite(BroadcastStandards.Cs110CentreKHz(2), null));
+        Assert.True(frontend.TuneSatellite(BroadcastStandards.Cs110CentreKHz(2), null, "/dev/x"));
         Assert.Equal(0x60, device.Satellite[0x8F]);
         Assert.Equal(0x20, device.Satellite[0x90]);
     }
@@ -285,7 +285,7 @@ public sealed class Dt295SatelliteFollowsTheSpecOnlyTests
         frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(22));
         device.Log.Clear();
 
-        frontend.TuneSatellite(BroadcastStandards.BsCentreKHz(1), 0x4010);
+        frontend.TuneSatellite(BroadcastStandards.BsCentreKHz(1), 0x4010, "/dev/x");
 
         Assert.Equal(PixDt295Support.Expected("T 25 00\nT 23 4D\nT 03 90\nRT 12 00\nRT 0B 00"), PixDt295Support.Written(device).Take(5));
         device.Log.Clear();

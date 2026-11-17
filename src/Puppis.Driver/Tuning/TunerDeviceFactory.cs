@@ -183,7 +183,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         string path = UsbPathOf(device);
 
         return usbHost.Value.ModelAt(path) == Dt295TunerDevice.Model
-            ? OpenDt295(path, DvbTuneRequest.Resolve(tune, tuning), hold)
+            ? OpenDt295(device, path, DvbTuneRequest.Resolve(tune, tuning), hold)
             : OpenCechZd1(device, path, tuning, tune, hold);
     }
 
@@ -191,12 +191,14 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     /// Opens a PIX-DT295, read through the card a lender holds where there is one and through the card in the tuner's
     /// own slot where there is not.
     /// </summary>
-    private ITunerDevice OpenDt295(string path, DvbChannel channel, HeadHold hold)
+    private ITunerDevice OpenDt295(DeviceSettings device, string path, DvbChannel channel, HeadHold hold)
     {
+        RequireTheDeclaredKind(device, channel);
+
         Dt295TunerDevice Open() =>
             Dt295TunerDevice.Open(usbHost.Value, path, channel, pacing, settings.BytePatience, logger, dt295Handler);
 
-        if (descramblers.Unscrambles)
+        if (descramblers.Unscrambles && descramblers is not SlotCards)
         {
             return ThroughTheCard(Open, hold);
         }
@@ -205,7 +207,9 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
         try
         {
-            IDescramblerFactory slot = Descramblers.Over(opened.CardService, logger, time);
+            IDescramblerFactory slot = descramblers is SlotCards slots
+                ? slots.Attach(opened)
+                : Descramblers.Over(opened.CardService, logger, time);
 
             return Unscrambling(opened, slot.Open(hold), slot, hold);
         }
@@ -214,6 +218,25 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             opened.Dispose();
 
             throw;
+        }
+    }
+
+    private static void RequireTheDeclaredKind(DeviceSettings device, DvbChannel channel)
+    {
+        bool satellite = channel is not TerrestrialChannel;
+
+        if (satellite && device.Kind is DeviceKind.Terrestrial)
+        {
+            throw DvbFailure.Refused(
+                $"devices['{device.Id}']: this tuner is declared terrestrial, and this tune asks for a satellite."
+            );
+        }
+
+        if (!satellite && device.Kind is DeviceKind.Satellite)
+        {
+            throw DvbFailure.Refused(
+                $"devices['{device.Id}']: this tuner is declared satellite, and this tune asks for terrestrial broadcasting."
+            );
         }
     }
 

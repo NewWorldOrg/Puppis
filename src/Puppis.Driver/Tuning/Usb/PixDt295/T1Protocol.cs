@@ -113,6 +113,11 @@ public sealed class T1Protocol(Func<byte[], byte[]> exchangeBlock, int cardField
 
     private const byte More = 0x20;
 
+    /// <summary>
+    /// The most times a card may ask for more time within one command.
+    /// </summary>
+    public const int MostWaitRequests = 16;
+
     private int sent;
     private int expected;
 
@@ -144,6 +149,7 @@ public sealed class T1Protocol(Func<byte[], byte[]> exchangeBlock, int cardField
     {
         byte[] answer = SendChained(command);
         List<byte> received = [];
+        int waits = 0;
 
         while (true)
         {
@@ -151,6 +157,11 @@ public sealed class T1Protocol(Func<byte[], byte[]> exchangeBlock, int cardField
 
             if (control is WaitRequest)
             {
+                if (++waits > MostWaitRequests)
+                {
+                    throw Lost($"the card asked for more time more than {MostWaitRequests} times in one command");
+                }
+
                 answer = Exchange(Block(WaitResponse, answer.AsSpan(3, answer[2])));
 
                 continue;
