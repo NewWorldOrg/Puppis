@@ -354,6 +354,9 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
         lock (sync)
         {
             BulkOpened = (endpoint, transferBytes, transfersInFlight);
+            BulkClosed = false;
+            bulk.Clear();
+            fifo.Clear();
         }
 
         return new Reader(this, transferBytes);

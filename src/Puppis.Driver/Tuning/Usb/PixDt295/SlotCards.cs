@@ -10,14 +10,14 @@ namespace Puppis.Driver.Tuning.Usb.PixDt295;
 /// <summary>
 /// The cards in the slots of the PIX-DT295 tuners a driver drives, for a driver that has no other card. A slot is
 /// reached through its tuner, so a card is asked for only as a tuner opens; the driver still says that it unscrambles,
-/// and its card reader is the slot of the tuner opened last.
+/// and its card reader is the slot of the tuner opened last, for as long as that tuner stays open, idle or not.
 /// </summary>
 public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDescramblerFactory, ICardReaderReport
 {
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
     private readonly Lock gate = new();
     private Descramblers? latest;
-    private Dt295TunerDevice? latestTuner;
+    private Dt295Bridge? latestBridge;
     private CardIdentity? lastIdentity;
 
     public bool Unscrambles => true;
@@ -99,7 +99,7 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
     /// <summary>
     /// The cards of <paramref name="tuner"/>'s slot, which from now on are the ones this driver reports.
     /// </summary>
-    public IDescramblerFactory Attach(Dt295TunerDevice tuner)
+    public IDescramblerFactory Attach(Dt295Bridge tuner)
     {
         Descramblers slot = Descramblers.Over(tuner.CardService, logger, clock);
 
@@ -107,7 +107,7 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
         {
             lastIdentity = latest?.CardInHand ?? lastIdentity;
             latest = slot;
-            latestTuner = tuner;
+            latestBridge = tuner;
         }
 
         return slot;
@@ -121,7 +121,7 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
         lock (gate)
         {
             slot = latest;
-            open = latestTuner?.IsOpen is true;
+            open = latestBridge?.IsOpen is true;
         }
 
         if (slot is null)

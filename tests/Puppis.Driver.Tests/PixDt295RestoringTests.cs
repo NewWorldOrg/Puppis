@@ -217,7 +217,7 @@ public sealed class SlotCardsTests
     }
 
     [Fact]
-    public void TheSlotIsReportedLikeAnyReaderWhileItsTunerIsOpenAndItsCardIsRemembered()
+    public void TheSlotIsReportedLikeAnyReaderWhileItsTunerIsOpenIdleOrNotAndItsCardIsRemembered()
     {
         FakeDt295 fake = FakeDt295.Locking();
         fake.Broadcasting = true;
@@ -233,7 +233,11 @@ public sealed class SlotCardsTests
         ITunerDevice device = factory.Create(Tuner, new TuningRequest(TunerKind.Terrestrial, 22), null, HeadHold.EveryProgramme);
         CardReaderDto open = CardReaders.Inspect(slots, Configuration(), null, TimeProvider.System);
         device.Dispose();
+        CardReaderDto idle = CardReaders.Inspect(slots, Configuration(), null, TimeProvider.System);
+        factory.Dispose();
         CardReaderDto closed = CardReaders.Inspect(slots, Configuration(), null, TimeProvider.System);
+
+        Assert.Equal(CardState.Inserted, idle.State);
 
         Assert.Equal(CardState.Inserted, open.State);
         CardReaderSlotDto reader = Assert.Single(open.Readers);

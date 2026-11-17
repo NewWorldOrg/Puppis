@@ -4,7 +4,9 @@ namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
 /// <summary>
 /// The card slot of an open PIX-DT295, offered as a smart-card service with one reader. The card is powered when it
-/// is connected to and stays powered until the tuner closes; disposing a connection or the service leaves it as it is.
+/// is first connected to and stays powered until the tuner closes, so that a later connection speaks to it as it is;
+/// disposing a connection or the service leaves it as it is. A card that stops answering is powered afresh by the next
+/// connection.
 /// </summary>
 public sealed class Dt295CardSlot(CardUart uart)
 {
@@ -14,8 +16,20 @@ public sealed class Dt295CardSlot(CardUart uart)
 
     private readonly Lock gate = new();
     private bool closed;
+    private T1Protocol? speaking;
 
     public bool Powered { get; private set; }
+
+    public bool IsOpen
+    {
+        get
+        {
+            lock (gate)
+            {
+                return !closed;
+            }
+        }
+    }
 
     public ISmartCardService Service() => new SlotService(this);
 
@@ -28,6 +42,7 @@ public sealed class Dt295CardSlot(CardUart uart)
         {
             closed = true;
             Powered = false;
+            speaking = null;
             uart.SwitchOff();
         }
     }
@@ -45,7 +60,14 @@ public sealed class Dt295CardSlot(CardUart uart)
         lock (gate)
         {
             Usable();
+
+            if (Powered && speaking is not null)
+            {
+                return speaking;
+            }
+
             Powered = true;
+            speaking = null;
             uart.SwitchOn();
             AnswerToReset answer = AnswerToReset.Read(uart.Receive(CardUart.AnswerToResetPatience, _ => false))
                 ?? throw new SmartCardException(
@@ -64,6 +86,7 @@ public sealed class Dt295CardSlot(CardUart uart)
             uart.SpeakFaster();
             var protocol = new T1Protocol(ExchangeBlock, answer.InformationFieldSize);
             protocol.AskForBiggerBlocks();
+            speaking = protocol;
 
             return protocol;
         }
@@ -75,7 +98,17 @@ public sealed class Dt295CardSlot(CardUart uart)
         {
             Usable();
 
-            return protocol.Transmit(command);
+            try
+            {
+                return protocol.Transmit(command);
+            }
+            catch (SmartCardException)
+            {
+                speaking = null;
+                Powered = false;
+
+                throw;
+            }
         }
     }
 
@@ -85,6 +118,7 @@ public sealed class Dt295CardSlot(CardUart uart)
         {
             Usable();
             Powered = false;
+            speaking = null;
             uart.SwitchOff();
         }
     }

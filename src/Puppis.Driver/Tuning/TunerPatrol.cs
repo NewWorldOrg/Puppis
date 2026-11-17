@@ -16,7 +16,8 @@ public sealed class TunerPatrol(
     ITunerPresence presence,
     Func<IEnumerable<string>> heldDevices,
     TimeProvider clock,
-    ILogger<TunerPatrol>? logger = null
+    ILogger<TunerPatrol>? logger = null,
+    Action<DeviceSettings>? missing = null
 ) : IHostedService, IDisposable
 {
     public static readonly TimeSpan Interval = TimeSpan.FromSeconds(60);
@@ -59,6 +60,11 @@ public sealed class TunerPatrol(
         }
 
         book.Looked(device, present);
+
+        if (!present)
+        {
+            missing?.Invoke(device);
+        }
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
