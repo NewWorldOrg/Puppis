@@ -111,7 +111,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         IUsbHost usbHost,
         DevicePacing pacing,
         IDescramblerFactory? descramblers = null,
-        string dt295Handler = Dt295Startup.HandlerAtPowerOn
+        string dt295Handler = Dt295Startup.HandlerAtPowerOn,
+        ILogger? logger = null
     ) =>
         new(
             configuration,
@@ -120,7 +121,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             new Lazy<IUsbHost>(() => usbHost),
             pacing,
             descramblers ?? NoDescrambling.Instance,
-            null,
+            logger,
             dt295Handler
         );
 
@@ -295,7 +296,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     private ITunerDevice ThroughTheCard(Func<ITunerDevice> open, HeadHold hold)
     {
         long started = Stopwatch.GetTimestamp();
-        Task<IDescrambler?>? asking = descramblers.Unscrambles ? Task.Run(() => descramblers.Open(hold)) : null;
+        IDescramblerFactory cards = Shared;
+        Task<IDescrambler?>? asking = cards.Unscrambles ? Task.Run(() => cards.Open(hold)) : null;
         ITunerDevice opened;
 
         try
@@ -356,7 +358,13 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         );
 
     private ITunerDevice Unscrambling(ITunerDevice opened, IDescrambler? descrambler, HeadHold hold) =>
-        Unscrambling(opened, descrambler, descramblers, hold);
+        Unscrambling(opened, descrambler, Shared, hold);
+
+    /// <summary>
+    /// The cards every tuner of this driver may be read through. The cards in tuners' own slots are not among them:
+    /// each serves only the tuner it sits in.
+    /// </summary>
+    private IDescramblerFactory Shared => descramblers is SlotCards ? NoDescrambling.Instance : descramblers;
 
     private ITunerDevice Unscrambling(ITunerDevice opened, IDescrambler? descrambler, IDescramblerFactory cards, HeadHold hold)
     {

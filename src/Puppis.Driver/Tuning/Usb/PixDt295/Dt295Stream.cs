@@ -39,6 +39,7 @@ public sealed class Dt295Stream : IDisposable
     private readonly Thread asking;
     private readonly Thread reaping;
     private volatile bool stopping;
+    private bool closed;
     private Exception? fault;
     private long skips;
     private long dropped;
@@ -84,6 +85,13 @@ public sealed class Dt295Stream : IDisposable
         {
             while (heldBytes < TsPacketReader.PacketLength)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (closed)
+                {
+                    throw Closing(cancellationToken);
+                }
+
                 if (fault is not null)
                 {
                     throw Stopped();
@@ -94,7 +102,6 @@ public sealed class Dt295Stream : IDisposable
                     return [];
                 }
 
-                cancellationToken.ThrowIfCancellationRequested();
                 Monitor.Wait(held, ReapPatience);
             }
 
@@ -129,10 +136,22 @@ public sealed class Dt295Stream : IDisposable
     /// </summary>
     public void Dispose()
     {
+        lock (held)
+        {
+            closed = true;
+            Monitor.PulseAll(held);
+        }
+
         stopping = true;
         Join(asking);
         Join(reaping);
     }
+
+    /// <summary>
+    /// What a read the stream's own closing interrupted ends with: a stop, never a fault of the device.
+    /// </summary>
+    public static OperationCanceledException Closing(CancellationToken cancellationToken) =>
+        new("The tuner was closed while it was being read, so the read ends here.", cancellationToken);
 
     private static void Join(Thread thread)
     {

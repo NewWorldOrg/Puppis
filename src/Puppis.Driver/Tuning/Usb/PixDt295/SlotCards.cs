@@ -49,7 +49,14 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
     /// <summary>
     /// The slot cards of a usb driver that borrows no card and has a PIX-DT295 among its devices, or null.
     /// </summary>
-    public static SlotCards? For(DriverConfiguration configuration, bool borrows, ILogger? logger, TimeProvider? clock)
+    /// <param name="host">The USB devices to look through, which are this machine's unless a test gives others.</param>
+    public static SlotCards? For(
+        DriverConfiguration configuration,
+        bool borrows,
+        ILogger? logger,
+        TimeProvider? clock,
+        Func<IUsbHost>? host = null
+    )
     {
         if (borrows || configuration.Tuner?.Backend is not TunerBackend.Usb)
         {
@@ -58,10 +65,15 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
 
         try
         {
-            return AreConfigured(configuration, new LinuxUsbHost()) ? new SlotCards(logger, clock) : null;
+            return AreConfigured(configuration, (host ?? (() => new LinuxUsbHost()))()) ? new SlotCards(logger, clock) : null;
         }
-        catch (DvbDeviceException)
+        catch (Exception failed) when (failed is DvbDeviceException or IOException or UnauthorizedAccessException)
         {
+            logger?.LogWarning(
+                "The USB devices could not be looked through for a tuner with a card slot of its own, so none is assumed: {Why}",
+                failed.Message
+            );
+
             return null;
         }
     }

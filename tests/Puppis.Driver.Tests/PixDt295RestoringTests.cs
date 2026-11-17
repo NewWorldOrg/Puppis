@@ -124,7 +124,7 @@ public sealed class Dt295RestoringTests
         device.Dispose();
         long before = fake.Requests;
 
-        Assert.Throws<ObjectDisposedException>(() => device.Read(188, CancellationToken.None));
+        Assert.Throws<OperationCanceledException>(() => device.Read(188, CancellationToken.None));
         Assert.Throws<ObjectDisposedException>(() => device.Measure());
         Assert.Equal(before, fake.Requests);
     }
@@ -244,5 +244,155 @@ public sealed class SlotCardsTests
         Assert.Equal(CardState.Unspecified, closed.State);
         Assert.Equal(open.LastAnsweredAt, closed.LastAnsweredAt);
         Assert.NotNull(slots.CardInHand);
+    }
+}
+
+public sealed class Dt295SecondReviewTests
+{
+    private const string Path = "/dev/bus/usb/001/005";
+
+    private static readonly uint[] Endpoint = [0xFDBC04, 0xFDBC14, 0xFDBD08];
+
+    private static Func<uint, bool> OnWrite(uint address, int nth)
+    {
+        int seen = 0;
+
+        return reached => reached == address && ++seen == nth;
+    }
+
+    private static void OpenFails(FakeDt295 fake)
+    {
+        (DevicePacing pacing, _) = PixDt295Support.Pacing(fake);
+        Assert.Throws<DvbDeviceException>(() =>
+            Dt295TunerDevice.Open(new FakeDt295Host(fake), Path, new TerrestrialChannel(22), pacing, TimeSpan.FromSeconds(5), null, fake.HandlerHash())
+        );
+    }
+
+    private static void AssertAsFound(FakeDt295 fake, uint[] endpoint)
+    {
+        Assert.Equal(endpoint, Endpoint.Select(fake.Word));
+        Assert.Equal(CopyProgram.UsbGroupAtRest, fake.Word(CopyProgram.UsbGroup));
+        Assert.Equal(CopyProgram.HookAtPowerOn, [fake.Word(CopyProgram.HookAt), fake.Word(CopyProgram.HookAt + 4)]);
+        Assert.Equal(BridgeWindow.AtPowerOn, fake.Word(BridgeWindow.ReadWindow));
+        Assert.Equal(BridgeWindow.AtPowerOn, fake.Word(BridgeWindow.WriteWindow));
+        Assert.True(fake.Disposed);
+    }
+
+    [Fact]
+    public void AWriteWindowThatFailsToCloseIsPutBackWhenTheTunerCloses()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        uint[] found = [.. Endpoint.Select(fake.Word)];
+        fake.WritesLandBeforeFailing = false;
+        fake.FailingWrite = OnWrite(BridgeWindow.WriteWindow, 2);
+
+        OpenFails(fake);
+
+        AssertAsFound(fake, found);
+    }
+
+    [Fact]
+    public void AReadWindowThatFailsToCloseIsPutBackWhenTheTunerCloses()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        uint[] found = [.. Endpoint.Select(fake.Word)];
+        int reads = 0;
+        fake.FailingRead = reached => reached == BridgeWindow.ReadWindow && ++reads == 4;
+
+        OpenFails(fake);
+
+        AssertAsFound(fake, found);
+    }
+
+    [Fact]
+    public void AFailureWhileTheCaptureIsPreparedIsRolledBack()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        uint[] found = [.. Endpoint.Select(fake.Word)];
+        fake.FailingWrite = OnWrite(0x01901044, 1);
+
+        OpenFails(fake);
+
+        AssertAsFound(fake, found);
+    }
+
+    [Fact]
+    public void AReadTheTunersClosingInterruptsEndsAsAStop()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        (DevicePacing pacing, _) = PixDt295Support.Pacing(fake);
+        Dt295TunerDevice device = Dt295TunerDevice.Open(new FakeDt295Host(fake), Path, new TerrestrialChannel(22), pacing, TimeSpan.FromSeconds(5), null, fake.HandlerHash());
+        using var reading = new ManualResetEventSlim();
+        Exception? ended = null;
+        Thread reader = new(() =>
+        {
+            reading.Set();
+
+            try
+            {
+                device.Read(188, CancellationToken.None);
+            }
+            catch (Exception error)
+            {
+                ended = error;
+            }
+        });
+        reader.Start();
+        reading.Wait();
+        SpinWait.SpinUntil(() => reader.ThreadState.HasFlag(ThreadState.WaitSleepJoin), TimeSpan.FromSeconds(5));
+
+        device.Dispose();
+        reader.Join();
+
+        Assert.IsType<OperationCanceledException>(ended);
+    }
+
+    [Fact]
+    public void AStartUpThatCannotLookThroughTheUsbDevicesAssumesNoSlotAndSaysSo()
+    {
+        var logger = new CapturingLogger<SlotCards>();
+        var configuration = new DriverConfiguration(
+            OutputRoots: [new OutputRootSettings("primary", "/srv/recordings")],
+            Tuner: new TunerSettings(TunerBackend.Usb),
+            Devices: [new DeviceSettings("usb1-2", DeviceKind.Terrestrial, Path)]
+        );
+
+        Assert.Null(SlotCards.For(configuration, false, logger, null, () => new UnreadableHost(new IOException("bus gone"))));
+        Assert.Null(SlotCards.For(configuration, false, logger, null, () => new UnreadableHost(new UnauthorizedAccessException("no"))));
+        Assert.Equal(2, logger.Lines.Count(line => line.StartsWith("Warning", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void TheSonyTunerBesideAPixDt295IsReadBareWithoutAskingTheSlot()
+    {
+        (FakeChip demodulator, FakeChip tuner) = UsbTestSupport.LockingChips();
+        var sony = new FakeUsbHost(UsbTestSupport.BridgeWith(demodulator, tuner));
+        sony.Nodes.Add(new UsbDeviceNode("/dev/bus/usb/001/002", Tuning.Usb.CechZd1.CechZd1TunerDevice.Model, "1-1"));
+        sony.Nodes.Add(new UsbDeviceNode(Path, Dt295TunerDevice.Model, "1-2"));
+        (DevicePacing pacing, _, _) = UsbTestSupport.Pacing();
+        var sonyDevice = new DeviceSettings("usb1-1", DeviceKind.Terrestrial, "/dev/bus/usb/001/002");
+        var configuration = new DriverConfiguration(
+            OutputRoots: [new OutputRootSettings("primary", "/srv/recordings")],
+            Tuner: new TunerSettings(TunerBackend.Usb),
+            Devices: [sonyDevice, new DeviceSettings("usb1-2", DeviceKind.Terrestrial, Path)]
+        );
+        Assert.True(SlotCards.AreConfigured(configuration, sony));
+        var logger = new CapturingLogger<TunerDeviceFactory>();
+        var slots = new SlotCards(null);
+        TunerDeviceFactory factory = TunerDeviceFactory.Using(configuration, sony, pacing, slots, logger: logger);
+
+        using ITunerDevice device = factory.Create(sonyDevice, new TuningRequest(TunerKind.Terrestrial, 22), null, HeadHold.EveryProgramme);
+
+        Assert.IsNotType<DescramblingTunerDevice>(device);
+        Assert.DoesNotContain(logger.Lines, line => line.Contains("No card answered", StringComparison.Ordinal));
+    }
+
+    private sealed class UnreadableHost(Exception failure) : IUsbHost
+    {
+        public IReadOnlyList<UsbDeviceNode> List() => throw failure;
+
+        public UsbModel ModelAt(string path) => throw failure;
+
+        public IUsbConnection Open(string path, byte interfaceNumber) => throw failure;
     }
 }

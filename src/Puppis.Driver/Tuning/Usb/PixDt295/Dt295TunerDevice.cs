@@ -105,10 +105,14 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
     public byte[] Read(int count, CancellationToken cancellationToken)
     {
-        ObjectDisposedException.ThrowIf(Volatile.Read(ref closed), this);
+        if (Volatile.Read(ref closed))
+        {
+            throw Dt295Stream.Closing(cancellationToken);
+        }
+
         byte[] taken = stream.Take(count, bytePatience, cancellationToken);
 
-        return taken.Length > 0 ? taken : throw NothingArrived();
+        return taken.Length > 0 ? taken : throw NothingArrived(cancellationToken);
     }
 
     public void Dispose()
@@ -135,7 +139,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             _ => channel.ToString(),
         };
 
-    private DvbDeviceException NothingArrived()
+    private Exception NothingArrived(CancellationToken cancellationToken)
     {
         string waited = $"{bytePatience.TotalSeconds:0.#} seconds";
         bool locked;
@@ -144,7 +148,11 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         {
             lock (gate)
             {
-                ObjectDisposedException.ThrowIf(closed, this);
+                if (closed)
+                {
+                    return Dt295Stream.Closing(cancellationToken);
+                }
+
                 locked = parts.Frontend.Locked();
             }
         }
@@ -290,6 +298,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             {
                 Quietly("taking the hook out", () => CopyProgram.UnhookIfOurs(memory));
                 Quietly("switching the card off", Slot.Close);
+                Quietly("putting the window back", window.PutBack);
             }
 
             usb.Dispose();

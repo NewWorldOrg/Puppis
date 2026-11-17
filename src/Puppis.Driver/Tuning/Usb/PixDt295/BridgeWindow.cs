@@ -24,6 +24,7 @@ public sealed class BridgeWindow(BridgeMemory memory)
     private const uint Region = ~Offset;
 
     private readonly Lock gate = new();
+    private bool moved;
 
     public BridgeMemory Memory => memory;
 
@@ -96,6 +97,8 @@ public sealed class BridgeWindow(BridgeMemory memory)
             throw Unplug(memory.Path, $"the window word at 0x{window:X} holds 0x{found:X8}");
         }
 
+        moved = true;
+
         try
         {
             Place(window, address & Region);
@@ -123,6 +126,24 @@ public sealed class BridgeWindow(BridgeMemory memory)
     }
 
     private void Close(uint window) => Place(window, AtPowerOn);
+
+    /// <summary>
+    /// Writes both window words back to how they are at power on, when this window has ever moved one, whatever
+    /// became of the moves; the last thing a closing tuner does to the bridge.
+    /// </summary>
+    public void PutBack()
+    {
+        lock (gate)
+        {
+            if (!moved)
+            {
+                return;
+            }
+
+            memory.Write(ReadWindow, AtPowerOn);
+            memory.Write(WriteWindow, AtPowerOn);
+        }
+    }
 
     private void Place(uint window, uint value)
     {
