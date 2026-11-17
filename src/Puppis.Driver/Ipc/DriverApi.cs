@@ -26,6 +26,7 @@ public static class DriverApi
         DriverConfiguration configuration = app.Services.GetRequiredService<DriverConfiguration>();
         TunerSessionManager manager = app.Services.GetRequiredService<TunerSessionManager>();
         DriverHello hello = app.Services.GetRequiredService<DriverHello>();
+        IDescramblerFactory cards = app.Services.GetRequiredService<IDescramblerFactory>();
         DriverEventHub hub = app.Services.GetRequiredService<DriverEventHub>();
         DiagnosticsStore diagnosticsStore = app.Services.GetRequiredService<DiagnosticsStore>();
         ITunerDetector detector = app.Services.GetRequiredService<ITunerDetector>();
@@ -35,7 +36,11 @@ public static class DriverApi
             Write(
                 context,
                 StatusCodes.Status200OK,
-                hello with { Draining = manager.IsDraining },
+                hello with
+                {
+                    Draining = manager.IsDraining,
+                    Capabilities = DriverGreeting.Unscrambling(cards.Unscrambles),
+                },
                 DriverJson.Context.DriverHello
             );
 
@@ -126,8 +131,6 @@ public static class DriverApi
                 StorageViews.Of(configuration),
                 DriverJson.Context.IReadOnlyListStorageRootDto
             );
-
-        IDescramblerFactory cards = app.Services.GetRequiredService<IDescramblerFactory>();
 
         RequestDelegate card = context => ShowCardAsync(context, cards);
 

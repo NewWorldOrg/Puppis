@@ -65,6 +65,20 @@ public sealed class Dt295Stream : IDisposable
 
     public long Skips => Interlocked.Read(ref skips);
 
+    /// <summary>
+    /// Whether the stream stopped on a fault of its own rather than being closed.
+    /// </summary>
+    public bool Faulted
+    {
+        get
+        {
+            lock (held)
+            {
+                return fault is not null;
+            }
+        }
+    }
+
     public long BytesSent { get; private set; }
 
     public void Start()

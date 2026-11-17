@@ -111,6 +111,11 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
     public bool WritesLandBeforeFailing { get; set; }
 
     /// <summary>
+    /// Runs before each write lands, with the address it reaches; whatever it throws is what the request throws.
+    /// </summary>
+    public Action<uint>? BeforeWrite { get; set; }
+
+    /// <summary>
     /// Says, for the address a read reaches, whether the request fails.
     /// </summary>
     public Func<uint, bool>? FailingRead { get; set; }
@@ -287,6 +292,7 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
             Requests++;
             Writes.Add((setup, data.ToArray()));
             uint reached = Reached(AddressOf(setup), BridgeWindow.WriteWindow);
+            BeforeWrite?.Invoke(reached);
             bool failing = FailingWrite?.Invoke(reached) is true;
 
             if (failing && !WritesLandBeforeFailing)
@@ -354,6 +360,9 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
         lock (sync)
         {
             BulkOpened = (endpoint, transferBytes, transfersInFlight);
+            BulkClosed = false;
+            bulk.Clear();
+            fifo.Clear();
         }
 
         return new Reader(this, transferBytes);
@@ -361,7 +370,17 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 
     public (byte Endpoint, int Bytes, int InFlight)? BulkOpened { get; private set; }
 
-    public void Dispose() => Disposed = true;
+    public Exception? DisposingThrows { get; set; }
+
+    public void Dispose()
+    {
+        Disposed = true;
+
+        if (DisposingThrows is { } failure)
+        {
+            throw failure;
+        }
+    }
 
     public uint ReadWord(uint address) =>
         address switch

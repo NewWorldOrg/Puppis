@@ -1436,6 +1436,7 @@ public sealed class TunerSessionManager(
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
 
         pool.Discard(deviceId);
+        LetGo(deviceId);
 
         events?.Signal(DriverEvents.TunerHealthChanged);
         events?.Signal(DriverEvents.Tuners);
@@ -1626,6 +1627,7 @@ public sealed class TunerSessionManager(
 
     private void Fault(string deviceId, DeviceFault fault)
     {
+        LetGo(deviceId);
         recheck?.Forget(deviceId);
         faultedDevices[deviceId] = fault;
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
@@ -1635,6 +1637,14 @@ public sealed class TunerSessionManager(
     }
 
     public bool IsClaimed(string deviceId) => pool.IsHeld(deviceId);
+
+    private void LetGo(string deviceId)
+    {
+        if (DeviceNamed(deviceId) is { } device)
+        {
+            deviceCheck?.LetGo(device);
+        }
+    }
 
     public bool IsEnabled(DeviceSettings device) =>
         device.Id is { } deviceId && toggledDevices.TryGetValue(deviceId, out bool enabled)
@@ -1657,6 +1667,11 @@ public sealed class TunerSessionManager(
 
         toggledDevices[deviceId] = !disabled;
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
+
+        if (disabled)
+        {
+            deviceCheck?.LetGo(device);
+        }
 
         events?.Signal(DriverEvents.TunerHealthChanged);
         events?.Signal(DriverEvents.Tuners);

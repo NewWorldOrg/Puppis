@@ -7,6 +7,7 @@ using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
 using Puppis.Driver.Tuning.Dvb;
 using Puppis.Driver.Tuning.Usb;
+using Puppis.Driver.Tuning.Usb.Bridge;
 using Puppis.Driver.Tuning.Usb.CechZd1;
 using Puppis.Driver.Tuning.Usb.PixDt295;
 
@@ -29,11 +30,18 @@ public interface ITunerDeviceFactory
 public interface ITunerDeviceCheck
 {
     void Check(DeviceSettings device);
+
+    /// <summary>
+    /// Closes whatever is kept open for <paramref name="device"/> between its sessions, when anything is.
+    /// </summary>
+    void LetGo(DeviceSettings device) { }
 }
 
 public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck, IDisposable
 {
     private readonly CechZd1Standby standby = new();
+    private readonly Dt295Keeper keeper = new();
+    private readonly Lock opening = new();
     private readonly TunerBackend backend;
     private readonly TimeProvider time;
     private readonly Lazy<IDvbSystemCalls> systemCalls;
@@ -145,7 +153,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
                 return;
             case TunerBackend.Usb:
-                CheckUsb(UsbPathOf(device));
+                CheckUsb(device, UsbPathOf(device));
 
                 return;
             default:
@@ -167,11 +175,96 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         UsbTunerDetector.NodeFor(usbHost.Value, device.Id, device.DevicePath)
         ?? throw DvbFailure.Refused($"devices['{device.Id}']: a usb device needs a devicePath.");
 
-    private void CheckUsb(string path)
+    /// <summary>
+    /// Closes the PIX-DT295 kept open for <paramref name="device"/>, giving it back as it was found, when one is.
+    /// </summary>
+    public void LetGo(DeviceSettings device)
+    {
+        if (device.Id is { } deviceId)
+        {
+            keeper.LetGo(deviceId);
+        }
+    }
+
+    /// <summary>
+    /// Takes in what a presence check found for <paramref name="device"/>: a tuner gone is let go of, and a PIX-DT295
+    /// found is written down with its slot, looked at once if nobody has looked since it was plugged in. Nothing here
+    /// throws; a device that cannot be asked counts as not yet looked at.
+    /// </summary>
+    public void Looked(DeviceSettings device, bool present)
+    {
+        if (device.Id is not { } deviceId)
+        {
+            return;
+        }
+
+        SlotCards? slots = descramblers as SlotCards;
+
+        if (!present)
+        {
+            try
+            {
+                slots?.Absent(deviceId);
+                keeper.LetGo(deviceId);
+            }
+            catch (Exception failed) when (failed is not OutOfMemoryException)
+            {
+                logger?.LogWarning("devices['{DeviceId}']: letting go of the tuner that is gone failed: {Why}", deviceId, failed.GetType().Name);
+            }
+
+            return;
+        }
+
+        if (slots is null || backend is not TunerBackend.Usb)
+        {
+            return;
+        }
+
+        try
+        {
+            string path = UsbPathOf(device);
+
+            if (usbHost.Value.ModelAt(path) != Dt295TunerDevice.Model)
+            {
+                slots.Absent(deviceId);
+
+                return;
+            }
+
+            slots.Present(deviceId, keeper.Holds(deviceId) || slots.Knows(deviceId) ? null : PeekAtTheSlot(path));
+        }
+        catch (Exception failed) when (failed is DvbDeviceException or IOException or UnauthorizedAccessException)
+        {
+            logger?.LogWarning("devices['{DeviceId}']: the tuner could not be looked at: {Why}", deviceId, failed.Message);
+        }
+    }
+
+    /// <summary>
+    /// Whether the slot of an idle PIX-DT295 nobody holds open holds a card: one register read, which the bridge
+    /// answers as it powers on, or null when the device would not be opened.
+    /// </summary>
+    private bool? PeekAtTheSlot(string path)
+    {
+        lock (opening)
+        {
+            try
+            {
+                using IUsbConnection usb = usbHost.Value.Open(path, Dt295TunerDevice.Interface);
+
+                return (new BridgeMemory(usb).Read(CardUart.Status) & CardUart.CardInserted) is not 0;
+            }
+            catch (DvbDeviceException)
+            {
+                return null;
+            }
+        }
+    }
+
+    private void CheckUsb(DeviceSettings device, string path)
     {
         if (usbHost.Value.ModelAt(path) == Dt295TunerDevice.Model)
         {
-            usbHost.Value.Open(path, Dt295TunerDevice.Interface).Dispose();
+            CheckDt295(device, path);
 
             return;
         }
@@ -189,37 +282,92 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     }
 
     /// <summary>
-    /// Opens a PIX-DT295, read through the card a lender holds where there is one and through the card in the tuner's
-    /// own slot where there is not.
+    /// A kept PIX-DT295 is asked whether it is still as it was left, without being opened again; any other is opened
+    /// afresh, from its bridge's start-up to the program hooked in, and then kept for the next session.
+    /// </summary>
+    private void CheckDt295(DeviceSettings device, string path)
+    {
+        string deviceId = device.Id ?? path;
+
+        lock (opening)
+        {
+            if (!keeper.Holds(deviceId))
+            {
+                keeper.Keep(deviceId, OpenAfresh(deviceId, path));
+
+                return;
+            }
+
+            Dt295Bridge kept =
+                keeper.Take(deviceId, path)
+                ?? throw new DvbDeviceException(
+                    $"devices['{deviceId}']: the tuner kept open is no longer as it was left, so it has been closed.",
+                    TuningFailure.DeviceUnusable
+                );
+            keeper.Keep(deviceId, kept);
+        }
+    }
+
+    /// <summary>
+    /// Opens a PIX-DT295, or takes the one kept open since its last session, which then only has to be tuned. It is
+    /// read through the card a lender holds where there is one and through the card in the tuner's own slot where
+    /// there is not, asked for while the tuner tunes.
     /// </summary>
     private ITunerDevice OpenDt295(DeviceSettings device, string path, DvbChannel channel, HeadHold hold)
     {
         RequireTheDeclaredKind(device, channel);
+        string deviceId = device.Id ?? path;
+        Dt295Bridge bridge;
 
-        Dt295TunerDevice Open() =>
-            Dt295TunerDevice.Open(usbHost.Value, path, channel, pacing, settings.BytePatience, logger, dt295Handler);
+        lock (opening)
+        {
+            bridge = keeper.Take(deviceId, path) ?? OpenAfresh(deviceId, path);
+        }
+
+        Dt295TunerDevice Start() =>
+            Dt295TunerDevice.Start(
+                bridge,
+                channel,
+                pacing,
+                settings.BytePatience,
+                logger,
+                rested => keeper.Keep(deviceId, rested)
+            );
 
         if (descramblers.Unscrambles && descramblers is not SlotCards)
         {
-            return ThroughTheCard(Open, hold);
+            return ThroughTheCard(Start, hold, descramblers);
         }
 
-        Dt295TunerDevice opened = Open();
+        IDescramblerFactory slot;
 
         try
         {
-            IDescramblerFactory slot = descramblers is SlotCards slots
-                ? slots.Attach(opened)
-                : Descramblers.Over(opened.CardService, logger, time);
+            int session = bridge.Slot.BeginSession();
+            ISmartCardService Cards() => bridge.Slot.Service(session);
 
-            return Unscrambling(opened, slot.Open(hold), slot, hold);
+            slot = descramblers is SlotCards slots
+                ? slots.Attach(deviceId, bridge, Cards)
+                : Descramblers.Over(Cards, logger, time);
         }
         catch
         {
-            opened.Dispose();
+            bridge.Close();
 
             throw;
         }
+
+        return ThroughTheCard(Start, hold, slot);
+    }
+
+    /// <summary>
+    /// Opens a PIX-DT295 from power on. It may be kept again afterwards unless it is let go of while it opens.
+    /// </summary>
+    private Dt295Bridge OpenAfresh(string deviceId, string path)
+    {
+        keeper.Admit(deviceId);
+
+        return Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler);
     }
 
     private static void RequireTheDeclaredKind(DeviceSettings device, DvbChannel channel)
@@ -261,11 +409,16 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                     logger,
                     standby
                 ),
-            hold
+            hold,
+            Shared
         );
     }
 
-    public void Dispose() => standby.Dispose();
+    public void Dispose()
+    {
+        standby.Dispose();
+        keeper.Dispose();
+    }
 
     private static ITunerDevice Synthetic(TuningRequest tuning) =>
         new FakeTunerDevice(tuning.PhysicalChannel, tuning.ServiceId);
@@ -285,7 +438,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                     settings with { ReadsFromTheLock = HeadHolds.ReadsFromTheLock(hold) },
                     CancellationToken.None
                 ),
-            hold
+            hold,
+            Shared
         );
     }
 
@@ -293,10 +447,9 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     /// Tunes the device while the card is asked for, so that the card's answer to the initial setting is not added to
     /// the time the frontend takes to lock. A card that answers after the tuning has failed is let go of.
     /// </summary>
-    private ITunerDevice ThroughTheCard(Func<ITunerDevice> open, HeadHold hold)
+    private ITunerDevice ThroughTheCard(Func<ITunerDevice> open, HeadHold hold, IDescramblerFactory cards)
     {
         long started = Stopwatch.GetTimestamp();
-        IDescramblerFactory cards = Shared;
         Task<IDescrambler?>? asking = cards.Unscrambles ? Task.Run(() => cards.Open(hold)) : null;
         ITunerDevice opened;
 
@@ -336,7 +489,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             Stopwatch.GetElapsedTime(started).TotalSeconds
         );
 
-        return Unscrambling(opened, descrambler, hold);
+        return Unscrambling(opened, descrambler, cards, hold);
     }
 
     private static void LetGoOnceAnswered(Task<IDescrambler?>? asking) =>
@@ -356,9 +509,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default
         );
-
-    private ITunerDevice Unscrambling(ITunerDevice opened, IDescrambler? descrambler, HeadHold hold) =>
-        Unscrambling(opened, descrambler, Shared, hold);
 
     /// <summary>
     /// The cards every tuner of this driver may be read through. The cards in tuners' own slots are not among them:

@@ -20,21 +20,34 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
     public const byte Interface = 0;
 
-    private readonly Parts parts;
+    private readonly Dt295Bridge bridge;
     private readonly Dt295Stream stream;
     private readonly DevicePacing pacing;
     private readonly TimeSpan bytePatience;
     private readonly string channel;
+    private readonly Action<Dt295Bridge>? keep;
+    private readonly ILogger? logger;
     private readonly Lock gate = new();
     private bool closed;
+    private bool faulted;
 
-    private Dt295TunerDevice(Parts parts, Dt295Stream stream, DevicePacing pacing, TimeSpan bytePatience, string channel)
+    private Dt295TunerDevice(
+        Dt295Bridge bridge,
+        Dt295Stream stream,
+        DevicePacing pacing,
+        TimeSpan bytePatience,
+        string channel,
+        Action<Dt295Bridge>? keep,
+        ILogger? logger
+    )
     {
-        this.parts = parts;
+        this.logger = logger;
+        this.bridge = bridge;
         this.stream = stream;
         this.pacing = pacing;
         this.bytePatience = bytePatience;
         this.channel = channel;
+        this.keep = keep;
     }
 
     public long Overflows => stream.Losses;
@@ -46,8 +59,11 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
     /// <summary>
     /// The card slot of this tuner as a smart-card service, valid while the tuner is open.
     /// </summary>
-    public ISmartCardService CardService() => parts.Slot.Service();
+    public ISmartCardService CardService() => bridge.CardService();
 
+    /// <summary>
+    /// Opens the device from power on, tunes it and starts the stream; closing gives the device back as it was found.
+    /// </summary>
     public static Dt295TunerDevice Open(
         IUsbHost host,
         string path,
@@ -56,33 +72,104 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         TimeSpan bytePatience,
         ILogger? logger = null,
         string knownHandler = Dt295Startup.HandlerAtPowerOn
+    ) => Start(Dt295Bridge.Open(host, path, pacing, logger, knownHandler), channel, pacing, bytePatience, logger, null);
+
+    /// <summary>
+    /// Tunes an open bridge and starts the stream. Closing stops the stream and hands the bridge to
+    /// <paramref name="keep"/> at rest, unless the device failed, in which case the bridge is closed and given back;
+    /// without <paramref name="keep"/> it is always closed. A channel that does not lock hands the bridge on the same
+    /// way; any other failure closes it.
+    /// </summary>
+    public static Dt295TunerDevice Start(
+        Dt295Bridge bridge,
+        DvbChannel channel,
+        DevicePacing pacing,
+        TimeSpan bytePatience,
+        ILogger? logger,
+        Action<Dt295Bridge>? keep
     )
     {
-        UsbModel model = host.ModelAt(path);
-
-        if (model != Model)
-        {
-            throw DvbFailure.Refused($"{path}: the device there is {model}, not the {Model} tuner this driver opened it as.");
-        }
-
         long started = Stopwatch.GetTimestamp();
-        Parts parts = new(new TurnTakingConnection(host.Open(path, Interface)), pacing, logger);
 
         try
         {
-            parts.Start(knownHandler);
-            parts.Tune(channel);
-            Dt295Stream stream = parts.Stream();
-            var device = new Dt295TunerDevice(parts, stream, pacing, bytePatience, Describe(channel));
+            Tune(bridge, channel);
+            Dt295Stream stream = bridge.StartStream();
+            var device = new Dt295TunerDevice(bridge, stream, pacing, bytePatience, Describe(channel), keep, logger);
             device.Report(logger, Stopwatch.GetElapsedTime(started));
 
             return device;
         }
-        catch
+        catch (DvbDeviceException failed) when (failed.Failure is TuningFailure.NoLock)
         {
-            parts.Close();
+            LetGo(bridge, keep, faulted: false, logger);
 
             throw;
+        }
+        catch
+        {
+            LetGo(bridge, keep, faulted: true, logger);
+
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Hands the bridge on at rest or closes it, whatever goes wrong on the way: a bridge is never left neither kept
+    /// nor closed.
+    /// </summary>
+    private static void LetGo(Dt295Bridge bridge, Action<Dt295Bridge>? keep, bool faulted, ILogger? logger)
+    {
+        try
+        {
+            bool stopped = bridge.StopStream();
+
+            if (!faulted && stopped && keep is not null && bridge.Rest())
+            {
+                keep(bridge);
+
+                return;
+            }
+        }
+        catch (Exception failed) when (failed is not OutOfMemoryException)
+        {
+            logger?.LogWarning("{Path}: the tuner could not be put to rest, so it is closed: {Why}", bridge.Path, failed.GetType().Name);
+        }
+
+        try
+        {
+            bridge.Close();
+        }
+        catch (Exception failed) when (failed is not OutOfMemoryException)
+        {
+            logger?.LogWarning("{Path}: closing the tuner failed: {Why}", bridge.Path, failed.GetType().Name);
+        }
+    }
+
+    private static void Tune(Dt295Bridge bridge, DvbChannel channel)
+    {
+        Dt295Frontend frontend = bridge.Frontend;
+        bool locked = channel switch
+        {
+            TerrestrialChannel terrestrial => frontend.TuneTerrestrial(DvbFrequency.TerrestrialHertz(terrestrial.PhysicalChannel)),
+            BroadcastSatelliteChannel broadcast => frontend.TuneSatellite(
+                DvbFrequency.BroadcastSatelliteKilohertz(broadcast.Slot),
+                broadcast.TransportStreamId,
+                bridge.Path
+            ),
+            CommunicationSatelliteChannel communication => frontend.TuneSatellite(
+                DvbFrequency.CommunicationSatelliteKilohertz(communication.Slot),
+                null,
+                bridge.Path
+            ),
+            _ => throw DvbFailure.Refused($"{bridge.Path}: {channel} is not a channel this tuner receives."),
+        };
+
+        if (!locked)
+        {
+            throw DvbFailure.NoLock(
+                $"{bridge.Path}: the demodulator did not synchronise on {Describe(channel)}. Nothing was received, so no bytes will follow."
+            );
         }
     }
 
@@ -91,9 +178,22 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(closed, this);
-            bool before = parts.Frontend.Locked();
-            CarrierToNoise ratio = parts.Frontend.CarrierToNoise(before);
-            bool after = parts.Frontend.Locked();
+            bool before;
+            CarrierToNoise ratio;
+            bool after;
+
+            try
+            {
+                before = bridge.Frontend.Locked();
+                ratio = bridge.Frontend.CarrierToNoise(before);
+                after = bridge.Frontend.Locked();
+            }
+            catch (DvbDeviceException)
+            {
+                faulted = true;
+
+                throw;
+            }
 
             return new SignalQuality(
                 new LockWindow(Dt295Signal.StatusOf(before), Dt295Signal.StatusOf(after)),
@@ -110,7 +210,18 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             throw Dt295Stream.Closing(cancellationToken);
         }
 
-        byte[] taken = stream.Take(count, bytePatience, cancellationToken);
+        byte[] taken;
+
+        try
+        {
+            taken = stream.Take(count, bytePatience, cancellationToken);
+        }
+        catch (DvbDeviceException)
+        {
+            Volatile.Write(ref faulted, true);
+
+            throw;
+        }
 
         return taken.Length > 0 ? taken : throw NothingArrived(cancellationToken);
     }
@@ -127,7 +238,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             closed = true;
         }
 
-        parts.Close();
+        LetGo(bridge, keep, Volatile.Read(ref faulted) || stream.Faulted, logger);
     }
 
     private static string Describe(DvbChannel channel) =>
@@ -153,19 +264,21 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
                     return Dt295Stream.Closing(cancellationToken);
                 }
 
-                locked = parts.Frontend.Locked();
+                locked = bridge.Frontend.Locked();
             }
         }
         catch (DvbDeviceException)
         {
+            Volatile.Write(ref faulted, true);
+
             return DvbFailure.Refused(
-                $"{parts.Path}: no transport stream arrived on {channel} within {waited}, and the demodulator would not say whether it is still locked."
+                $"{bridge.Path}: no transport stream arrived on {channel} within {waited}, and the demodulator would not say whether it is still locked."
             );
         }
 
         return locked
-            ? DvbFailure.LockedWithoutData($"{parts.Path}: the demodulator is locked on {channel} and no transport stream arrived within {waited}.")
-            : DvbFailure.NoLock($"{parts.Path}: no transport stream arrived on {channel} within {waited}, and the demodulator is no longer locked.");
+            ? DvbFailure.LockedWithoutData($"{bridge.Path}: the demodulator is locked on {channel} and no transport stream arrived within {waited}.")
+            : DvbFailure.NoLock($"{bridge.Path}: no transport stream arrived on {channel} within {waited}, and the demodulator is no longer locked.");
     }
 
     private void Report(ILogger? logger, TimeSpan took)
@@ -178,146 +291,11 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         SignalQuality quality = Measure();
         logger.LogInformation(
             "{Path}: started, tuned to {Channel} and streaming after {Milliseconds:0} ms; locked {Locked}, C/N {Ratio}.",
-            parts.Path,
+            bridge.Path,
             channel,
             took.TotalMilliseconds,
             quality.HasLock,
             quality.CarrierToNoise.TryGetDecibels(out double decibels) ? $"{decibels:0.0} dB" : "not measured"
         );
-    }
-
-    /// <summary>
-    /// What an opening has put in place, closed in the reverse order whatever stage it reached.
-    /// </summary>
-    private sealed class Parts
-    {
-        private readonly TurnTakingConnection usb;
-        private readonly DevicePacing pacing;
-        private readonly BridgeMemory memory;
-        private readonly BridgeWindow window;
-        private readonly Dt295Capture capture;
-        private readonly Fr30Program program = CopyProgram.Build();
-        private readonly ILogger? logger;
-        private bool started;
-        private bool capturing;
-        private EndpointState? endpoint;
-        private IUsbBulkReader? reader;
-        private Dt295Stream? stream;
-
-        public Parts(TurnTakingConnection usb, DevicePacing pacing, ILogger? logger)
-        {
-            this.usb = usb;
-            this.pacing = pacing;
-            this.logger = logger;
-            memory = new BridgeMemory(usb);
-            window = new BridgeWindow(memory);
-            capture = new Dt295Capture(window, memory);
-            Frontend = new Dt295Frontend(new Dt295Chips(new BridgeI2c(memory)), pacing);
-            Slot = new Dt295CardSlot(new CardUart(new BridgeMemory(usb), pacing));
-        }
-
-        public string Path => usb.Path;
-
-        public Dt295Frontend Frontend { get; }
-
-        public Dt295CardSlot Slot { get; }
-
-        public void Start(string knownHandler)
-        {
-            Dt295Startup.RequirePowerOnState(memory);
-            Dt295Startup.RequireTheKnownHandler(memory, knownHandler);
-            started = true;
-            Dt295Startup.ResetTheDemodulator(memory, pacing);
-            Dt295Startup.StartClocks(memory);
-            Dt295Startup.StartI2cMaster(memory);
-            Frontend.Identify(usb.Path);
-            Frontend.Initialise();
-            CopyProgram.Install(memory, program, () => Dt295Stream.Instruct(usb, memory, 0, CopyCommand.Answer, 0, 0));
-        }
-
-        public void Tune(DvbChannel channel)
-        {
-            bool locked = channel switch
-            {
-                TerrestrialChannel terrestrial => Frontend.TuneTerrestrial(DvbFrequency.TerrestrialHertz(terrestrial.PhysicalChannel)),
-                BroadcastSatelliteChannel broadcast => Frontend.TuneSatellite(
-                    DvbFrequency.BroadcastSatelliteKilohertz(broadcast.Slot),
-                    broadcast.TransportStreamId,
-                    usb.Path
-                ),
-                CommunicationSatelliteChannel communication => Frontend.TuneSatellite(
-                    DvbFrequency.CommunicationSatelliteKilohertz(communication.Slot),
-                    null,
-                    usb.Path
-                ),
-                _ => throw DvbFailure.Refused($"{usb.Path}: {channel} is not a channel this tuner receives."),
-            };
-
-            if (!locked)
-            {
-                throw DvbFailure.NoLock(
-                    $"{usb.Path}: the demodulator did not synchronise on {Describe(channel)}. Nothing was received, so no bytes will follow."
-                );
-            }
-        }
-
-        public Dt295Stream Stream()
-        {
-            capture.Prepare();
-            endpoint = capture.KeepTheEndpoint();
-            capture.ReadyTheEndpoint(endpoint);
-            reader = usb.ReadBulk(Dt295Capture.Endpoint, Dt295Capture.TransferBytes, Dt295Capture.TransfersInFlight);
-            capturing = true;
-            capture.Start();
-            stream = new Dt295Stream(usb, new BridgeMemory(usb), capture.Writer, reader, pacing);
-            stream.Start();
-
-            return stream;
-        }
-
-        /// <summary>
-        /// Gives the bridge back step by step, carrying on past a step that fails and saying which one did.
-        /// </summary>
-        public void Close()
-        {
-            Quietly("stopping the copying", () => stream?.Dispose());
-
-            if (capturing)
-            {
-                Quietly("stopping the capture", capture.Stop);
-            }
-
-            Quietly("cancelling the bulk reads", () => reader?.Dispose());
-
-            if (endpoint is not null)
-            {
-                Quietly("putting the endpoint back", () => capture.RestoreTheEndpoint(endpoint));
-            }
-
-            if (started)
-            {
-                Quietly("taking the hook out", () => CopyProgram.UnhookIfOurs(memory));
-                Quietly("switching the card off", Slot.Close);
-                Quietly("putting the window back", window.PutBack);
-            }
-
-            usb.Dispose();
-        }
-
-        private bool Quietly(string step, Action action)
-        {
-            try
-            {
-                action();
-
-                return true;
-            }
-            catch (Exception failed) when (failed is DvbDeviceException or InvalidOperationException)
-            {
-                logger?.LogWarning("{Path}: {Step} failed while the tuner closed: {Why}", usb.Path, step, failed.GetType().Name);
-
-                return false;
-            }
-        }
     }
 }

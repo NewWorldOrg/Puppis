@@ -208,6 +208,35 @@ public sealed class FaultedTunerRecheckTests
     }
 
     [Fact]
+    public void ATunerThatFailedIsLetGoOfSoThatWhatIsKeptOfItIsClosed()
+    {
+        TunerSessionManager manager = Manager();
+
+        FailOn(manager, "s-1");
+
+        Assert.Contains("adapter0", check.LetGoOf);
+    }
+
+    [Fact]
+    public void ATunerFaultedForFailingOnTwoChannelsIsLetGoOf()
+    {
+        TunerSessionManager manager = new(
+            Configuration,
+            new FailingChannelDeviceFactory(deadChannels: [14, 15]),
+            clock,
+            NullLogger<TunerSessionManager>.Instance,
+            events: hub,
+            deviceCheck: check
+        );
+
+        Assert.Equal(SessionRefusal.NoLock, Refusal(manager, Surveying("survey-14", 14)));
+        Assert.Empty(check.LetGoOf);
+        Assert.Equal(SessionRefusal.NoLock, manager.Begin(Surveying("survey-15", 15)).Refusal);
+
+        Assert.Equal(["adapter0"], check.LetGoOf);
+    }
+
+    [Fact]
     public void ATunerFaultedForFailingOnTwoChannelsIsTriedAgainAndServesOnceItOpens()
     {
         TunerSessionManager manager = new(
@@ -365,9 +394,15 @@ public sealed class FaultedTunerRecheckTests
     {
         private readonly ConcurrentQueue<string> tried = new();
 
+        private readonly ConcurrentQueue<string> letGo = new();
+
         private int refusals;
 
         public IReadOnlyList<string> Tried => [.. tried];
+
+        public IReadOnlyList<string> LetGoOf => [.. letGo];
+
+        public void LetGo(DeviceSettings device) => letGo.Enqueue(device.Id!);
 
         public void RefuseTheNext(int count) => refusals = count;
 
