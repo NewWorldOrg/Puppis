@@ -137,7 +137,7 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
             {
                 Name = Dt295CardSlot.ReaderName,
                 State = StateOf(slot),
-                InUse = slot.HoldsACard && slot.Tuner?.IsOpen is true,
+                InUse = slot.HoldsACard && slot.Tuner?.InSession is true,
             }),
         ];
 

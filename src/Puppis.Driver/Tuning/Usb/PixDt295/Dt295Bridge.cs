@@ -45,6 +45,20 @@ public sealed class Dt295Bridge
 
     public Dt295CardSlot Slot { get; }
 
+    /// <summary>
+    /// Whether a session's stream is running on the bridge.
+    /// </summary>
+    public bool InSession
+    {
+        get
+        {
+            lock (gate)
+            {
+                return !closed && stream is not null;
+            }
+        }
+    }
+
     public bool IsOpen
     {
         get
@@ -171,8 +185,8 @@ public sealed class Dt295Bridge
     }
 
     /// <summary>
-    /// Puts whichever side was tuned back to how the set-up leaves it, ready for the next tune. Answers whether it
-    /// went through.
+    /// Puts whichever side was tuned back to how the set-up leaves it, ready for the next tune, and switches the card
+    /// off. Answers whether it went through.
     /// </summary>
     public bool Rest() =>
         Quietly(
@@ -189,7 +203,7 @@ public sealed class Dt295Bridge
                         break;
                 }
             }
-        );
+        ) & Quietly("switching the card off", Slot.Rest);
 
     /// <summary>
     /// Gives the bridge back step by step, carrying on past a step that fails and saying which one did, and closes

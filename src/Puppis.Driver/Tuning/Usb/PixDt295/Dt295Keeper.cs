@@ -3,11 +3,13 @@ namespace Puppis.Driver.Tuning.Usb.PixDt295;
 /// <summary>
 /// The PIX-DT295 bridges no session is on, kept open and ready by the id of the device they were declared as, so that
 /// the next session on one only tunes and starts the stream. Whatever is let go of, or handed in after the keeper is
-/// disposed, is closed and given back as it was found.
+/// disposed, is closed and given back as it was found. A device let go of is not kept again, whoever hands it in,
+/// until it has been opened afresh.
 /// </summary>
 public sealed class Dt295Keeper : IDisposable
 {
     private readonly Dictionary<string, Dt295Bridge> kept = new(StringComparer.Ordinal);
+    private readonly HashSet<string> barred = new(StringComparer.Ordinal);
     private readonly Lock gate = new();
     private bool disposed;
 
@@ -54,7 +56,7 @@ public sealed class Dt295Keeper : IDisposable
 
         lock (gate)
         {
-            closing = disposed;
+            closing = disposed || barred.Contains(deviceId);
             kept.Remove(deviceId, out replaced);
 
             if (!closing)
@@ -80,10 +82,22 @@ public sealed class Dt295Keeper : IDisposable
 
         lock (gate)
         {
+            barred.Add(deviceId);
             kept.Remove(deviceId, out letGo);
         }
 
         letGo?.Close();
+    }
+
+    /// <summary>
+    /// Lets a device opened afresh be kept again after it was let go of.
+    /// </summary>
+    public void Admit(string deviceId)
+    {
+        lock (gate)
+        {
+            barred.Remove(deviceId);
+        }
     }
 
     public void Dispose()

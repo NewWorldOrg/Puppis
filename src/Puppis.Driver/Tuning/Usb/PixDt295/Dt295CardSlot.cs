@@ -4,9 +4,10 @@ namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
 /// <summary>
 /// The card slot of an open PIX-DT295, offered as a smart-card service with one reader. The card is powered when it
-/// is first connected to and stays powered until the tuner closes, so that a later connection speaks to it as it is;
-/// disposing a connection or the service leaves it as it is. A card that stops answering is powered afresh by the next
-/// connection.
+/// is first connected to and stays powered until its session ends or the tuner closes, so that later connections in a
+/// session speak to it as it is; disposing a connection or the service leaves it as it is. A card that stops answering
+/// is powered afresh by the next connection, and so is every card at the start of a session, since one may have been
+/// swapped in the meantime without the slot saying so.
 /// </summary>
 public sealed class Dt295CardSlot(CardUart uart)
 {
@@ -41,6 +42,24 @@ public sealed class Dt295CardSlot(CardUart uart)
         lock (gate)
         {
             return !closed && uart.CardIsIn();
+        }
+    }
+
+    /// <summary>
+    /// Switches the card off between sessions, when it is on.
+    /// </summary>
+    public void Rest()
+    {
+        lock (gate)
+        {
+            if (closed || !Powered)
+            {
+                return;
+            }
+
+            Powered = false;
+            speaking = null;
+            uart.SwitchOff();
         }
     }
 

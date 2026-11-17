@@ -429,14 +429,18 @@ public sealed class Dt295FactoryTests
     }
 
     [Fact]
-    public void CheckingTheTunerOpensAndClosesItWithoutStartingIt()
+    public void CheckingATunerNothingKeepsStartsItAfreshAndKeepsItReady()
     {
         FakeDt295 fake = FakeDt295.Locking();
+        TunerDeviceFactory factory = Factory(fake);
 
-        Factory(fake).Check(Tuner);
+        factory.Check(Tuner);
 
-        Assert.Empty(fake.Writes);
+        Assert.True(CopyProgram.IsOurHook(fake.Word(CopyProgram.HookAt), fake.Word(CopyProgram.HookAt + 4)));
+        Assert.False(fake.Disposed);
+        factory.Dispose();
         Assert.True(fake.Disposed);
+        Assert.Equal(CopyProgram.HookAtPowerOn, [fake.Word(CopyProgram.HookAt), fake.Word(CopyProgram.HookAt + 4)]);
     }
 
     [Fact]

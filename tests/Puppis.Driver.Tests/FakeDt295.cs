@@ -364,7 +364,17 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 
     public (byte Endpoint, int Bytes, int InFlight)? BulkOpened { get; private set; }
 
-    public void Dispose() => Disposed = true;
+    public Exception? DisposingThrows { get; set; }
+
+    public void Dispose()
+    {
+        Disposed = true;
+
+        if (DisposingThrows is { } failure)
+        {
+            throw failure;
+        }
+    }
 
     public uint ReadWord(uint address) =>
         address switch

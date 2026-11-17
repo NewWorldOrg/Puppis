@@ -202,8 +202,15 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
         if (!present)
         {
-            keeper.LetGo(deviceId);
-            slots?.Absent(deviceId);
+            try
+            {
+                slots?.Absent(deviceId);
+                keeper.LetGo(deviceId);
+            }
+            catch (Exception failed) when (failed is not OutOfMemoryException)
+            {
+                logger?.LogWarning("devices['{DeviceId}']: letting go of the tuner that is gone failed: {Why}", deviceId, failed.GetType().Name);
+            }
 
             return;
         }
@@ -275,12 +282,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     }
 
     /// <summary>
-    /// Opens a PIX-DT295, read through the card a lender holds where there is one and through the card in the tuner's
-    /// own slot where there is not.
-    /// </summary>
-    /// <summary>
     /// A kept PIX-DT295 is asked whether it is still as it was left, without being opened again; any other is opened
-    /// and closed.
+    /// afresh, from its bridge's start-up to the program hooked in, and then kept for the next session.
     /// </summary>
     private void CheckDt295(DeviceSettings device, string path)
     {
@@ -288,7 +291,10 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
         if (!keeper.Holds(deviceId))
         {
-            usbHost.Value.Open(path, Dt295TunerDevice.Interface).Dispose();
+            lock (opening)
+            {
+                keeper.Keep(deviceId, OpenAfresh(deviceId, path));
+            }
 
             return;
         }
@@ -315,7 +321,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
         lock (opening)
         {
-            bridge = keeper.Take(deviceId, path) ?? Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler);
+            bridge = keeper.Take(deviceId, path) ?? OpenAfresh(deviceId, path);
         }
 
         Dt295TunerDevice Start() =>
@@ -333,11 +339,30 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             return ThroughTheCard(Start, hold, descramblers);
         }
 
-        IDescramblerFactory slot = descramblers is SlotCards slots
-            ? slots.Attach(deviceId, bridge)
-            : Descramblers.Over(bridge.CardService, logger, time);
+        IDescramblerFactory slot;
+
+        try
+        {
+            slot = descramblers is SlotCards slots
+                ? slots.Attach(deviceId, bridge)
+                : Descramblers.Over(bridge.CardService, logger, time);
+        }
+        catch
+        {
+            bridge.Close();
+
+            throw;
+        }
 
         return ThroughTheCard(Start, hold, slot);
+    }
+
+    private Dt295Bridge OpenAfresh(string deviceId, string path)
+    {
+        Dt295Bridge bridge = Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler);
+        keeper.Admit(deviceId);
+
+        return bridge;
     }
 
     private static void RequireTheDeclaredKind(DeviceSettings device, DvbChannel channel)

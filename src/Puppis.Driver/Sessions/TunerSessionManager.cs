@@ -1436,6 +1436,7 @@ public sealed class TunerSessionManager(
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
 
         pool.Discard(deviceId);
+        LetGo(deviceId);
 
         events?.Signal(DriverEvents.TunerHealthChanged);
         events?.Signal(DriverEvents.Tuners);
