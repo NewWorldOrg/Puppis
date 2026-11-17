@@ -103,7 +103,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
     public byte[] Read(int count, CancellationToken cancellationToken)
     {
-        byte[] taken = stream.Take(count, pacing.Now + bytePatience, cancellationToken);
+        byte[] taken = stream.Take(count, bytePatience, cancellationToken);
 
         return taken.Length > 0 ? taken : throw NothingArrived();
     }
@@ -179,7 +179,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
     /// </summary>
     private sealed class Parts
     {
-        private readonly IUsbConnection usb;
+        private readonly TurnTakingConnection usb;
         private readonly DevicePacing pacing;
         private readonly BridgeMemory memory;
         private readonly BridgeWindow window;
@@ -192,7 +192,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         private IUsbBulkReader? reader;
         private Dt295Stream? stream;
 
-        public Parts(IUsbConnection usb, DevicePacing pacing)
+        public Parts(TurnTakingConnection usb, DevicePacing pacing)
         {
             this.usb = usb;
             this.pacing = pacing;

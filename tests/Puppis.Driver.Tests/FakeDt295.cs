@@ -24,7 +24,7 @@ public sealed record I2cTransfer(byte Address, byte[] Written, byte[] Read)
 /// </summary>
 internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 {
-    public const uint RequestBlock = 0x000E8000;
+    public const uint RequestBlock = 0x000C461C;
 
     public const uint HookAt = CopyProgram.HookAt;
 
@@ -264,6 +264,7 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
             }
 
             Writes.Add((setup, data.ToArray()));
+            Stage(setup, data);
 
             if (Hooked())
             {
@@ -387,7 +388,10 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 
     private bool Hooked() => CopyProgram.IsOurHook(Load(HookAt), Load(HookAt + 4));
 
-    private uint RunTheHook(UsbSetup setup, ReadOnlySpan<byte> data)
+    /// <summary>
+    /// Lays a write out in the block the bridge's handling reads it from, which every write passes through.
+    /// </summary>
+    private void Stage(UsbSetup setup, ReadOnlySpan<byte> data)
     {
         Store(RequestBlock, AddressOf(setup));
 
@@ -398,6 +402,10 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 
         WriteByte(RequestBlock + 0x46, (byte)setup.Value);
         WriteHalf(RequestBlock + 0x48, (ushort)data.Length);
+    }
+
+    private uint RunTheHook(UsbSetup setup, ReadOnlySpan<byte> data)
+    {
         var machine = new Fr30Machine(this);
         Sentinels.ToArray().CopyTo(machine.Registers, 0);
         uint exit = machine.Run(CopyProgram.Entry, CopyProgram.Entry, CopyProgram.Entry + CopyProgram.PlaceBytes);

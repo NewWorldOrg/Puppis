@@ -19,11 +19,11 @@ public sealed class Dt295TunerDeviceTests
 
     private static readonly int UnitsPerTransfer = Dt295Capture.TransferBytes / CaptureUnpacker.UnitBytes;
 
-    private static (Dt295TunerDevice Device, FakeDt295 Fake, ManualTimeProvider Clock) Opened(FakeDt295? fake = null, bool broadcasting = true)
+    private static (Dt295TunerDevice Device, FakeDt295 Fake, SteppedClock Clock) Opened(FakeDt295? fake = null, bool broadcasting = true)
     {
         fake ??= FakeDt295.Locking();
         fake.Broadcasting = broadcasting;
-        (DevicePacing pacing, ManualTimeProvider clock) = PixDt295Support.Pacing(fake);
+        (DevicePacing pacing, SteppedClock clock) = PixDt295Support.Pacing(fake);
         Dt295TunerDevice device = Dt295TunerDevice.Open(
             new FakeDt295Host(fake),
             Path,
@@ -233,7 +233,7 @@ public sealed class Dt295TunerDeviceTests
     [Fact]
     public void MoreThanASecondBetweenInstructionsIsTakenAsALoss()
     {
-        (Dt295TunerDevice device, _, ManualTimeProvider clock) = Opened();
+        (Dt295TunerDevice device, _, SteppedClock clock) = Opened();
 
         clock.Advance(TimeSpan.FromSeconds(2));
         SpinWait.SpinUntil(() => device.Overflows > 0, TimeSpan.FromSeconds(30));
@@ -245,7 +245,7 @@ public sealed class Dt295TunerDeviceTests
     [Fact]
     public async Task ALockedTunerThatSendsNothingSaysSo()
     {
-        (Dt295TunerDevice device, _, ManualTimeProvider clock) = Opened(broadcasting: false);
+        (Dt295TunerDevice device, _, SteppedClock clock) = Opened(broadcasting: false);
         Task later = Task.Run(async () =>
         {
             await Task.Delay(200);
@@ -268,6 +268,13 @@ public sealed class Dt295TunerDeviceTests
         Assert.True(quality.CarrierToNoise.TryGetDecibels(out double decibels));
         Assert.Equal(38.0, decibels, 0.05);
         Assert.Equal(SignalReading.NotImplementedByThisTuner, quality.PostViterbiErrors.Reading);
+
+        for (int again = 0; again < 20; again++)
+        {
+            Assert.True(device.Measure().HasLock);
+        }
+
+        Assert.NotEmpty(device.Read(TsPacketReader.PacketLength * 100, CancellationToken.None));
         device.Dispose();
     }
 

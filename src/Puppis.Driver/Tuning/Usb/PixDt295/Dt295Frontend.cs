@@ -169,7 +169,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         chips.WriteS(0xA5, (byte)(chips.ReadS(0xA5, 1)[0] | 0x40));
         chips.WriteS(0xA3, (byte)((chips.ReadS(0xA3, 1)[0] & 0x88) | 0x11));
         Tuned = Dt295Side.Satellite;
-        DateTimeOffset deadline = pacing.Now + SatelliteLockPatience;
+        long started = pacing.Timestamp;
 
         if (transportStreamId is not { } wanted)
         {
@@ -185,7 +185,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         chips.WriteS(0x8F, (byte)(wanted >> 8));
         chips.WriteS(0x90, (byte)wanted);
 
-        return Await(deadline - pacing.Now, () => SatelliteLockedOn(wanted));
+        return Await(SatelliteLockPatience - pacing.Since(started), () => SatelliteLockedOn(wanted));
     }
 
     public bool Locked() =>
@@ -273,7 +273,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
     private bool Await(TimeSpan patience, Func<bool> locked)
     {
-        DateTimeOffset deadline = pacing.Now + patience;
+        long started = pacing.Timestamp;
 
         while (true)
         {
@@ -284,7 +284,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
                 return true;
             }
 
-            if (pacing.Now >= deadline)
+            if (pacing.Since(started) >= patience)
             {
                 return false;
             }

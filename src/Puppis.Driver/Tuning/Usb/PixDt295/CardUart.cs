@@ -124,8 +124,8 @@ public sealed class CardUart(BridgeMemory memory, DevicePacing pacing)
     /// </summary>
     public byte[] Receive(TimeSpan patience, Func<IReadOnlyList<byte>, bool> enough)
     {
-        DateTimeOffset deadline = pacing.Now + patience;
-        DateTimeOffset? lastByte = null;
+        long started = pacing.Timestamp;
+        long? lastByte = null;
         List<byte> bytes = [];
 
         while (true)
@@ -137,11 +137,9 @@ public sealed class CardUart(BridgeMemory memory, DevicePacing pacing)
                 bytes.Add((byte)memory.Read(ReceiveByte));
             }
 
-            DateTimeOffset now = pacing.Now;
-
             if (waiting > 0)
             {
-                lastByte = now;
+                lastByte = pacing.Timestamp;
 
                 if (enough(bytes))
                 {
@@ -151,7 +149,7 @@ public sealed class CardUart(BridgeMemory memory, DevicePacing pacing)
                 continue;
             }
 
-            if ((lastByte is { } last && now - last >= Silence) || now >= deadline)
+            if ((lastByte is { } last && pacing.Since(last) >= Silence) || pacing.Since(started) >= patience)
             {
                 return [.. bytes];
             }

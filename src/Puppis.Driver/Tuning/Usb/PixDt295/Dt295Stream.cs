@@ -24,13 +24,16 @@ public sealed class Dt295Stream : IDisposable
 
     private static readonly TimeSpan ReapPatience = TimeSpan.FromMilliseconds(100);
 
-    private readonly IUsbConnection usb;
+    private readonly TurnTakingConnection usb;
     private readonly BridgeMemory memory;
     private readonly Func<uint> writer;
     private readonly IUsbBulkReader reader;
     private readonly DevicePacing pacing;
     private readonly CaptureUnpacker unpacker = new();
-    private readonly List<byte> packets = [];
+    private readonly List<byte> unpacked = [];
+    private readonly Queue<byte[]> packets = new();
+    private int heldBytes;
+    private int headTaken;
     private readonly ConcurrentQueue<long> breaks = new();
     private readonly object held = new();
     private readonly Thread asking;
@@ -42,7 +45,7 @@ public sealed class Dt295Stream : IDisposable
     private uint sequence;
 
     /// <param name="writer">Reads where the capture block's writer stands, for a jump past what was lost.</param>
-    public Dt295Stream(IUsbConnection usb, BridgeMemory memory, Func<uint> writer, IUsbBulkReader reader, DevicePacing pacing)
+    public Dt295Stream(TurnTakingConnection usb, BridgeMemory memory, Func<uint> writer, IUsbBulkReader reader, DevicePacing pacing)
     {
         this.usb = usb;
         this.memory = memory;
@@ -70,21 +73,23 @@ public sealed class Dt295Stream : IDisposable
     }
 
     /// <summary>
-    /// Takes whole packets, waiting until <paramref name="deadline"/> by the device's clock for the first of them.
-    /// Answers an empty array when none came in time; throws what stopped the stream.
+    /// Takes whole packets, waiting as long as <paramref name="patience"/> by the device's clock for the first of
+    /// them. Answers an empty array when none came in time; throws what stopped the stream.
     /// </summary>
-    public byte[] Take(int count, DateTimeOffset deadline, CancellationToken cancellationToken)
+    public byte[] Take(int count, TimeSpan patience, CancellationToken cancellationToken)
     {
+        long asked = pacing.Timestamp;
+
         lock (held)
         {
-            while (packets.Count < TsPacketReader.PacketLength)
+            while (heldBytes < TsPacketReader.PacketLength)
             {
                 if (fault is not null)
                 {
                     throw Stopped();
                 }
 
-                if (pacing.Now >= deadline)
+                if (pacing.Since(asked) >= patience)
                 {
                     return [];
                 }
@@ -94,10 +99,25 @@ public sealed class Dt295Stream : IDisposable
             }
 
             int whole = Math.Max(count / TsPacketReader.PacketLength, 1) * TsPacketReader.PacketLength;
-            int taking = Math.Min(packets.Count / TsPacketReader.PacketLength * TsPacketReader.PacketLength, whole);
-            byte[] delivered = new byte[taking];
-            packets.CopyTo(0, delivered, 0, taking);
-            packets.RemoveRange(0, taking);
+            byte[] delivered = new byte[Math.Min(heldBytes, whole)];
+            int filled = 0;
+
+            while (filled < delivered.Length)
+            {
+                byte[] head = packets.Peek();
+                int taking = Math.Min(head.Length - headTaken, delivered.Length - filled);
+                Buffer.BlockCopy(head, headTaken, delivered, filled, taking);
+                filled += taking;
+                headTaken += taking;
+
+                if (headTaken == head.Length)
+                {
+                    packets.Dequeue();
+                    headTaken = 0;
+                }
+            }
+
+            heldBytes -= delivered.Length;
 
             return delivered;
         }
@@ -123,43 +143,43 @@ public sealed class Dt295Stream : IDisposable
     }
 
     /// <summary>
-    /// Sends the copying program one instruction and reads its answer.
+    /// Sends the copying program one instruction and reads its answer in the same turn, since the next write anybody
+    /// sends lands where the answer is.
     /// </summary>
     public static CopyAnswer Instruct(
-        IUsbConnection usb,
+        TurnTakingConnection usb,
         BridgeMemory memory,
         uint number,
         CopyCommand command,
         uint position,
         uint limit
-    )
-    {
-        usb.ControlOut(
-            CopyProgram.InstructionSetup,
-            CopyProgram.Instruction(number, command, position, limit),
-            InstructionPatience
-        );
+    ) =>
+        usb.Together(() =>
+        {
+            usb.ControlOut(
+                CopyProgram.InstructionSetup,
+                CopyProgram.Instruction(number, command, position, limit),
+                InstructionPatience
+            );
 
-        return CopyAnswer.From(memory.ReadWords(CopyProgram.Instructions, 16), number, command, usb.Path);
-    }
+            return CopyAnswer.From(memory.ReadWords(CopyProgram.Instructions, 16), number, command, usb.Path);
+        });
 
     private void Ask()
     {
         uint position = 0;
-        DateTimeOffset previous = pacing.Now;
+        long previous = pacing.Timestamp;
 
         try
         {
             while (!stopping)
             {
-                DateTimeOffset now = pacing.Now;
-
-                if (now - previous > LongestBetweenInstructions)
+                if (pacing.Since(previous) > LongestBetweenInstructions)
                 {
                     position = Skip(writer());
                 }
 
-                previous = now;
+                previous = pacing.Timestamp;
                 CopyAnswer answer = Instruct(usb, memory, ++sequence, CopyCommand.Copy, position, CopyProgram.MostChunks);
 
                 if (answer.Result is not CopyResult.Good)
@@ -178,7 +198,7 @@ public sealed class Dt295Stream : IDisposable
                 }
             }
         }
-        catch (Exception stopped) when (stopped is DvbDeviceException or InvalidOperationException)
+        catch (Exception stopped) when (stopped is not OutOfMemoryException)
         {
             Fail(stopped);
         }
@@ -213,7 +233,7 @@ public sealed class Dt295Stream : IDisposable
                 }
             }
         }
-        catch (Exception stopped) when (stopped is DvbDeviceException or InvalidOperationException)
+        catch (Exception stopped) when (stopped is not OutOfMemoryException)
         {
             Fail(stopped);
         }
@@ -245,7 +265,7 @@ public sealed class Dt295Stream : IDisposable
             return;
         }
 
-        if (packets.Count + arrived.Length > MostHeldBytes)
+        if (heldBytes + arrived.Length > MostHeldBytes)
         {
             Interlocked.Increment(ref dropped);
             unpacker.Forget();
@@ -253,7 +273,13 @@ public sealed class Dt295Stream : IDisposable
             return;
         }
 
-        unpacker.Unpack(arrived, packets);
+        unpacked.Clear();
+
+        if (unpacker.Unpack(arrived, unpacked) > 0)
+        {
+            packets.Enqueue([.. unpacked]);
+            heldBytes += unpacked.Count;
+        }
     }
 
     private void Fail(Exception stopped)

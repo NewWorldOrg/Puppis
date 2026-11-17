@@ -23,14 +23,30 @@ internal sealed class FakeDt295Host(FakeDt295 device) : IUsbHost
     }
 }
 
+/// <summary>
+/// A clock that moves only when it is told to, on the calendar and on the monotonic reading alike.
+/// </summary>
+public sealed class SteppedClock(DateTimeOffset start) : TimeProvider
+{
+    private long ticks;
+
+    public override DateTimeOffset GetUtcNow() => start + TimeSpan.FromTicks(Interlocked.Read(ref ticks));
+
+    public override long GetTimestamp() => Interlocked.Read(ref ticks);
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public void Advance(TimeSpan by) => Interlocked.Add(ref ticks, by.Ticks);
+}
+
 internal static class PixDt295Support
 {
     /// <summary>
     /// A clock that moves only when the device is made to wait, and writes each wait into the device's log.
     /// </summary>
-    public static (DevicePacing Pacing, ManualTimeProvider Clock) Pacing(FakeDt295 device)
+    public static (DevicePacing Pacing, SteppedClock Clock) Pacing(FakeDt295 device)
     {
-        var clock = new ManualTimeProvider(UsbTestSupport.Start);
+        var clock = new SteppedClock(UsbTestSupport.Start);
 
         return (
             new DevicePacing(

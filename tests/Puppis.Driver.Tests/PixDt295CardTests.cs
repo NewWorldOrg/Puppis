@@ -158,7 +158,7 @@ public sealed class Dt295CardSlotTests
     {
         FakeDt295 device = FakeDt295.Locking();
         List<string> seen = [];
-        var clock = new ManualTimeProvider(UsbTestSupport.Start);
+        var clock = new SteppedClock(UsbTestSupport.Start);
         var pacing = new DevicePacing(clock, span => { seen.Add($"wait {span.TotalMilliseconds:0}"); clock.Advance(span); });
         var uart = new CardUart(new BridgeMemory(new RecordingConnection(device, seen)), pacing);
 

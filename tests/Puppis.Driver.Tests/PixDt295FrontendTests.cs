@@ -44,10 +44,10 @@ public sealed class Dt295TerrestrialTests
         TR B0
         """;
 
-    private static (Dt295Frontend Frontend, FakeDt295 Device, ManualTimeProvider Clock) Frontend()
+    private static (Dt295Frontend Frontend, FakeDt295 Device, SteppedClock Clock) Frontend()
     {
         FakeDt295 device = FakeDt295.Locking();
-        (DevicePacing pacing, ManualTimeProvider clock) = PixDt295Support.Pacing(device);
+        (DevicePacing pacing, SteppedClock clock) = PixDt295Support.Pacing(device);
 
         return (new Dt295Frontend(PixDt295Support.Chips(device), pacing), device, clock);
     }
@@ -74,7 +74,7 @@ public sealed class Dt295TerrestrialTests
     [Fact]
     public void AChannelThatDoesNotLockIsGivenUpOnAfterThreeSeconds()
     {
-        (Dt295Frontend frontend, FakeDt295 device, ManualTimeProvider clock) = Frontend();
+        (Dt295Frontend frontend, FakeDt295 device, SteppedClock clock) = Frontend();
         device.Demodulator[0x80] = 0xAF;
         device.Demodulator[0xB0] = 0xA0;
         DateTimeOffset started = clock.GetUtcNow();
@@ -159,8 +159,7 @@ public sealed class Dt295TerrestrialTests
 }
 
 /// <summary>
-/// The satellite side follows the specification only: there was no dish where it was written, so none of this has
-/// been through a real signal.
+/// The satellite side follows the specification only. None of it has been through a real satellite signal.
 /// </summary>
 public sealed class Dt295SatelliteFollowsTheSpecOnlyTests
 {
