@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 
 using Puppis.Driver.Tuning.Dvb;
 
-namespace Puppis.Driver.Tuning.Usb.CechZd1;
+namespace Puppis.Driver.Tuning.Usb.Bridge;
 
 /// <summary>
 /// The bridge's memory, registers included, through its vendor request. Words travel big endian.

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 
 using Puppis.Driver.Transport;
 using Puppis.Driver.Tuning.Dvb;
+using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 

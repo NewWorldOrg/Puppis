@@ -1,4 +1,4 @@
-namespace Puppis.Driver.Tuning.Usb.CechZd1;
+namespace Puppis.Driver.Tuning.Usb.Bridge;
 
 public enum Fr30Condition
 {

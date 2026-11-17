@@ -4,6 +4,7 @@ using Puppis.Driver.Descrambling;
 using Puppis.Driver.Tuning;
 using Puppis.Driver.Tuning.Dvb;
 using Puppis.Driver.Tuning.Usb;
+using Puppis.Driver.Tuning.Usb.Bridge;
 using Puppis.Driver.Tuning.Usb.CechZd1;
 
 namespace Puppis.Driver.Tests;

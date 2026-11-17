@@ -1,6 +1,6 @@
 using Puppis.Driver.Transport;
 
-namespace Puppis.Driver.Tuning.Usb.CechZd1;
+namespace Puppis.Driver.Tuning.Usb.Bridge;
 
 /// <summary>
 /// Takes the four byte arrival time off each unit the bridge sends and hands on the packet behind it. Reads do not
