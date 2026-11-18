@@ -391,24 +391,101 @@ public sealed class TunerMeasuringTableTests
     }
 
     [Fact]
-    public void TheWaitForAMeasurementToStopIsCountedFromWhenTheRequestStoppedIt()
+    public void EachRequestsWaitForAMeasurementToStopIsCountedFromWhenThatRequestTookTheTuner()
     {
         TunerPool pool = Pool(("north", true));
         MeasuringTicket ticket = Measure(pool);
         clock.Advance(TimeSpan.FromSeconds(40));
 
         PoolGrant first = Ask(pool, "first", Here);
-        DateTimeOffset stoppedAt = clock.GetUtcNow();
+        DateTimeOffset firstTookIt = clock.GetUtcNow();
+        clock.Advance(TimeSpan.FromSeconds(1));
 
-        Assert.Equal(stoppedAt, pool.Clearance("north", first.Holder)!.Since);
+        Assert.Equal(firstTookIt, pool.Clearance("north", first.Holder)!.Since);
 
-        clock.Advance(TimeSpan.FromSeconds(2));
-        pool.Leave(first.Holder);
+        clock.Advance(TimeSpan.FromSeconds(29));
+        pool.GiveBack("north", first.Holder, new TunerRefusal(SessionRefusal.DeviceBusy, "it did not stop in time"));
         PoolGrant second = Ask(pool, "second", Here);
+        DateTimeOffset secondTookIt = clock.GetUtcNow();
+        clock.Advance(TimeSpan.FromSeconds(1));
+        TunerClearance clearance = pool.Clearance("north", second.Holder)!;
 
-        Assert.Equal(stoppedAt, pool.Clearance("north", second.Holder)!.Since);
+        Assert.Equal(ClearanceKind.AMeasurement, clearance.Awaits);
+        Assert.Equal(secondTookIt, clearance.Since);
 
         pool.EndMeasuring(ticket);
+    }
+
+    [Fact]
+    public void ARiderThatBecomesTheOneOpeningWaitsForTheMeasurementFromWhenItJoined()
+    {
+        TunerPool pool = Pool(("north", true));
+        MeasuringTicket ticket = Measure(pool);
+        PoolGrant leader = Ask(pool, "leader", Here);
+        clock.Advance(TimeSpan.FromSeconds(3));
+        PoolGrant rider = Ask(pool, "rider", Here);
+        DateTimeOffset riderJoined = clock.GetUtcNow();
+        clock.Advance(TimeSpan.FromSeconds(27));
+
+        pool.GiveBack("north", leader.Holder, new TunerRefusal(SessionRefusal.DeviceBusy, "it did not stop in time"));
+
+        Assert.Equal(PoolVerdict.Shared, rider.Verdict);
+        Assert.Equal(riderJoined, pool.Clearance("north", SessionId.Parse("rider"))!.Since);
+
+        pool.EndMeasuring(ticket);
+    }
+
+    [Fact]
+    public void WhenTheOneOpeningGivesUpItsWaitTheOthersOnTheTunerStayAndOneOfThemOpensIt()
+    {
+        TunerPool pool = Pool(("north", true));
+        PoolGrant leader = Ask(pool, "leader", Here);
+        PoolGrant rider = Ask(pool, "rider", Here);
+        SessionId riding = SessionId.Parse("rider");
+
+        bool gaveBack = pool.GiveBack("north", leader.Holder, new TunerRefusal(SessionRefusal.DeviceBusy, "what was on it did not let go"));
+
+        Assert.True(gaveBack);
+        Assert.Equal(PoolVerdict.Shared, rider.Verdict);
+        Assert.Equal(TunerAllocationState.Tuning, pool.StateOf("north"));
+        Assert.Equal([riding], pool.SinksOn("north"));
+        Assert.Null(pool.RefusalOf(riding));
+        Assert.NotNull(pool.Clearance("north", riding));
+        Assert.NotNull(pool.StartOpening("north", riding));
+        Assert.Equal(0, pool.RefusedTransitions);
+    }
+
+    [Fact]
+    public void TheOneOpeningAloneStillFreesTheTunerWhenItGivesUpItsWait()
+    {
+        TunerPool pool = Pool(("north", true));
+        PoolGrant leader = Ask(pool, "leader", Here);
+
+        Assert.True(pool.GiveBack("north", leader.Holder, new TunerRefusal(SessionRefusal.DeviceBusy, "what was on it did not let go")));
+
+        Assert.Equal(TunerAllocationState.Free, pool.StateOf("north"));
+        Assert.Empty(pool.SinksOn("north"));
+    }
+
+    [Fact]
+    public void ATunerSaysWhenAMeasurementOnItIsStillStopping()
+    {
+        TunerPool pool = Pool(("north", true));
+
+        Assert.False(pool.IsStoppingAMeasurement("north"));
+
+        MeasuringTicket ticket = Measure(pool);
+
+        Assert.False(pool.IsStoppingAMeasurement("north"));
+
+        Ask(pool, "user", Here);
+
+        Assert.True(pool.IsStoppingAMeasurement("north"));
+
+        pool.EndMeasuring(ticket);
+
+        Assert.False(pool.IsStoppingAMeasurement("north"));
+        Assert.False(pool.IsStoppingAMeasurement("nowhere"));
     }
 
     [Fact]

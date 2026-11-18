@@ -138,7 +138,7 @@ public sealed class TunerPool(
 
     public const string MeasurementUnderWay = "a measurement under way";
 
-    private sealed record Sink(SessionId SessionId, int Priority);
+    private sealed record Sink(SessionId SessionId, int Priority, DateTimeOffset Since);
 
     private sealed class Occupancy(TuningKey tuning, SessionId holder)
     {
@@ -919,7 +919,7 @@ public sealed class TunerPool(
     {
         turnedAway.Remove(request.SessionId);
         entry.IdleSince = null;
-        occupancy.Sinks.Add(new Sink(request.SessionId, request.Priority));
+        occupancy.Sinks.Add(new Sink(request.SessionId, request.Priority, timeProvider.GetUtcNow()));
         bySink[request.SessionId] = entry;
     }
 
@@ -1008,22 +1008,28 @@ public sealed class TunerPool(
                 return null;
             }
 
-            return ClearanceOf(entry);
+            return ClearanceOf(entry, occupancy.Sinks.Find(sink => sink.SessionId == opener)!.Since);
         }
     }
 
-    private TunerClearance ClearanceOf(Entry entry)
+    public bool IsStoppingAMeasurement(string deviceId)
+    {
+        lock (gate)
+        {
+            return entries.TryGetValue(deviceId, out Entry? entry) && entry.Measuring is { InterruptedAt: not null };
+        }
+    }
+
+    private TunerClearance ClearanceOf(Entry entry, DateTimeOffset tookTheTunerAt)
     {
         if (entry.State is TunerAllocationState.HandingOver && entry.Handover is { } handover)
         {
             return new TunerClearance(handover.Task, entry.HandoverSince, ClearanceKind.AHandOver);
         }
 
-        DateTimeOffset now = timeProvider.GetUtcNow();
-
         return entry.Measuring is { } stopping
-            ? new TunerClearance(ClearedOnce(entry.Quiet), stopping.InterruptedAt ?? now, ClearanceKind.AMeasurement, stopping.Tuning)
-            : new TunerClearance(ClearedOnce(entry.Quiet), now);
+            ? new TunerClearance(ClearedOnce(entry.Quiet), tookTheTunerAt, ClearanceKind.AMeasurement, stopping.Tuning)
+            : new TunerClearance(ClearedOnce(entry.Quiet), timeProvider.GetUtcNow());
     }
 
     public OpenTicket? StartOpening(string deviceId, SessionId opener)
@@ -1332,7 +1338,7 @@ public sealed class TunerPool(
                 && occupancy.Has(claimant)
             )
             {
-                gaveBack = GiveUpTheOpening(entry, occupancy, why, after);
+                gaveBack = GiveUpTheOpening(entry, occupancy, claimant, why, after);
             }
             else
             {
@@ -1345,11 +1351,18 @@ public sealed class TunerPool(
         return gaveBack;
     }
 
-    private bool GiveUpTheOpening(Entry entry, Occupancy occupancy, TunerRefusal? why, List<Action> after)
+    private bool GiveUpTheOpening(Entry entry, Occupancy occupancy, SessionId claimant, TunerRefusal? why, List<Action> after)
     {
         if (entry.State is TunerAllocationState.HandingOver)
         {
             return GiveBackUnderGate(entry, after, why);
+        }
+
+        if (occupancy.Sinks.Count > 1)
+        {
+            LeaveUnderGate(claimant, after, closing: true);
+
+            return true;
         }
 
         Evict(occupancy, why);

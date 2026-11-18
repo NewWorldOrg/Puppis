@@ -219,7 +219,13 @@ public sealed class IdleMeasurementYieldsTests
 
     private static readonly TimeSpan ShortLimit = TimeSpan.FromMilliseconds(300);
 
-    private (TunerSessionManager Manager, IdleReceptionMeasurer Measurer) OnTheWallClock(params string[] devices)
+    private (TunerSessionManager Manager, IdleReceptionMeasurer Measurer) OnTheWallClock(params string[] devices) =>
+        OnTheWallClock(null, devices);
+
+    private (TunerSessionManager Manager, IdleReceptionMeasurer Measurer) OnTheWallClock(
+        TimeSpan? measurementStopLimit,
+        params string[] devices
+    )
     {
         var limited = new TunerSessionManager(
             Configured(devices),
@@ -230,7 +236,8 @@ public sealed class IdleMeasurementYieldsTests
             handOverLimit: ShortLimit,
             deviceCheck: hardware,
             openLimit: ShortLimit,
-            reception: book
+            reception: book,
+            measurementStopLimit: measurementStopLimit
         );
 
         return (
@@ -417,6 +424,118 @@ public sealed class IdleMeasurementYieldsTests
         Assert.Equal("north", session.DeviceId);
         Assert.Equal(IdleMeasurementEnd.Interrupted, (await measuring.WaitAsync(Deadlock))?.End);
         Assert.Equal(["probe opened north 31", "probe closed north", "opened north 33"], hardware.Happened);
+
+        session.Stop();
+        await session.Completion.WaitAsync(Deadlock);
+    }
+
+    private static Task<SessionStart> AskFor(TunerSessionManager from, string sessionId) =>
+        from.BeginAsync(
+            new StartSessionRequest
+            {
+                SessionId = SessionId.Parse(sessionId),
+                Purpose = SessionPurpose.Live,
+                Tuning = new TuningRequest(TunerKind.Terrestrial, Wanted.PhysicalChannel, 50001),
+            }
+        );
+
+    private static async Task<TunerSession> StartedAsync(Task<SessionStart> starting)
+    {
+        SessionStart start = await starting.WaitAsync(Deadlock);
+
+        Assert.True(start.TryGetSession(out TunerSession? session), $"{start.Refusal}: {start.Detail}");
+
+        return session;
+    }
+
+    [Fact]
+    public async Task ARiderIsNotRefusedWhenTheOneItRodeGivesUpOnACloseThatHangsAndGoesToAnotherTuner()
+    {
+        Prefer("north");
+        (TunerSessionManager limited, _) = OnTheWallClock("north", "south");
+        using var closing = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        TunerSession before = await StartedOnAsync(limited, "before", "north");
+        hardware.WhileClosing = _ =>
+        {
+            closing.Set();
+            release.Wait(Deadlock);
+        };
+        before.Stop();
+        await Task.Run(() => Assert.True(closing.Wait(Deadlock)));
+
+        Task<SessionStart> leading = AskFor(limited, "leader");
+        await Task.Delay(ShortLimit / 2);
+        Task<SessionStart> riding = AskFor(limited, "rider");
+
+        Assert.Equal(TunerAllocationState.Tuning, limited.Allocations().Single(tuner => tuner.DeviceId is "north").State);
+        Assert.Equal(2, limited.Allocations().Single(tuner => tuner.DeviceId is "north").Sinks.Count);
+
+        TunerSession leader = await StartedAsync(leading);
+        TunerSession rider = await StartedAsync(riding);
+
+        Assert.Equal("south", leader.DeviceId);
+        Assert.Equal("south", rider.DeviceId);
+        Assert.Empty(hardware.Overlaps);
+        Assert.Equal(1, hardware.Happened.Count(what => what is "opened south 33"));
+
+        hardware.WhileClosing = null;
+        release.Set();
+        await before.Completion.WaitAsync(Deadlock);
+        rider.Stop();
+        leader.Stop();
+        await rider.Completion.WaitAsync(Deadlock);
+        await leader.Completion.WaitAsync(Deadlock);
+    }
+
+    [Fact]
+    public async Task ARiderWaitsAsLongAsTheOneItRidesMayWaitForAMeasurementToStop()
+    {
+        (TunerSessionManager limited, IdleReceptionMeasurer slow) = OnTheWallClock(TimeSpan.FromSeconds(20), "north");
+        (ManualResetEventSlim reached, ManualResetEventSlim release) = HoldTheProbeOpen();
+        Task<IdleMeasurement?> measuring = Task.Run(slow.MeasureIfDue);
+        await Task.Run(() => Assert.True(reached.Wait(Deadlock)));
+
+        Task<SessionStart> leading = AskFor(limited, "leader");
+        Task<SessionStart> riding = AskFor(limited, "rider");
+        await Task.Delay(ShortLimit + ShortLimit);
+
+        Assert.False(leading.IsCompleted);
+        Assert.False(riding.IsCompleted);
+
+        release.Set();
+        TunerSession leader = await StartedAsync(leading);
+        TunerSession rider = await StartedAsync(riding);
+
+        Assert.Equal("north", leader.DeviceId);
+        Assert.Same(leader, rider.RidesOn);
+        Assert.Equal(IdleMeasurementEnd.Interrupted, (await measuring.WaitAsync(Deadlock))?.End);
+        Assert.Empty(hardware.Overlaps);
+
+        rider.Stop();
+        leader.Stop();
+        await rider.Completion.WaitAsync(Deadlock);
+        await leader.Completion.WaitAsync(Deadlock);
+    }
+
+    [Fact]
+    public async Task TheLimitForAMeasurementToStopIsItsOwnAndTheLimitOfAnOpenWhenNoneIsGiven()
+    {
+        (TunerSessionManager patient, IdleReceptionMeasurer slow) = OnTheWallClock(TimeSpan.FromSeconds(20), "north");
+        (ManualResetEventSlim reached, ManualResetEventSlim release) = HoldTheProbeOpen();
+        Task<IdleMeasurement?> measuring = Task.Run(slow.MeasureIfDue);
+        await Task.Run(() => Assert.True(reached.Wait(Deadlock)));
+
+        Task<SessionStart> waiting = AskFor(patient, "patient");
+        await Task.Delay(ShortLimit + ShortLimit);
+
+        Assert.False(waiting.IsCompleted);
+
+        release.Set();
+        TunerSession session = await StartedAsync(waiting);
+        await measuring.WaitAsync(Deadlock);
+
+        Assert.Equal("north", session.DeviceId);
 
         session.Stop();
         await session.Completion.WaitAsync(Deadlock);

@@ -32,7 +32,8 @@ public sealed class TunerSessionManager(
     ITunerDeviceCheck? deviceCheck = null,
     Func<DeviceSettings, bool?>? presence = null,
     TimeSpan? openLimit = null,
-    ReceptionBook? reception = null
+    ReceptionBook? reception = null,
+    TimeSpan? measurementStopLimit = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
@@ -77,6 +78,7 @@ public sealed class TunerSessionManager(
     private readonly TimeSpan letGo = letGoLimit ?? LetGoLimit;
     private readonly TimeSpan handOver = handOverLimit ?? HandOverLimit;
     private readonly TimeSpan opening = openLimit ?? OpenLimit;
+    private readonly TimeSpan measurementStop = measurementStopLimit ?? openLimit ?? OpenLimit;
     private readonly IRecordingWriterFactory writerFactory =
         recordingWriters ?? new RecordingWriterFactory();
     private FaultedTunerRecheck? rechecking;
@@ -767,7 +769,10 @@ public sealed class TunerSessionManager(
     }
 
     private TimeSpan LimitOf(TunerClearance clearance) =>
-        clearance.Awaits is ClearanceKind.AMeasurement ? opening : handOver;
+        clearance.Awaits is ClearanceKind.AMeasurement ? measurementStop : handOver;
+
+    private TimeSpan PatienceOfARiderOn(string deviceId) =>
+        pool.IsStoppingAMeasurement(deviceId) ? handOver + measurementStop : handOver;
 
     private void SayAMeasurementWasStopped(TunerClearance clearance, string deviceId, SessionId sessionId, TimeSpan waited)
     {
@@ -792,7 +797,7 @@ public sealed class TunerSessionManager(
                 sessionId.Value,
                 TunerPool.MeasurementUnderWay,
                 deviceId,
-                opening
+                measurementStop
             );
         }
     }
@@ -910,7 +915,12 @@ public sealed class TunerSessionManager(
         CancellationToken cancellationToken
     )
     {
-        TunerReadiness readiness = await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken);
+        TunerReadiness readiness = await pool.AwaitReadyAsync(
+            grant.DeviceId,
+            PatienceOfARiderOn(grant.DeviceId),
+            request.SessionId,
+            cancellationToken
+        );
 
         if (readiness.Leads)
         {
@@ -979,7 +989,12 @@ public sealed class TunerSessionManager(
         CancellationToken cancellationToken
     )
     {
-        TunerReadiness readiness = await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken);
+        TunerReadiness readiness = await pool.AwaitReadyAsync(
+            grant.DeviceId,
+            PatienceOfARiderOn(grant.DeviceId),
+            request.SessionId,
+            cancellationToken
+        );
 
         if (readiness.Leads)
         {
