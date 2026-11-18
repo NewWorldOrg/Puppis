@@ -98,6 +98,8 @@ public sealed class TunerPool(
 
     public const int RiderLimit = SessionBroadcaster.DefaultSubscriberLimit;
 
+    public static readonly TimeSpan ClaimantsAnswer = TimeSpan.FromSeconds(2);
+
     private sealed record Sink(SessionId SessionId, int Priority);
 
     private sealed class Occupancy(TuningKey tuning, SessionId holder)
@@ -899,6 +901,7 @@ public sealed class TunerPool(
         while (true)
         {
             Task waiting;
+            DateTimeOffset until = giveUpAt;
 
             lock (gate)
             {
@@ -908,9 +911,15 @@ public sealed class TunerPool(
                 }
 
                 waiting = next!;
+
+                if (entries[deviceId] is { State: TunerAllocationState.HandingOver } handingOver)
+                {
+                    DateTimeOffset claimantGivesUp = handingOver.HandoverSince + limit + ClaimantsAnswer;
+                    until = claimantGivesUp > until ? claimantGivesUp : until;
+                }
             }
 
-            TimeSpan left = giveUpAt - timeProvider.GetUtcNow();
+            TimeSpan left = until - timeProvider.GetUtcNow();
 
             try
             {
