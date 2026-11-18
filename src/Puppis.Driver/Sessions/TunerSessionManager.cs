@@ -627,7 +627,8 @@ public sealed class TunerSessionManager(
             return Lost(claim, sessionId);
         }
 
-        TimeSpan left = handOver - (timeProvider.GetUtcNow() - clearance.Since);
+        TimeSpan limit = clearance.AMeasurementIsStopping ? opening : handOver;
+        TimeSpan left = limit - (timeProvider.GetUtcNow() - clearance.Since);
         bool cleared;
 
         try
@@ -638,10 +639,11 @@ public sealed class TunerSessionManager(
         {
             var why = new TunerRefusal(
                 SessionRefusal.DeviceBusy,
-                $"The device '{deviceId}' was asked for '{sessionId}', and what was on it did not let go within {handOver}."
+                $"The device '{deviceId}' was asked for '{sessionId}', and what was on it did not let go within {limit}."
             );
 
             claim.GiveBack(why);
+            SayAMeasurementHeldUp(clearance, deviceId, sessionId, limit);
 
             return SessionStart.Refused(why.Refusal, why.Detail);
         }
@@ -701,6 +703,19 @@ public sealed class TunerSessionManager(
             holds: true,
             tuned: ticket.Tunes
         );
+    }
+
+    private void SayAMeasurementHeldUp(TunerClearance clearance, string deviceId, SessionId sessionId, TimeSpan limit)
+    {
+        if (clearance.AMeasurementIsStopping)
+        {
+            logger.LogError(
+                "Session {SessionId} was refused the device {DeviceId} while it was only being measured: the measurement did not stop within {Limit}.",
+                sessionId.Value,
+                deviceId,
+                limit
+            );
+        }
     }
 
     private TimeSpan OpeningLeft(OpenTicket ticket)
@@ -1849,6 +1864,31 @@ public sealed class TunerSessionManager(
 
         events?.Signal(DriverEvents.TunerHealthChanged);
         events?.Signal(DriverEvents.Tuners);
+    }
+
+    public IReadOnlyList<RestingTuner> RestingTuners() => draining ? [] : pool.Resting();
+
+    public MeasuringTicket? BeginMeasuring(string deviceId, TuningKey tuning) =>
+        draining ? null : pool.BeginMeasuring(deviceId, tuning);
+
+    public bool EndMeasuring(MeasuringTicket ticket) => pool.EndMeasuring(ticket);
+
+    public void FaultAfterMeasuring(string deviceId, Exception cause)
+    {
+        RecheckPlan? plan = FaultUntilItOpens(
+            deviceId,
+            new TunerFault(
+                $"The device failed while how well it receives was being measured: {cause.Message}",
+                null,
+                DeviceFaultKind.Failed
+            )
+        );
+
+        logger.LogWarning(
+            "The device {DeviceId} failed while how well it receives was being measured, so it is not handed out until it opens again; {NextTry}",
+            deviceId,
+            plan is null ? NotTriedAgain() : $"it is tried again at {plan.NextTryAt:O}."
+        );
     }
 
     public bool IsClaimed(string deviceId) => pool.IsHeld(deviceId);

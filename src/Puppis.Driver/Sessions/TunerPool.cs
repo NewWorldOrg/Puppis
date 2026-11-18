@@ -67,7 +67,11 @@ public sealed record TunerRefusal(SessionRefusal Refusal, string Detail);
 
 public sealed record TunerReadiness(bool Ready, TunerRefusal? Refusal, bool Leads = false);
 
-public sealed record TunerClearance(Task<bool> Cleared, DateTimeOffset Since);
+public sealed record TunerClearance(Task<bool> Cleared, DateTimeOffset Since, bool AMeasurementIsStopping = false);
+
+public sealed record RestingTuner(string DeviceId, DateTimeOffset Since);
+
+public sealed record MeasuringTicket(string DeviceId, TuningKey Tuning, object Token, CancellationToken Stopping);
 
 public sealed record OpenTicket(
     string DeviceId,
@@ -94,7 +98,8 @@ public sealed record TunerAllocationView(
     int Closing,
     int InFlight,
     bool Enabled,
-    bool Faulted
+    bool Faulted,
+    bool Measuring = false
 );
 
 public sealed class TunerPool(
@@ -152,9 +157,24 @@ public sealed class TunerPool(
         public bool Has(SessionId sessionId) => Sinks.Exists(sink => sink.SessionId == sessionId);
     }
 
-    private sealed class Entry(string deviceId, bool enabled)
+    private sealed class Measurement(DateTimeOffset since)
+    {
+        public DateTimeOffset Since { get; } = since;
+
+        public CancellationTokenSource Stopping { get; } = new();
+
+        public TaskCompletionSource Landed { get; } = Unset();
+
+        public bool Interrupted { get; set; }
+    }
+
+    private sealed class Entry(string deviceId, bool enabled, DateTimeOffset since)
     {
         public string DeviceId { get; } = deviceId;
+
+        public DateTimeOffset? RestingSince { get; set; } = enabled ? since : null;
+
+        public Measurement? Measuring { get; set; }
 
         public TunerAllocationState State { get; set; } =
             enabled ? TunerAllocationState.Free : TunerAllocationState.Disabled;
@@ -193,7 +213,7 @@ public sealed class TunerPool(
                 or TunerAllocationState.HandingOver;
     }
 
-    private readonly Dictionary<string, Entry> entries = Declare(declared);
+    private readonly Dictionary<string, Entry> entries = Declare(declared, timeProvider.GetUtcNow());
     private readonly Dictionary<SessionId, Entry> bySink = [];
     private readonly Dictionary<SessionId, TunerRefusal> turnedAway = [];
     private readonly List<string> refusedTransitions = [];
@@ -207,13 +227,13 @@ public sealed class TunerPool(
 
     public int RefusedTransitions => Volatile.Read(ref refusals);
 
-    private static Dictionary<string, Entry> Declare(IEnumerable<(string DeviceId, bool Enabled)>? declared)
+    private static Dictionary<string, Entry> Declare(IEnumerable<(string DeviceId, bool Enabled)>? declared, DateTimeOffset since)
     {
         Dictionary<string, Entry> declaredEntries = new(StringComparer.Ordinal);
 
         foreach ((string deviceId, bool enabled) in declared ?? [])
         {
-            declaredEntries[deviceId] = new Entry(deviceId, enabled);
+            declaredEntries[deviceId] = new Entry(deviceId, enabled, since);
         }
 
         return declaredEntries;
@@ -524,7 +544,7 @@ public sealed class TunerPool(
             Entry entry = entries[candidate.DeviceId];
             PoolGrant? grant = entry.State is TunerAllocationState.Ready
                 ? TakeATunerNobodyIsOn(entry, request, after)
-                : TakeAFreeTuner(entry, request);
+                : TakeAFreeTuner(entry, request, after);
 
             if (grant is null)
             {
@@ -542,7 +562,7 @@ public sealed class TunerPool(
     private static bool IsIdleFor(Entry entry, PoolRequest request) =>
         entry.State switch
         {
-            TunerAllocationState.Free => !HoldsBack(entry, request),
+            TunerAllocationState.Free or TunerAllocationState.Measuring => !HoldsBack(entry, request),
             TunerAllocationState.Ready => entry.Current is not null,
             _ => false,
         };
@@ -565,13 +585,16 @@ public sealed class TunerPool(
         ));
     }
 
-    private PoolGrant? TakeAFreeTuner(Entry entry, PoolRequest request)
+    private PoolGrant? TakeAFreeTuner(Entry entry, PoolRequest request, List<Action> after)
     {
+        bool measuring = entry.State is TunerAllocationState.Measuring;
+
         if (!Move(entry, TunerAllocationEvent.Claim))
         {
             return null;
         }
 
+        Interrupt(entry, after);
         entry.Current = new Occupancy(request.Tuning, request.SessionId);
         Attach(entry, entry.Current, request);
 
@@ -581,9 +604,105 @@ public sealed class TunerPool(
             request.SessionId,
             NeedsTuning: true,
             [],
-            $"The tuner '{entry.DeviceId}' is free and goes to '{request.SessionId}' for {request.Tuning}.",
+            measuring
+                ? $"The tuner '{entry.DeviceId}' was only being measured, so the measurement stops and it goes to '{request.SessionId}' for {request.Tuning}."
+                : $"The tuner '{entry.DeviceId}' is free and goes to '{request.SessionId}' for {request.Tuning}.",
             Clearing: ClearedOnce(entry.Quiet)
         );
+    }
+
+    private static void Interrupt(Entry entry, List<Action> after)
+    {
+        if (entry.Measuring is not { Interrupted: false } measurement)
+        {
+            return;
+        }
+
+        measurement.Interrupted = true;
+        after.Add(measurement.Stopping.Cancel);
+    }
+
+    public IReadOnlyList<RestingTuner> Resting()
+    {
+        List<Action> after = [];
+        RestingTuner[] resting;
+
+        lock (gate)
+        {
+            Expire(after);
+
+            resting =
+            [
+                .. entries
+                    .Values.Where(entry => MayBeMeasured(entry) && entry.RestingSince is not null)
+                    .Select(entry => new RestingTuner(entry.DeviceId, entry.RestingSince!.Value)),
+            ];
+        }
+
+        Run(after, rethrow: false);
+
+        return resting;
+    }
+
+    private bool MayBeMeasured(Entry entry) =>
+        !disposed
+        && entry.State is TunerAllocationState.Free
+        && entry.Measuring is null
+        && IsStill(entry);
+
+    public MeasuringTicket? BeginMeasuring(string deviceId, TuningKey tuning)
+    {
+        lock (gate)
+        {
+            if (
+                !entries.TryGetValue(deviceId, out Entry? entry)
+                || !MayBeMeasured(entry)
+                || !Move(entry, TunerAllocationEvent.MeasureBegan)
+            )
+            {
+                return null;
+            }
+
+            var measurement = new Measurement(timeProvider.GetUtcNow());
+
+            entry.Measuring = measurement;
+            entry.InFlight++;
+            entry.Quiet = entry.Quiet.IsCompleted
+                ? measurement.Landed.Task
+                : Task.WhenAll(entry.Quiet, measurement.Landed.Task);
+
+            return new MeasuringTicket(deviceId, tuning, measurement, measurement.Stopping.Token);
+        }
+    }
+
+    public bool EndMeasuring(MeasuringTicket ticket)
+    {
+        List<Action> after = [];
+        var measurement = (Measurement)ticket.Token;
+        bool undisturbed = false;
+
+        lock (gate)
+        {
+            Entry entry = EntryOf(ticket.DeviceId);
+
+            if (ReferenceEquals(entry.Measuring, measurement))
+            {
+                entry.Measuring = null;
+                entry.InFlight--;
+                undisturbed = !measurement.Interrupted && Move(entry, TunerAllocationEvent.MeasureEnded);
+            }
+
+            if (entry.State is TunerAllocationState.Disabled or TunerAllocationState.Faulted or TunerAllocationState.Absent)
+            {
+                LetGoOf(entry, after);
+            }
+
+            after.Add(() => measurement.Landed.TrySetResult());
+        }
+
+        Run(after);
+
+        return undisturbed;
     }
 
     private PoolGrant? TakeATunerNobodyIsOn(Entry entry, PoolRequest request, List<Action> after)
@@ -671,6 +790,12 @@ public sealed class TunerPool(
 
         Entry[] considered = [.. request.Candidates.Select(EntryOf).Where(entry => entry.Enabled && entry.Fault is null)];
         string[] reasons = [.. considered.Select(entry => WhyNot(entry, request))];
+
+        refusedTransitions.AddRange(
+            considered
+                .Where(entry => entry.State is TunerAllocationState.Measuring)
+                .Select(entry => $"'{request.SessionId}' was refused {request.Tuning} while the tuner '{entry.DeviceId}' was only being measured.")
+        );
 
         return PoolGrant.Refused(
             considered.Any(entry => entry.State is TunerAllocationState.Absent)
@@ -798,10 +923,20 @@ public sealed class TunerPool(
                 return null;
             }
 
-            return entry.State is TunerAllocationState.HandingOver && entry.Handover is { } handover
-                ? new TunerClearance(handover.Task, entry.HandoverSince)
-                : new TunerClearance(ClearedOnce(entry.Quiet), timeProvider.GetUtcNow());
+            return ClearanceOf(entry);
         }
+    }
+
+    private TunerClearance ClearanceOf(Entry entry)
+    {
+        if (entry.State is TunerAllocationState.HandingOver && entry.Handover is { } handover)
+        {
+            return new TunerClearance(handover.Task, entry.HandoverSince);
+        }
+
+        return entry.Measuring is { } stopping
+            ? new TunerClearance(ClearedOnce(entry.Quiet), stopping.Since, AMeasurementIsStopping: true)
+            : new TunerClearance(ClearedOnce(entry.Quiet), timeProvider.GetUtcNow());
     }
 
     public OpenTicket? StartOpening(string deviceId, SessionId opener)
@@ -1585,6 +1720,7 @@ public sealed class TunerPool(
 
         if (!occupied)
         {
+            Interrupt(entry, after);
             Drop(entry, entry.Current?.Device, after);
             entry.Current = null;
             entry.HeldBack = null;
@@ -1603,7 +1739,7 @@ public sealed class TunerPool(
         {
             Entry entry = EntryOf(deviceId);
 
-            if (!entry.IsOccupied)
+            if (!entry.IsOccupied && entry.State is not TunerAllocationState.Measuring)
             {
                 See(entry, present, after);
             }
@@ -1639,6 +1775,8 @@ public sealed class TunerPool(
 
     private void Clear(Entry entry, List<Action> after)
     {
+        Interrupt(entry, after);
+
         foreach (Occupancy occupancy in new[] { entry.Current, entry.Previous }.OfType<Occupancy>())
         {
             Evict(occupancy);
@@ -1704,7 +1842,7 @@ public sealed class TunerPool(
     {
         lock (gate)
         {
-            return [.. entries.Values.Where(entry => entry.IsOccupied).Select(entry => entry.DeviceId)];
+            return [.. entries.Values.Where(entry => entry.IsOccupied || entry.Measuring is not null).Select(entry => entry.DeviceId)];
         }
     }
 
@@ -1755,7 +1893,8 @@ public sealed class TunerPool(
             entry.Closing,
             entry.InFlight,
             entry.Enabled,
-            entry.Fault is not null
+            entry.Fault is not null,
+            entry.Measuring is not null
         );
 
     public void Dispose()
@@ -1770,6 +1909,8 @@ public sealed class TunerPool(
 
             foreach (Entry entry in entries.Values)
             {
+                Interrupt(entry, after);
+
                 foreach (Occupancy occupancy in new[] { entry.Current, entry.Previous }.OfType<Occupancy>())
                 {
                     occupancy.Ready.TrySetResult();
@@ -1836,7 +1977,7 @@ public sealed class TunerPool(
     {
         if (!entries.TryGetValue(deviceId, out Entry? entry))
         {
-            entry = new Entry(deviceId, enabled: true);
+            entry = new Entry(deviceId, enabled: true, timeProvider.GetUtcNow());
             entries[deviceId] = entry;
         }
 
@@ -1881,6 +2022,7 @@ public sealed class TunerPool(
     {
         if (TunerTransitions.TryMove(entry.State, on, out TunerAllocationState next))
         {
+            entry.RestingSince = RestingSinceAfter(entry, next);
             entry.State = next;
 
             return true;
@@ -1891,6 +2033,19 @@ public sealed class TunerPool(
 
         return false;
     }
+
+    private DateTimeOffset? RestingSinceAfter(Entry entry, TunerAllocationState next)
+    {
+        if (!IsAtRest(next))
+        {
+            return null;
+        }
+
+        return IsAtRest(entry.State) ? entry.RestingSince : timeProvider.GetUtcNow();
+    }
+
+    private static bool IsAtRest(TunerAllocationState state) =>
+        state is TunerAllocationState.Free or TunerAllocationState.Ready or TunerAllocationState.Measuring;
 
     private void Run(List<Action> after, bool rethrow = true)
     {
