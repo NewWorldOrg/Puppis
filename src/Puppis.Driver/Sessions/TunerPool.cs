@@ -624,24 +624,17 @@ public sealed class TunerPool(
 
     public IReadOnlyList<RestingTuner> Resting()
     {
-        List<Action> after = [];
-        RestingTuner[] resting;
+        Sweep();
 
         lock (gate)
         {
-            Expire(after);
-
-            resting =
+            return
             [
                 .. entries
                     .Values.Where(entry => MayBeMeasured(entry) && entry.RestingSince is not null)
                     .Select(entry => new RestingTuner(entry.DeviceId, entry.RestingSince!.Value)),
             ];
         }
-
-        Run(after, rethrow: false);
-
-        return resting;
     }
 
     private bool MayBeMeasured(Entry entry) =>
