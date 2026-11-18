@@ -92,6 +92,7 @@ public sealed class TunerAllocationStressTests
         private readonly TunerSessionManager manager;
         private readonly ConcurrentDictionary<SessionId, int> channelOf = new();
         private readonly ConcurrentQueue<string> violations = new();
+        private readonly ConcurrentDictionary<string, bool> plugged = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<SessionId, DateTime> unseatedSince = new();
         private int begun;
 
@@ -114,7 +115,8 @@ public sealed class TunerAllocationStressTests
                 recordingWriters: new DiscardingWriters(),
                 tunerGrace: TimeSpan.FromSeconds(5),
                 handOverLimit: TimeSpan.FromSeconds(30),
-                deviceCheck: devices
+                deviceCheck: devices,
+                presence: device => plugged.GetValueOrDefault(device.Id!, true)
             );
         }
 
@@ -168,9 +170,18 @@ public sealed class TunerAllocationStressTests
             {
                 int roll = random.Next(100);
 
-                if (roll < 45)
+                if (roll < 37)
                 {
-                    await BeginAsync(random, worker);
+                    await BeginAsync(random, worker, Pick(random, Purposes), Pick(random, Channels));
+                }
+                else if (roll < 45)
+                {
+                    int channel = Pick(random, Channels);
+
+                    await Task.WhenAll(
+                        BeginAsync(random, worker, SessionPurpose.Live, channel),
+                        BeginAsync(random, worker, SessionPurpose.Recording, channel)
+                    );
                 }
                 else if (roll < 65)
                 {
@@ -186,7 +197,15 @@ public sealed class TunerAllocationStressTests
                 }
                 else if (roll < 94)
                 {
-                    manager.Looked(configuration.Devices![random.Next(Tuners.Length)], random.Next(5) is not 0);
+                    DeviceSettings device = configuration.Devices![random.Next(Tuners.Length)];
+                    bool present = random.Next(5) is not 0;
+
+                    plugged[device.Id!] = present;
+
+                    if (random.Next(2) is 0)
+                    {
+                        manager.Looked(device, present);
+                    }
                 }
                 else
                 {
@@ -198,10 +217,9 @@ public sealed class TunerAllocationStressTests
             }
         }
 
-        private async Task BeginAsync(Random random, int worker)
+        private async Task BeginAsync(Random random, int worker, SessionPurpose purpose, int channel)
         {
-            SessionPurpose purpose = Pick(random, Purposes);
-            int channel = Pick(random, Channels);
+            using var leaving = new CancellationTokenSource();
             SessionId sessionId = SessionId.Parse($"w{worker}-{Interlocked.Increment(ref begun)}");
             DateTimeOffset now = clock.GetUtcNow();
 
@@ -219,12 +237,22 @@ public sealed class TunerAllocationStressTests
                     EndsAt = purpose is SessionPurpose.Recording or SessionPurpose.Live
                         ? now.AddMinutes(random.Next(1, 10))
                         : null,
-                }
+                },
+                leaving.Token
             );
+
+            if (random.Next(7) is 0)
+            {
+                leaving.CancelAfter(random.Next(0, 5));
+            }
 
             try
             {
                 await starting.WaitAsync(Forever);
+            }
+            catch (OperationCanceledException) when (leaving.IsCancellationRequested)
+            {
+                return;
             }
             catch (TimeoutException)
             {
