@@ -177,19 +177,29 @@ invariant, not every way, and its self-check states what walks past it.
   nothing about it.** Riding along, taking over and refusing are as they were.
   Among the tuners nobody is on, the one with the better record for the channel is
   used: the share of its last twenty uses that locked, then the median carrier to
-  noise when it differs by 2 dB or more, then a tuner the driver keeps open, then
-  the order of the configuration. A tuner somebody is on is never taken or moved
-  for the sake of reception, and a poor record never refuses a request.
-- **A use that did not lock is written down only while another tuner was receiving
-  that channel with lock.** Otherwise the station may be off the air, and the
-  result is thrown away rather than held against the tuner.
+  noise when it differs by 2 dB or more, then a tuner with no operation in flight,
+  then a tuner the driver keeps open, then the order of the configuration. Only a
+  tuner whose operation has been in flight for more than three seconds comes after
+  the rest whatever its record, because it may be hung. A tuner somebody is on is
+  never taken or moved for the sake of reception, and a poor record never refuses
+  a request.
+- **A use that never held the lock is written down only while another tuner had
+  read its lock on that channel within the last two sampling intervals.**
+  Otherwise the station may be off the air, and the result is thrown away rather
+  than held against the tuner. A session that held the lock and lost the channel
+  later counts as one that locked: the record says whether the tuner receives the
+  channel, not how the session ended.
 - **A tuner is measured only while nobody is on it, and a measurement stands below
   every purpose.** `Measuring` is a state of the allocation table. Any request
   that can use the tuner takes it: the measurement is told to stop, and the
-  request waits for the one device operation already in flight and no longer than
-  an open may take. A measurement takes no transport stream and asks no card,
+  request waits for the one device call already in flight, for no longer than an
+  open may take from the moment it stopped the measurement. A request whose wait
+  for a measurement or a close runs out is decided once more without that tuner
+  rather than refused. A measurement takes no transport stream and asks no card,
   leaves the device as it found it, holds no channel back and counts towards no
-  fault unless the device itself fails. To the app the tuner is idle throughout.
+  fault unless the device fails while its signal is read; a fault it finds is
+  applied in the same step that ends it, never to whoever took the tuner since.
+  To the app the tuner is idle throughout.
 - **The reception records are a convenience, never a condition of starting.** They
   are read from `reception.json` under the directory `PUPPIS_DRIVER_STATE` names;
   a missing or unreadable file, or a directory that cannot be written, leaves them
