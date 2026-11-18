@@ -196,11 +196,11 @@ public sealed class SingleRecordingWriterTests : IDisposable
             recordingWriters: stuck
         );
 
-        Task<SessionStart> hanging = Task.Run(() => manager.Begin(Recording("s-1", "k-stuck", 55)));
+        Task<SessionStart> hanging = Task.Run(() => manager.BeginAsync(Recording("s-1", "k-stuck", 55)));
 
         stuck.AwaitOpening(Deadlock);
 
-        SessionStart other = await Task.Run(() => manager.Begin(Watching("s-2", 56)))
+        SessionStart other = await Task.Run(() => manager.BeginAsync(Watching("s-2", 56)))
             .WaitAsync(Deadlock);
 
         Assert.True(other.TryGetSession(out _), other.Detail);

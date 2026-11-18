@@ -721,7 +721,7 @@ public sealed class SeatSwapTests : IDisposable
         device.AwaitParkedBefore(3);
 
         Task<SessionStart> begun = Task.Run(() =>
-            manager.Begin(Request("s-2", SessionPurpose.Recording))
+            manager.BeginAsync(Request("s-2", SessionPurpose.Recording))
         );
 
         Assert.NotSame(
@@ -1012,13 +1012,13 @@ public sealed class SeatSwapTests : IDisposable
         TunerSessionManager manager = Manager(tuners, handOverLimit: Deadlock);
 
         Task<SessionStart> watcher = Task.Run(() =>
-            manager.Begin(Request("s-1", SessionPurpose.Live))
+            manager.BeginAsync(Request("s-1", SessionPurpose.Live))
         );
 
         tuners.AwaitAsking(Deadlock);
 
         Task<SessionStart> taker = Task.Run(() =>
-            manager.Begin(Request("s-2", SessionPurpose.Recording))
+            manager.BeginAsync(Request("s-2", SessionPurpose.Recording))
         );
 
         Assert.NotSame(taker, await Task.WhenAny(taker, Task.Delay(NoPatience)));
@@ -1050,13 +1050,13 @@ public sealed class SeatSwapTests : IDisposable
         );
 
         Task<SessionStart> watcher = Task.Run(() =>
-            manager.Begin(Request("s-1", SessionPurpose.Live))
+            manager.BeginAsync(Request("s-1", SessionPurpose.Live))
         );
 
         tuners.AwaitAsking(Deadlock);
 
         Task<SessionStart> taker = Task.Run(() =>
-            manager.Begin(Request("s-2", SessionPurpose.Recording))
+            manager.BeginAsync(Request("s-2", SessionPurpose.Recording))
         );
 
         clockOfItsOwn.AwaitSomethingWaitingOnTheClock(Deadlock);
@@ -1100,7 +1100,7 @@ public sealed class SeatSwapTests : IDisposable
         Assert.True(device.Reading.Wait(Deadlock));
 
         Task<SessionStart> taker = Task.Run(() =>
-            manager.Begin(Request("s-2", SessionPurpose.Recording))
+            manager.BeginAsync(Request("s-2", SessionPurpose.Recording))
         );
 
         clockOfItsOwn.AwaitSomethingWaitingOnTheClock(Deadlock);
