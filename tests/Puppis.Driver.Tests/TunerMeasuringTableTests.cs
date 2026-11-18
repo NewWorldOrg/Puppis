@@ -219,6 +219,23 @@ public sealed class TunerMeasuringTableTests
     }
 
     [Fact]
+    public void ATunerHeldBackAfterAFailedTuneIsStillHeldBackWhileItIsMeasuredAndThatIsNotBlamedOnTheMeasurement()
+    {
+        TunerPool pool = Pool(("north", true));
+        PoolGrant failed = Ask(pool, "failed", Here);
+        pool.TuningFailed("north", failed.Holder, new IOException("no lock"));
+        Measure(pool);
+
+        PoolGrant again = Ask(pool, "again", Here);
+        PoolGrant other = Ask(pool, "other", There);
+
+        Assert.Equal(PoolVerdict.NoDeviceFree, again.Verdict);
+        Assert.Contains("held back", again.Detail, StringComparison.Ordinal);
+        Assert.Equal(PoolVerdict.Granted, other.Verdict);
+        Assert.DoesNotContain(log.Lines, line => line.Contains("only being measured", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void ARequestThatNamesTheTunerBeingMeasuredGetsIt()
     {
         TunerPool pool = Pool();

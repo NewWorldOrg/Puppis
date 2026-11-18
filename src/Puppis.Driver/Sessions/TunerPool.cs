@@ -786,7 +786,7 @@ public sealed class TunerPool(
 
         refusedTransitions.AddRange(
             considered
-                .Where(entry => entry.State is TunerAllocationState.Measuring)
+                .Where(entry => entry.State is TunerAllocationState.Measuring && !HoldsBack(entry, request))
                 .Select(entry => $"'{request.SessionId}' was refused {request.Tuning} while the tuner '{entry.DeviceId}' was only being measured.")
         );
 
