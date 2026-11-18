@@ -13,6 +13,7 @@ using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
 using Puppis.Driver.Diagnostics;
 using Puppis.Driver.Events;
+using Puppis.Driver.Reception;
 using Puppis.Driver.Recording;
 using Puppis.Driver.Sessions;
 using Puppis.Driver.Tuning;
@@ -156,7 +157,18 @@ public static class DriverApi
                 DriverJson.Context.IReadOnlyListDiagnosticSnapshot
             );
 
+        ReceptionBook receptionBook = app.Services.GetRequiredService<ReceptionBook>();
+
+        RequestDelegate reception = context =>
+            Write(
+                context,
+                StatusCodes.Status200OK,
+                ReceptionViews.Of(configuration, receptionBook),
+                ReceptionJsonContext.Default.ReceptionView
+            );
+
         app.MapGet(DriverEndpoints.Health, health);
+        app.MapGet(ReceptionViews.Path, reception);
         app.MapGet(DriverEndpoints.Diagnostics, diagnostics);
         app.MapGet(DriverEndpoints.Tuners, tuners);
         app.MapPut(DriverEndpoints.Tuners, saveLedger);

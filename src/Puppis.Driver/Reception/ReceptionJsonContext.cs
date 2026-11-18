@@ -1,5 +1,7 @@
 using System.Text.Json.Serialization;
 
+using Puppis.Driver.Ipc;
+
 namespace Puppis.Driver.Reception;
 
 [JsonSourceGenerationOptions(
@@ -7,4 +9,5 @@ namespace Puppis.Driver.Reception;
     WriteIndented = true
 )]
 [JsonSerializable(typeof(ReceptionRecords))]
+[JsonSerializable(typeof(ReceptionView))]
 internal sealed partial class ReceptionJsonContext : JsonSerializerContext;

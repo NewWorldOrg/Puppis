@@ -15,7 +15,9 @@ driver は root で動き、設定ファイルのパスを `PUPPIS_DRIVER_CONFIG
 ```bash
 docker run -d --privileged \
   -e PUPPIS_DRIVER_CONFIG=/etc/puppis/driver.json \
+  -e PUPPIS_DRIVER_STATE=/var/lib/puppis \
   -v ./driver.json:/etc/puppis/driver.json:ro \
+  -v driver-state:/var/lib/puppis \
   -v /run/pcscd:/run/pcscd:ro \
   -v driver-run:/run/carina \
   -v /srv/recordings:/srv/recordings \
@@ -30,7 +32,7 @@ docker run -d --privileged \
 
 ## 設定
 
-`driver.json` の主なキーです。
+`driver.json` の主なキーと、環境変数です。
 
 | キー | 内容 |
 | --- | --- |
@@ -41,6 +43,8 @@ docker run -d --privileged \
 | `devices` | チューナーの一覧。`id`・`kind`(`terrestrial` か `satellite`)・`devicePath`・`enabled` |
 | `shutdownGraceHours` | 停止時に録画の終了を待つ上限。既定は 6 時間 |
 | `name` | 画面に表示するこの機械の名前。省略すると「この機械」と表示します |
+| `tuner.measureWhileIdle` | 使われていないチューナーで受信の強さを測るかどうか。既定は `true` |
+| `PUPPIS_DRIVER_STATE`(環境変数) | 受信の記録を残すディレクトリ。省略すると記録はメモリにだけ持ちます |
 
 `tuner.backend` が `dvb` のときは、`devicePath` に `/dev/dvb/adapter0/frontend0` のように frontend までのパスを書きます。\
 `usb` のときは `/dev/bus/usb/` の下のデバイスノードを書き、`id` は接続したポートから自動で決まります。
@@ -55,6 +59,25 @@ PIX-DT295 は地上波と衛星の両方を受けられますが、1 台は `kin
 driver が動いている間は、セッションが終わっても本体を開いて初期化したままにし、次のセッションは選局から始めます。\
 driver を止めたとき、チューナーを無効にしたとき、本体が抜かれたときは、元の状態に戻して閉じます。\
 電源を入れたあと別のソフトで使った PIX-DT295 は開けないので、抜いて挿し直してください。
+
+### チューナーの選び方
+
+同じ局を受けられるチューナーが複数空いているとき、driver はその局の受信の記録が良いチューナーを使います。\
+記録はチューナーと局の組み合わせごとの直近 20 回分で、ロックできた割合を先に比べます。\
+割合が同じなら C/N の中央値を比べ、差が 2 dB 未満なら同じとみなします。\
+それでも決まらないときは、開いたまま保っているチューナーを先にし、最後は設定ファイルの順です。\
+空いているチューナーが無いときの動きは、記録があっても変わりません。
+
+driver は、60 秒以上使われていないチューナーで、記録の無い局と記録が 30 日より古い局を 1 つずつ測ります。\
+測るのは、これまでにセッションで受信できた局です。\
+選局して C/N を数回読むだけで、映像は取り出さず、カードも使いません。\
+測っている最中に要求が来たら、測るのをやめてそのチューナーを渡します。\
+測らせたくないときは `tuner.measureWhileIdle` を `false` にします。
+
+記録を再起動のあとも使うには、書き込めるディレクトリを `PUPPIS_DRIVER_STATE` で渡します。\
+driver はそこに `reception.json` を書きます。\
+指定が無いときと書き込めないときは、driver を止めると記録が消えます。\
+今の記録は、ソケットの `GET /tuners/reception` で見られます。
 
 ### カードの貸し借り
 

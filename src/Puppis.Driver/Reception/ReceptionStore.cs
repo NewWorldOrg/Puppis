@@ -25,6 +25,8 @@ public sealed class ReceptionStore : IHostedService, IDisposable
     private bool unwritable;
     private bool disposed;
 
+    public ReceptionBook Book => book;
+
     public ReceptionStore(
         ReceptionBook book,
         string? directory,

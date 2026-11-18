@@ -53,7 +53,8 @@ DriverHostResult built = DriverHost.Create(
     args,
     configuration,
     configurationPath: configurationPath,
-    stopRequest: stopRequest
+    stopRequest: stopRequest,
+    stateDirectory: DriverStartup.StateDirectory()
 );
 if (!built.TryGetHost(out IHost? host))
 {

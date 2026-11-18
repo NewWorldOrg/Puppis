@@ -23,6 +23,7 @@ public sealed class FileSystemRuleTests
         "/Puppis.Driver/Ipc/StorageViews.cs File.Delete",
         "/Puppis.Driver/Ipc/StorageViews.cs FileMode.",
         "/Puppis.Driver/Ipc/UnixFile.cs LibraryImport",
+        "/Puppis.Driver/Reception/ReceptionStore.cs .Replace(",
         "/Puppis.Driver/Recording/RecordingEraser.cs File.Delete",
         "/Puppis.Driver/Recording/RecordingWriter.cs .Replace(",
         "/Puppis.Driver/Recording/RecordingWriter.cs FileMode.",
