@@ -13,7 +13,8 @@ public sealed record RecheckPlan(DateTimeOffset NextTryAt, bool Relapsed);
 public sealed class FaultedTunerRecheck(
     ITunerDeviceCheck check,
     TimeProvider timeProvider,
-    ILogger logger
+    ILogger logger,
+    Func<string, bool>? mayCheck = null
 ) : IDisposable
 {
     public static readonly IReadOnlyList<TimeSpan> Intervals =
@@ -25,6 +26,8 @@ public sealed class FaultedTunerRecheck(
     ];
 
     public static readonly TimeSpan RelapseWindow = TimeSpan.FromMinutes(30);
+
+    public static readonly TimeSpan WhileClosing = TimeSpan.FromSeconds(1);
 
     private readonly Lock gate = new();
     private readonly Dictionary<string, Pending> pending = new(StringComparer.Ordinal);
@@ -119,6 +122,13 @@ public sealed class FaultedTunerRecheck(
             }
         }
 
+        if (mayCheck?.Invoke(deviceId) is false)
+        {
+            NotYet(entry);
+
+            return;
+        }
+
         try
         {
             check.Check(entry.Device);
@@ -143,6 +153,20 @@ public sealed class FaultedTunerRecheck(
 
         entry.Timer?.Dispose();
         entry.Restore(deviceId);
+    }
+
+    private void NotYet(Pending entry)
+    {
+        lock (gate)
+        {
+            if (!StillWaiting(entry))
+            {
+                return;
+            }
+
+            entry.NextTryAt = timeProvider.GetUtcNow() + WhileClosing;
+            entry.Timer?.Change(WhileClosing, Timeout.InfiniteTimeSpan);
+        }
     }
 
     private void StillFaulted(Pending entry, Exception error)

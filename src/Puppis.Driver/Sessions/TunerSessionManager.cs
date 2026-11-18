@@ -29,7 +29,7 @@ public sealed class TunerSessionManager(
     TimeSpan? handOverLimit = null,
     TimeSpan? progressInterval = null,
     ITunerDeviceCheck? deviceCheck = null,
-    Func<DeviceSettings, bool>? presence = null
+    Func<DeviceSettings, bool?>? presence = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
@@ -76,23 +76,8 @@ public sealed class TunerSessionManager(
             ? null
             : LazyInitializer.EnsureInitialized(
                 ref rechecking,
-                () => new FaultedTunerRecheck(new CheckedOnceQuiet(pool, deviceCheck), timeProvider, logger)
+                () => new FaultedTunerRecheck(deviceCheck, timeProvider, logger, pool.IsQuiet)
             );
-
-    private sealed class CheckedOnceQuiet(TunerPool pool, ITunerDeviceCheck check) : ITunerDeviceCheck
-    {
-        public void Check(DeviceSettings device)
-        {
-            if (device.Id is { } deviceId && !pool.IsQuiet(deviceId))
-            {
-                throw new IOException($"The device '{deviceId}' is still being closed after its fault.");
-            }
-
-            check.Check(device);
-        }
-
-        public void LetGo(DeviceSettings device) => check.LetGo(device);
-    }
 
     private readonly Lock drainGate = new();
 
@@ -426,11 +411,11 @@ public sealed class TunerSessionManager(
             }
         }
 
-        public void GiveBack()
+        public void GiveBack(string why)
         {
             if (Report())
             {
-                pool.GiveBack(deviceId, sessionId);
+                pool.GiveBack(deviceId, sessionId, why);
             }
         }
 
@@ -628,12 +613,11 @@ public sealed class TunerSessionManager(
         }
         catch (TimeoutException)
         {
-            claim.GiveBack();
+            string why = $"The device '{deviceId}' was asked for '{sessionId}', and what was on it did not let go within {handOver}.";
 
-            return SessionStart.Refused(
-                SessionRefusal.DeviceBusy,
-                $"The device '{deviceId}' was asked for '{sessionId}', and what was on it did not let go within {handOver}."
-            );
+            claim.GiveBack(why);
+
+            return SessionStart.Refused(SessionRefusal.DeviceBusy, why);
         }
 
         if (!cleared)
@@ -781,10 +765,16 @@ public sealed class TunerSessionManager(
         CancellationToken cancellationToken
     )
     {
-        if (
-            !await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken)
-            || !sessions.TryGetValue(grant.Holder, out TunerSession? host)
-        )
+        TunerReadiness readiness = await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken);
+
+        if (readiness is { Ready: false, Refusal: { } undone })
+        {
+            claim.Leave();
+
+            return SessionStart.Refused(SessionRefusal.DeviceBusy, undone);
+        }
+
+        if (!readiness.Ready || !sessions.TryGetValue(grant.Holder, out TunerSession? host))
         {
             claim.Leave();
 
@@ -839,10 +829,16 @@ public sealed class TunerSessionManager(
         CancellationToken cancellationToken
     )
     {
-        if (
-            !await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken)
-            || !sessions.TryGetValue(grant.Outgoing, out TunerSession? outgoing)
-        )
+        TunerReadiness readiness = await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken);
+
+        if (readiness is { Ready: false, Refusal: { } undone })
+        {
+            claim.Leave();
+
+            return SessionStart.Refused(SessionRefusal.DeviceBusy, undone);
+        }
+
+        if (!readiness.Ready || !sessions.TryGetValue(grant.Outgoing, out TunerSession? outgoing))
         {
             claim.Leave();
 
@@ -1763,7 +1759,7 @@ public sealed class TunerSessionManager(
         }
     }
 
-    private static bool? Look(DriverConfiguration configuration, Func<DeviceSettings, bool>? presence, string deviceId) =>
+    private static bool? Look(DriverConfiguration configuration, Func<DeviceSettings, bool?>? presence, string deviceId) =>
         presence is not null
         && (configuration.Devices ?? []).FirstOrDefault(candidate => candidate?.Id == deviceId) is { } device
             ? presence(device)

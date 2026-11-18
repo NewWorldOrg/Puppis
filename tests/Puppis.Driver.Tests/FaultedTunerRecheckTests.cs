@@ -417,3 +417,68 @@ public sealed class FaultedTunerRecheckTests
         }
     }
 }
+
+public sealed class FaultedTunerStillClosingTests
+{
+    private static readonly DateTimeOffset Start = new(2026, 8, 13, 21, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void ATunerStillBeingClosedIsTriedAgainShortlyWithoutCountingAFailedTry()
+    {
+        var clock = new SteppedTimeProvider(Start);
+        var check = new CountingCheck();
+        var logged = new WarningCount();
+        bool quiet = false;
+        using var recheck = new FaultedTunerRecheck(check, clock, logged, _ => Volatile.Read(ref quiet));
+        string restored = string.Empty;
+
+        recheck.Schedule(new DeviceSettings("adapter0", DeviceKind.Terrestrial), deviceId => restored = deviceId);
+        clock.Advance(FaultedTunerRecheck.Intervals[0]);
+
+        Assert.Equal(0, check.Tried);
+        Assert.Equal(0, logged.Warnings);
+        Assert.Equal(Start + FaultedTunerRecheck.Intervals[0] + FaultedTunerRecheck.WhileClosing, recheck.NextTryOf("adapter0"));
+
+        Volatile.Write(ref quiet, true);
+        clock.Advance(FaultedTunerRecheck.WhileClosing);
+
+        Assert.Equal(1, check.Tried);
+        Assert.Equal("adapter0", restored);
+        Assert.Equal(0, logged.Warnings);
+    }
+
+    private sealed class CountingCheck : ITunerDeviceCheck
+    {
+        private int tried;
+
+        public int Tried => Volatile.Read(ref tried);
+
+        public void Check(DeviceSettings device) => Interlocked.Increment(ref tried);
+    }
+
+    private sealed class WarningCount : Microsoft.Extensions.Logging.ILogger
+    {
+        private int warnings;
+
+        public int Warnings => Volatile.Read(ref warnings);
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            Microsoft.Extensions.Logging.LogLevel logLevel,
+            Microsoft.Extensions.Logging.EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        {
+            if (logLevel >= Microsoft.Extensions.Logging.LogLevel.Warning)
+            {
+                Interlocked.Increment(ref warnings);
+            }
+        }
+    }
+}

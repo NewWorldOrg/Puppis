@@ -192,7 +192,7 @@ public static class DriverHost
             diagnostics: provider.GetRequiredService<DiagnosticsStore>(),
             recordingWriters: provider.GetRequiredService<IRecordingWriterFactory>(),
             deviceCheck: provider.GetRequiredService<ITunerDeviceCheck>(),
-            presence: LookedFor(configuration, provider.GetRequiredService<TunerHardwareBook>())
+            presence: device => provider.GetRequiredService<TunerPatrol>().LookAt(device)
         ));
 
         builder.Services.AddSingleton<RecordingEraser>();
@@ -206,7 +206,7 @@ public static class DriverHost
             provider.GetRequiredService<TunerSessionManager>()
         );
         builder.Services.AddHostedService<TunerLedgerReconciler>();
-        builder.Services.AddHostedService(provider =>
+        builder.Services.AddSingleton(provider =>
         {
             TunerSessionManager manager = provider.GetRequiredService<TunerSessionManager>();
 
@@ -224,6 +224,7 @@ public static class DriverHost
                 }
             );
         });
+        builder.Services.AddHostedService(provider => provider.GetRequiredService<TunerPatrol>());
         builder.Services.AddHostedService<SocketPermissionGuard>();
 
         reshapeServices?.Invoke(builder.Services);
@@ -233,18 +234,5 @@ public static class DriverHost
         DriverApi.Map(app);
 
         return DriverHostResult.Serving(app);
-    }
-
-    private static Func<DeviceSettings, bool> LookedFor(DriverConfiguration configuration, TunerHardwareBook book)
-    {
-        ITunerPresence presence = TunerPresences.For(configuration);
-
-        return device =>
-        {
-            bool present = presence.IsPresent(device, book.For(device));
-            book.Looked(device, present);
-
-            return present;
-        };
     }
 }

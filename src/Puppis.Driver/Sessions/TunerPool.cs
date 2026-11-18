@@ -60,6 +60,8 @@ public sealed record PoolGrant(
     public Task<bool> Cleared => Clearing ?? AlreadyClear;
 }
 
+public sealed record TunerReadiness(bool Ready, string? Refusal);
+
 public sealed record TunerFault(string Detail, string? Title, DeviceFaultKind Kind);
 
 public sealed record TunerAllocationView(
@@ -105,6 +107,8 @@ public sealed class TunerPool(
         public ITunerDevice? Device { get; set; }
 
         public bool Established { get; set; }
+
+        public string? Undone { get; set; }
 
         public TaskCompletionSource Ready { get; set; } = Unset();
 
@@ -203,8 +207,14 @@ public sealed class TunerPool(
         {
             return look?.Invoke(deviceId);
         }
-        catch (Exception failed) when (failed is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception failed)
         {
+            logger?.LogWarning(
+                failed,
+                "Whether the tuner {DeviceId} is plugged in could not be looked at, so it is taken as it was last seen.",
+                deviceId
+            );
+
             return null;
         }
     }
@@ -505,7 +515,7 @@ public sealed class TunerPool(
         }
         else
         {
-            Evict(taken);
+            Evict(taken, $"The device '{loser.DeviceId}' was taken from '{taken.Opener}' while it was being tuned.");
 
             if (loser.Handover is { } claimed)
             {
@@ -673,42 +683,47 @@ public sealed class TunerPool(
         Run(after);
     }
 
-    public async Task<bool> AwaitReadyAsync(
+    public async Task<TunerReadiness> AwaitReadyAsync(
         string deviceId,
         TimeSpan limit,
         SessionId reader = default,
         CancellationToken cancellationToken = default
     )
     {
-        Task ready;
+        Occupancy waitedOn;
 
         lock (gate)
         {
             if (!entries.TryGetValue(deviceId, out Entry? entry) || entry.Current is not { } occupancy)
             {
-                return false;
+                return new TunerReadiness(false, null);
             }
 
             if (occupancy.Established)
             {
-                return IsEstablishedFor(entry, reader);
+                return new TunerReadiness(IsEstablishedFor(entry, reader), null);
             }
 
-            ready = occupancy.Ready.Task;
+            waitedOn = occupancy;
         }
 
         try
         {
-            await ready.WaitAsync(limit, timeProvider, cancellationToken);
+            await waitedOn.Ready.Task.WaitAsync(limit, timeProvider, cancellationToken);
         }
         catch (TimeoutException)
         {
-            return false;
+            lock (gate)
+            {
+                return new TunerReadiness(false, waitedOn.Undone);
+            }
         }
 
         lock (gate)
         {
-            return entries.TryGetValue(deviceId, out Entry? entry) && IsEstablishedFor(entry, reader);
+            return entries.TryGetValue(deviceId, out Entry? entry) && IsEstablishedFor(entry, reader)
+                ? new TunerReadiness(true, null)
+                : new TunerReadiness(false, waitedOn.Undone);
         }
     }
 
@@ -748,7 +763,7 @@ public sealed class TunerPool(
         }
     }
 
-    public bool GiveBack(string deviceId, SessionId claimant)
+    public bool GiveBack(string deviceId, SessionId claimant, string? why = null)
     {
         List<Action> after = [];
         bool gaveBack = false;
@@ -758,10 +773,10 @@ public sealed class TunerPool(
             if (
                 entries.TryGetValue(deviceId, out Entry? entry)
                 && entry.State is TunerAllocationState.HandingOver
-                && entry.Current?.Holder == claimant
+                && entry.Current?.Opener == claimant
             )
             {
-                gaveBack = GiveBackUnderGate(entry, after);
+                gaveBack = GiveBackUnderGate(entry, after, why ?? GaveUp(entry, claimant));
             }
             else
             {
@@ -774,7 +789,10 @@ public sealed class TunerPool(
         return gaveBack;
     }
 
-    private bool GiveBackUnderGate(Entry entry, List<Action> after)
+    private static string GaveUp(Entry entry, SessionId claimant) =>
+        $"The device '{entry.DeviceId}' was asked for '{claimant}', which gave up on it before it was ready.";
+
+    private bool GiveBackUnderGate(Entry entry, List<Action> after, string why)
     {
         Occupancy previous = entry.Previous!;
         TunerAllocationEvent back = previous.Established
@@ -786,7 +804,7 @@ public sealed class TunerPool(
             return false;
         }
 
-        Evict(entry.Current!);
+        Evict(entry.Current!, why);
 
         if (entry.Handover is { } handover)
         {
@@ -814,10 +832,10 @@ public sealed class TunerPool(
             if (
                 entries.TryGetValue(deviceId, out Entry? entry)
                 && entry.State is TunerAllocationState.HandingOver
-                && entry.Current?.Holder == sessionId
+                && entry.Current?.Opener == sessionId
             )
             {
-                GiveBackUnderGate(entry, after);
+                GiveBackUnderGate(entry, after, GaveUp(entry, sessionId));
             }
             else
             {
@@ -854,7 +872,7 @@ public sealed class TunerPool(
 
         if (entry.Current is { } current && current.Has(sessionId))
         {
-            LeaveOccupancy(current, sessionId);
+            LeaveOccupancy(entry, current, sessionId);
             AfterSomeoneLeft(entry, current, after, closing);
 
             return;
@@ -862,14 +880,22 @@ public sealed class TunerPool(
 
         if (entry.Previous is { } previous && previous.Has(sessionId))
         {
-            LeaveOccupancy(previous, sessionId);
+            LeaveOccupancy(entry, previous, sessionId);
             SettleTheHandover(entry, after);
         }
     }
 
-    private void LeaveOccupancy(Occupancy occupancy, SessionId sessionId)
+    private void LeaveOccupancy(Entry entry, Occupancy occupancy, SessionId sessionId)
     {
         occupancy.Sinks.RemoveAll(sink => sink.SessionId == sessionId);
+
+        if (occupancy.Opener == sessionId && !occupancy.Established)
+        {
+            Evict(occupancy, GaveUp(entry, sessionId));
+            occupancy.Displacing = null;
+
+            return;
+        }
 
         if (occupancy.Holder != sessionId)
         {
@@ -899,7 +925,7 @@ public sealed class TunerPool(
 
         if (entry.State is TunerAllocationState.HandingOver)
         {
-            GiveBackUnderGate(entry, after);
+            GiveBackUnderGate(entry, after, occupancy.Undone ?? GaveUp(entry, occupancy.Opener));
 
             return;
         }
@@ -1046,8 +1072,10 @@ public sealed class TunerPool(
     private static SessionId? TheOneItWasTakenFrom(Occupancy occupancy) =>
         occupancy.Displacing is { } previous && occupancy.Has(previous) ? previous : null;
 
-    private void Evict(Occupancy occupancy)
+    private void Evict(Occupancy occupancy, string? why = null)
     {
+        occupancy.Undone ??= why;
+
         foreach (Sink sink in occupancy.Sinks)
         {
             if (bySink.TryGetValue(sink.SessionId, out Entry? entry) && Holds(entry, occupancy))

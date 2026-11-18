@@ -277,6 +277,147 @@ public sealed class TunerHandBackTests : IDisposable
         Assert.True(pool.IsQuiet("adapter0"));
     }
 
+    private static (TunerPool Pool, string[] One) SeatTakenDuringAHandOver()
+    {
+        var pool = new TunerPool(TimeProvider.System, declared: [("adapter0", true)]);
+        string[] one = ["adapter0"];
+
+        PoolGrant scan = pool.Acquire(new PoolRequest(SessionId.Parse("scan"), SessionPurpose.Scan, Here, null, one));
+        pool.Tuned(scan.DeviceId, scan.Holder, new FakeTunerDevice(55));
+        pool.Ready(scan.DeviceId, scan.Holder);
+
+        Assert.Equal(PoolVerdict.Granted, pool.Acquire(new PoolRequest(SessionId.Parse("live"), SessionPurpose.Live, Elsewhere, null, one)).Verdict);
+        Assert.Equal(PoolVerdict.Swapped, pool.Acquire(new PoolRequest(SessionId.Parse("rec"), SessionPurpose.Recording, Elsewhere, null, one)).Verdict);
+
+        return (pool, one);
+    }
+
+    [Fact]
+    public void ARecordingThatTookTheSeatDuringAHandOverAndGivesUpLeavesTheHandOverToItsClaimant()
+    {
+        (TunerPool pool, _) = SeatTakenDuringAHandOver();
+
+        pool.Abandon("adapter0", SessionId.Parse("rec"));
+
+        TunerAllocationView after = Assert.Single(pool.Snapshot());
+        Assert.Equal(TunerAllocationState.HandingOver, after.State);
+        Assert.Equal(SessionId.Parse("live"), after.Holder);
+        Assert.Equal([SessionId.Parse("live")], after.Sinks);
+        Assert.Equal([SessionId.Parse("scan")], after.Outgoing);
+    }
+
+    [Fact]
+    public async Task WhenTheClaimantOfAHandOverGivesUpEveryoneWaitingWithItHearsTheSameAtOnce()
+    {
+        (TunerPool pool, _) = SeatTakenDuringAHandOver();
+        Task<TunerReadiness> waiting = pool.AwaitReadyAsync("adapter0", Deadlock, SessionId.Parse("rec"));
+
+        pool.GiveBack("adapter0", SessionId.Parse("live"), "the scan did not let go");
+
+        TunerReadiness heard = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(heard.Ready);
+        Assert.Equal("the scan did not let go", heard.Refusal);
+
+        TunerAllocationView after = Assert.Single(pool.Snapshot());
+        Assert.Equal(TunerAllocationState.InUse, after.State);
+        Assert.Equal([SessionId.Parse("scan")], after.Sinks);
+    }
+
+    [Fact]
+    public async Task WhenTheOneOpeningATunerGivesUpTheRecordingThatTookItsSeatStopsWaiting()
+    {
+        var pool = new TunerPool(TimeProvider.System, declared: [("adapter0", true)]);
+        string[] one = ["adapter0"];
+
+        pool.Acquire(new PoolRequest(SessionId.Parse("live"), SessionPurpose.Live, Here, null, one));
+        Assert.Equal(PoolVerdict.Swapped, pool.Acquire(new PoolRequest(SessionId.Parse("rec"), SessionPurpose.Recording, Here, null, one)).Verdict);
+        Task<TunerReadiness> waiting = pool.AwaitReadyAsync("adapter0", Deadlock, SessionId.Parse("rec"));
+
+        pool.Abandon("adapter0", SessionId.Parse("live"));
+
+        TunerReadiness heard = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(heard.Ready);
+        Assert.NotNull(heard.Refusal);
+        Assert.Equal(TunerAllocationState.Free, Assert.Single(pool.Snapshot()).State);
+    }
+
+    [Fact]
+    public async Task ARecordingThatTookTheSeatOfAClaimantThatTimedOutIsRefusedWithTheClaimantsReason()
+    {
+        var factory = new CountingFactory();
+        var manager = new TunerSessionManager(
+            Configuration("adapter0"),
+            factory,
+            TimeProvider.System,
+            NullLogger<TunerSessionManager>.Instance,
+            handOverLimit: TimeSpan.FromMilliseconds(400)
+        );
+
+        Assert.True((await manager.BeginAsync(Request("scan", SessionPurpose.Scan))).TryGetSession(out TunerSession? loser));
+        factory.AwaitReading();
+
+        Task<SessionStart> live = manager.BeginAsync(Request("live", SessionPurpose.Live, 57));
+        await Task.Delay(100);
+        Task<SessionStart> recording = manager.BeginAsync(Request("rec", SessionPurpose.Recording, 57));
+
+        SessionStart liveRefused = await live.WaitAsync(Deadlock);
+        SessionStart recordingRefused = await recording.WaitAsync(Deadlock);
+
+        Assert.Equal(SessionRefusal.DeviceBusy, liveRefused.Refusal);
+        Assert.Equal(SessionRefusal.DeviceBusy, recordingRefused.Refusal);
+        Assert.Equal(liveRefused.Detail, recordingRefused.Detail);
+        Assert.Equal([SessionId.Parse("scan")], Assert.Single(manager.Allocations()).Sinks);
+
+        factory.Release();
+        loser.WaitForEnd(Deadlock);
+    }
+
+    [Fact]
+    public void APresenceCheckThatThrowsAnythingLeavesTheTunerAsItWasAndTheRequestIsAnswered()
+    {
+        DriverConfiguration configuration = Configuration("adapter0");
+        var manager = new TunerSessionManager(
+            configuration,
+            new TunerDeviceFactory(configuration, TimeProvider.System),
+            TimeProvider.System,
+            NullLogger<TunerSessionManager>.Instance,
+            presence: _ => throw new InvalidOperationException("the bus could not be listed")
+        );
+
+        manager.Looked(configuration.Devices![0], false);
+
+        SessionStart refused = manager.Begin(Request("live", SessionPurpose.Live));
+
+        Assert.Equal(SessionRefusal.DeviceUnavailable, refused.Refusal);
+    }
+
+    [Fact]
+    public void AStartRefusedAfterTheTunerWasTunedLeavesItReadyOnThatChannelAsBefore()
+    {
+        DriverConfiguration configuration = Configuration("adapter0");
+        TunerSessionManager? manager = null;
+        var factory = new DrainingWhileOpening(() => manager!.EnterDraining());
+        manager = new TunerSessionManager(configuration, factory, TimeProvider.System, NullLogger<TunerSessionManager>.Instance);
+
+        SessionStart refused = manager.Begin(Request("live", SessionPurpose.Live));
+
+        Assert.Equal(SessionRefusal.Draining, refused.Refusal);
+        TunerAllocationView after = Assert.Single(manager.Allocations());
+        Assert.Equal(TunerAllocationState.Ready, after.State);
+        Assert.True(after.DeviceOpen);
+        Assert.Equal(Here, after.Tuning);
+    }
+
+    private sealed class DrainingWhileOpening(Action drain) : ITunerDeviceFactory
+    {
+        public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold)
+        {
+            drain();
+
+            return new FakeTunerDevice(tuning.PhysicalChannel);
+        }
+    }
+
     private sealed class ThrowingWhenCuttingOff : ILogger<TunerSessionManager>
     {
         public IDisposable? BeginScope<TState>(TState state)

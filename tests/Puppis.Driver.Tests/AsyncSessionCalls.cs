@@ -18,5 +18,5 @@ public static class AsyncSessionCalls
     ) => Task.Run(() => session.ReadFromInsteadAsync(replacement, host, takenSeat, within)).GetAwaiter().GetResult();
 
     public static bool AwaitReady(this TunerPool pool, string deviceId, TimeSpan limit) =>
-        Task.Run(() => pool.AwaitReadyAsync(deviceId, limit)).GetAwaiter().GetResult();
+        Task.Run(() => pool.AwaitReadyAsync(deviceId, limit)).GetAwaiter().GetResult().Ready;
 }

@@ -35,11 +35,11 @@ public sealed class TunerPatrol(
                 continue;
             }
 
-            Look(device);
+            LookAt(device);
         }
     }
 
-    private void Look(DeviceSettings device)
+    public bool? LookAt(DeviceSettings device)
     {
         bool present;
 
@@ -56,11 +56,13 @@ public sealed class TunerPatrol(
                 Interval
             );
 
-            return;
+            return null;
         }
 
         book.Looked(device, present);
         looked?.Invoke(device, present);
+
+        return present;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
