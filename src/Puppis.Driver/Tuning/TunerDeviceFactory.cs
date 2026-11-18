@@ -35,6 +35,8 @@ public interface ITunerDeviceCheck
     /// Closes whatever is kept open for <paramref name="device"/> between its sessions, when anything is.
     /// </summary>
     void LetGo(DeviceSettings device) { }
+
+    bool IsKeptOpen(DeviceSettings device) => false;
 }
 
 public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck, IDisposable
@@ -176,6 +178,20 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     private string UsbPathOf(DeviceSettings device) =>
         UsbTunerDetector.NodeFor(usbHost.Value, device.Id, device.DevicePath)
         ?? throw DvbFailure.Refused($"devices['{device.Id}']: a usb device needs a devicePath.");
+
+    public bool IsKeptOpen(DeviceSettings device)
+    {
+        if (device.Id is not { } deviceId)
+        {
+            return false;
+        }
+
+        lock (standing)
+        {
+            return keeper.Holds(deviceId)
+                || (standbys.TryGetValue(deviceId, out CechZd1Standby? standby) && standby.HoldsATuner);
+        }
+    }
 
     public void LetGo(DeviceSettings device)
     {

@@ -29,6 +29,17 @@ public sealed class CechZd1Standby : IDisposable
         }
     }
 
+    public bool HoldsATuner
+    {
+        get
+        {
+            lock (gate)
+            {
+                return kept is not null;
+            }
+        }
+    }
+
     /// <summary>
     /// Hands out what is kept for <paramref name="path"/>, or null when nothing is. Whatever is kept for another path
     /// is closed, since the tuner it belonged to is no longer where it was.
