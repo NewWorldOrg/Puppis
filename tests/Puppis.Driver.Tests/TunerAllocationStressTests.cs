@@ -672,6 +672,11 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                     owner.Report($"{deviceId} was read for a measurement after it was closed");
                 }
 
+                if (owner.random.Value!.Next(400) is 0)
+                {
+                    throw new IOException($"{deviceId} stopped answering while its signal was read.");
+                }
+
                 return Signal.Measure();
             }
 

@@ -137,20 +137,23 @@ public sealed class IdleReceptionMeasurerTests
         Know(Here);
         IdleReceptionMeasurer measurer = Measurer();
         clock.Advance(Rested);
-        IdleMeasurement? second = null;
+        IdleMeasurement? meanwhile = new("nobody", Here, IdleMeasurementEnd.Kept);
         hardware.WhileOpening = _ =>
         {
-            hardware.WhileOpening = null;
             clock.Advance(Gap);
-            second = measurer.MeasureIfDue();
+            meanwhile = measurer.MeasureIfDue();
         };
 
         IdleMeasurement? first = measurer.MeasureIfDue();
 
         Assert.Equal("north", first?.DeviceId);
-        Assert.Equal("south", second?.DeviceId);
-        Assert.Empty(hardware.Overlaps);
-        Assert.Equal(1, Table("north").InFlight + Table("south").InFlight + 1);
+        Assert.Null(meanwhile);
+        Assert.Equal(["probe opened north 31", "probe closed north"], hardware.Happened);
+
+        hardware.WhileOpening = null;
+        clock.Advance(Gap);
+
+        Assert.Equal("south", measurer.MeasureIfDue()?.DeviceId);
     }
 
     [Fact]
@@ -365,13 +368,11 @@ public sealed class IdleReceptionMeasurerTests
         await StopAsync(session);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ADeviceThatFailsWhileItIsMeasuredIsFaultedLikeAnyOtherFailure(bool whileReading)
+    [Fact]
+    public void ADeviceThatFailsWhileItsSignalIsReadIsFaultedLikeAnyDeviceThatFailsInUse()
     {
         configuration = Configured(true, ("north", DeviceKind.Terrestrial));
-        (whileReading ? hardware.BreaksWhileRead : hardware.Broken).Add("north");
+        hardware.BreaksWhileRead.Add("north");
         Know(Here);
         TunerSessionManager manager = Manager();
         IdleReceptionMeasurer measurer = Measurer();
@@ -391,24 +392,68 @@ public sealed class IdleReceptionMeasurerTests
         Assert.Null(measurer.MeasureIfDue());
     }
 
-    [Fact]
-    public void ATunerThatWillNotBeMeasuredOnAChannelIsLeftAloneForSixHoursWithoutBeingFaulted()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ATunerThatCannotBeOpenedToBeMeasuredIsNotFaultedAndIsLeftAloneForSixHours(bool refuses)
     {
-        configuration = Configured(true, ("north", DeviceKind.Terrestrial));
-        hardware.Refusing.Add("north");
-        Know(Here);
+        (refuses ? hardware.Refusing : hardware.Broken).Add("north");
+        Know(Here, There);
+        Measured("south", Here);
+        Measured("south", There);
         TunerSessionManager manager = Manager();
         IdleReceptionMeasurer measurer = Measurer();
         clock.Advance(Rested);
 
-        Assert.Equal(new IdleMeasurement("north", Here, IdleMeasurementEnd.Refused), measurer.MeasureIfDue());
+        Assert.Equal(new IdleMeasurement("north", Here, IdleMeasurementEnd.NotOpened), measurer.MeasureIfDue());
 
         Assert.False(manager.IsFaulted("north", out _));
+        Assert.False(manager.IsFailingToTune("north"));
+        Assert.Equal(TunerAllocationState.Free, Table("north").State);
         Assert.Equal(ReceptionStanding.Unmeasured, book.StandingOf("north", On(Here)));
+        Assert.Empty(hardware.Overlaps);
 
-        clock.Advance(Gap);
+        clock.Advance(ReceptionBook.RetryAfter - TimeSpan.FromSeconds(1));
 
         Assert.Null(measurer.MeasureIfDue());
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+        hardware.Refusing.Clear();
+        hardware.Broken.Clear();
+
+        Assert.Equal(new IdleMeasurement("north", Here, IdleMeasurementEnd.Kept, 20), measurer.MeasureIfDue());
+    }
+
+    [Fact]
+    public void ATunerThatCannotBeOpenedIsLookedForSoThatOnePulledOutIsSeenToBeGone()
+    {
+        configuration = Configured(true, ("north", DeviceKind.Terrestrial));
+        hardware.Broken.Add("north");
+        Know(Here);
+        List<string> lookedFor = [];
+        var manager = new TunerSessionManager(
+            configuration,
+            hardware,
+            clock,
+            NullLogger<TunerSessionManager>.Instance,
+            reception: book,
+            presence: device =>
+            {
+                lookedFor.Add(device.Id!);
+                made!.Looked(device, false);
+
+                return false;
+            }
+        );
+        made = manager;
+        IdleReceptionMeasurer measurer = Measurer();
+        clock.Advance(Rested);
+
+        measurer.MeasureIfDue();
+
+        Assert.Equal(["north"], lookedFor);
+        Assert.Equal(TunerAllocationState.Absent, Table("north").State);
+        Assert.False(manager.IsFaulted("north", out _));
     }
 
     [Fact]

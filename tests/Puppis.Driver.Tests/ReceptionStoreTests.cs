@@ -87,14 +87,20 @@ public sealed class ReceptionStoreTests : IDisposable
         Assert.StartsWith("Warning ", Assert.Single(log.Lines), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void AFileThatHoldsOnlyNullsIsReadAsEmpty()
+    [Theory]
+    [InlineData("""{"channels":null,"tuners":[{"deviceId":"north","channels":null}]}""")]
+    [InlineData("""{"channels":[null],"tuners":[null,{"deviceId":null,"channels":[]},{"deviceId":"north","channels":[null]}]}""")]
+    [InlineData("""{"tuners":[{"deviceId":"north","channels":[{"kind":"terrestrial","physicalChannel":31,"results":[null]}]}]}""")]
+    [InlineData("null")]
+    [InlineData("{}")]
+    public void AFileWithHolesInItIsReadForWhatItHolds(string contents)
     {
-        File.WriteAllText(Saved, """{"channels":null,"tuners":[{"deviceId":"north","channels":null}]}""");
+        File.WriteAllText(Saved, contents);
 
         (ReceptionBook book, _) = Open(root);
 
         Assert.Empty(book.Known());
+        Assert.Equal(ReceptionStanding.Unmeasured, book.StandingOf("north", Here));
         Assert.Empty(log.Lines);
     }
 

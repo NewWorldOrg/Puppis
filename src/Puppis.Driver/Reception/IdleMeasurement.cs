@@ -7,8 +7,8 @@ public enum IdleMeasurementEnd
     Kept,
     ThrownAway,
     Interrupted,
+    NotOpened,
     DeviceFailed,
-    Refused,
 }
 
 public sealed record IdleMeasurement(string DeviceId, TuningKey Channel, IdleMeasurementEnd End, double? CarrierToNoise = null);

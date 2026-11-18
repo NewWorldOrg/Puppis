@@ -122,12 +122,12 @@ public sealed class ReceptionBook
     {
         lock (gate)
         {
-            foreach (TuningKey tuning in records.Channels ?? [])
+            foreach (TuningKey tuning in (records.Channels ?? []).OfType<TuningKey>())
             {
                 known[ReceptionChannel.Of(tuning)] = tuning;
             }
 
-            foreach (TunerRecords tuner in (records.Tuners ?? []).Where(tuner => configured.Contains(tuner.DeviceId)))
+            foreach (TunerRecords tuner in (records.Tuners ?? []).OfType<TunerRecords>().Where(tuner => configured.Contains(tuner.DeviceId)))
             {
                 RestoreTuner(tuner);
             }
@@ -136,11 +136,11 @@ public sealed class ReceptionBook
 
     private void RestoreTuner(TunerRecords tuner)
     {
-        foreach (ChannelRecords channel in tuner.Channels ?? [])
+        foreach (ChannelRecords channel in (tuner.Channels ?? []).OfType<ChannelRecords>())
         {
             List<ReceptionResult> kept = ResultsOf(tuner.DeviceId, new ReceptionChannel(channel.Kind, channel.PhysicalChannel));
 
-            kept.AddRange((channel.Results ?? []).OrderBy(result => result.At));
+            kept.AddRange((channel.Results ?? []).OfType<ReceptionResult>().OrderBy(result => result.At));
             Trim(kept);
         }
     }

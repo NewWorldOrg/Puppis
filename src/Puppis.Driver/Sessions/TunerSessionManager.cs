@@ -1873,6 +1873,18 @@ public sealed class TunerSessionManager(
 
     public bool EndMeasuring(MeasuringTicket ticket) => pool.EndMeasuring(ticket);
 
+    public void LookAgainAt(string deviceId)
+    {
+        try
+        {
+            Look(configuration, presence, deviceId);
+        }
+        catch (Exception failed)
+        {
+            logger.LogWarning(failed, "Whether the tuner {DeviceId} is still plugged in could not be looked at.", deviceId);
+        }
+    }
+
     public void FaultAfterMeasuring(string deviceId, Exception cause)
     {
         RecheckPlan? plan = FaultUntilItOpens(

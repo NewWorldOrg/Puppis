@@ -71,7 +71,7 @@ public sealed class ReceptionStore : IHostedService, IDisposable
         {
             logger.LogInformation("Nothing is saved at {Path} yet, so the driver starts without knowing how well each tuner receives each channel.", from);
         }
-        catch (Exception unreadable) when (unreadable is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        catch (Exception unreadable) when (unreadable is IOException or UnauthorizedAccessException or JsonException or NotSupportedException or ArgumentException)
         {
             logger.LogWarning(
                 "What is saved at {Path} could not be read, so the driver starts without knowing how well each tuner receives each channel: {Why}",
@@ -128,7 +128,7 @@ public sealed class ReceptionStore : IHostedService, IDisposable
             AtomicFile.Replace(to, json);
             unwritable = false;
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
         {
             if (unwritable)
             {

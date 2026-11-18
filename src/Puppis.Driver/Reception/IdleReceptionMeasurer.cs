@@ -38,9 +38,11 @@ public sealed class IdleReceptionMeasurer(
     private readonly TimeSpan gap = betweenMeasurements ?? BetweenMeasurements;
     private readonly TimeSpan looking = looksEvery ?? LooksEvery;
     private readonly Lock gate = new();
+    private readonly Dictionary<string, DateTimeOffset> couldNotBeOpened = new(StringComparer.Ordinal);
     private ITimer? timer;
     private Task running = Task.CompletedTask;
     private DateTimeOffset? lastEndedAt;
+    private bool measuring;
     private bool stopping;
     private long interrupted;
     private long finished;
@@ -97,11 +99,41 @@ public sealed class IdleReceptionMeasurer(
     {
         DateTimeOffset now = clock.GetUtcNow();
 
-        if (!MayMeasure(now))
+        if (!TakeTheTurn(now))
         {
             return null;
         }
 
+        try
+        {
+            return MeasureOne(now);
+        }
+        finally
+        {
+            lock (gate)
+            {
+                measuring = false;
+            }
+        }
+    }
+
+    private bool TakeTheTurn(DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            if (!enabled || stopping || measuring || (lastEndedAt is { } ended && now - ended < gap))
+            {
+                return false;
+            }
+
+            measuring = true;
+
+            return true;
+        }
+    }
+
+    private IdleMeasurement? MeasureOne(DateTimeOffset now)
+    {
         foreach ((DeviceSettings device, TuningKey channel, TuneParams tune) in Due(now))
         {
             if (manager.BeginMeasuring(device.Id!, channel) is { } ticket)
@@ -113,21 +145,13 @@ public sealed class IdleReceptionMeasurer(
         return null;
     }
 
-    private bool MayMeasure(DateTimeOffset now)
-    {
-        lock (gate)
-        {
-            return enabled && !stopping && (lastEndedAt is not { } ended || now - ended >= gap);
-        }
-    }
-
     private IEnumerable<(DeviceSettings Device, TuningKey Channel, TuneParams Tune)> Due(DateTimeOffset now)
     {
         IReadOnlyList<TuningKey> known = book.Known();
 
         foreach (RestingTuner resting in manager.RestingTuners().Where(tuner => now - tuner.Since >= rest))
         {
-            if (DeviceNamed(resting.DeviceId) is not { } device)
+            if (DeviceNamed(resting.DeviceId) is not { } device || IsLeftAlone(resting.DeviceId, now))
             {
                 continue;
             }
@@ -148,6 +172,14 @@ public sealed class IdleReceptionMeasurer(
         }
     }
 
+    private bool IsLeftAlone(string deviceId, DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            return couldNotBeOpened.TryGetValue(deviceId, out DateTimeOffset at) && now - at < ReceptionBook.RetryAfter;
+        }
+    }
+
     private DeviceSettings? DeviceNamed(string deviceId) =>
         (configuration.Devices ?? []).FirstOrDefault(device => string.Equals(device?.Id, deviceId, StringComparison.Ordinal));
 
@@ -156,8 +188,8 @@ public sealed class IdleReceptionMeasurer(
 
     private IdleMeasurement Measure(DeviceSettings device, TuningKey channel, TuneParams tune, MeasuringTicket ticket)
     {
-        string deviceId = device.Id!;
         Reading reading;
+        bool undisturbed;
 
         try
         {
@@ -165,20 +197,15 @@ public sealed class IdleReceptionMeasurer(
         }
         finally
         {
-            bool undisturbed = manager.EndMeasuring(ticket);
+            undisturbed = manager.EndMeasuring(ticket);
 
             lock (gate)
             {
                 lastEndedAt = clock.GetUtcNow();
             }
-
-            if (!undisturbed)
-            {
-                reading = Reading.Interrupted;
-            }
         }
 
-        IdleMeasurement measurement = Conclude(deviceId, channel, reading);
+        IdleMeasurement measurement = Conclude(device.Id!, channel, undisturbed ? reading : Reading.Interrupted);
 
         Interlocked.Increment(ref measurement.End is IdleMeasurementEnd.Interrupted ? ref interrupted : ref finished);
         Say(measurement);
@@ -193,33 +220,37 @@ public sealed class IdleReceptionMeasurer(
 
     private Reading Read(DeviceSettings device, TuneParams tune, CancellationToken stopping)
     {
+        IReceptionProbe probe;
+
         try
         {
             stopping.ThrowIfCancellationRequested();
-
-            using IReceptionProbe probe = probes.Tune(device, tune, stopping);
-
-            return ReadTheSignal(probe, stopping);
-        }
-        catch (OperationCanceledException) when (stopping.IsCancellationRequested)
-        {
-            return Reading.Interrupted;
+            probe = probes.Tune(device, tune, stopping);
         }
         catch (DvbDeviceException channel) when (channel.Failure is TuningFailure.NoLock or TuningFailure.LockedWithoutData)
         {
             return new Reading(IdleMeasurementEnd.Kept);
         }
-        catch (DvbDeviceException refused) when (refused.Failure is TuningFailure.Unspecified)
-        {
-            return new Reading(IdleMeasurementEnd.Refused, Cause: refused);
-        }
         catch (Exception failed) when (failed is not OutOfMemoryException)
         {
-            return stopping.IsCancellationRequested
-                ? Reading.Interrupted
-                : new Reading(IdleMeasurementEnd.DeviceFailed, Cause: failed);
+            return Stopped(stopping) ?? new Reading(IdleMeasurementEnd.NotOpened, Cause: failed);
+        }
+
+        using (probe)
+        {
+            try
+            {
+                return ReadTheSignal(probe, stopping);
+            }
+            catch (Exception failed) when (failed is not OutOfMemoryException)
+            {
+                return Stopped(stopping) ?? new Reading(IdleMeasurementEnd.DeviceFailed, Cause: failed);
+            }
         }
     }
+
+    private static Reading? Stopped(CancellationToken stopping) =>
+        stopping.IsCancellationRequested ? Reading.Interrupted : null;
 
     private Reading ReadTheSignal(IReceptionProbe probe, CancellationToken stopping)
     {
@@ -269,15 +300,20 @@ public sealed class IdleReceptionMeasurer(
                     kept ? IdleMeasurementEnd.Kept : IdleMeasurementEnd.ThrownAway,
                     reading.CarrierToNoise
                 );
-            case IdleMeasurementEnd.Refused:
-                book.Note(deviceId, on, new ReceptionResult(now, false, null), () => false);
+            case IdleMeasurementEnd.NotOpened:
+                lock (gate)
+                {
+                    couldNotBeOpened[deviceId] = now;
+                }
+
                 logger.LogWarning(
-                    "The tuner {DeviceId} could not be measured on {Channel}, and is not tried on it again for {Hours} hours: {Why}",
+                    "The tuner {DeviceId} could not be opened to be measured on {Channel}, so it is not measured again for {Hours} hours: {Why}",
                     deviceId,
                     channel,
                     ReceptionBook.RetryAfter.TotalHours,
                     reading.Cause?.Message
                 );
+                manager.LookAgainAt(deviceId);
 
                 break;
             case IdleMeasurementEnd.DeviceFailed:
