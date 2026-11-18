@@ -11,9 +11,11 @@ using Puppis.Driver.Sessions;
 using Puppis.Driver.Tuning;
 using Puppis.Driver.Tuning.Dvb;
 
+using Xunit.Abstractions;
+
 namespace Puppis.Driver.Tests;
 
-public sealed class TunerAllocationStressTests
+public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 {
     private const int Workers = 8;
 
@@ -72,6 +74,7 @@ public sealed class TunerAllocationStressTests
         try
         {
             await run.PlayAsync();
+            output.WriteLine($"seed {seed}: {run.LeftMidOpen} requests left while their tuner was being opened");
         }
         catch (Exception failure) when (failure is not SeededFailure)
         {
@@ -95,6 +98,9 @@ public sealed class TunerAllocationStressTests
         private readonly ConcurrentDictionary<string, bool> plugged = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<SessionId, DateTime> unseatedSince = new();
         private int begun;
+        private int leftMidOpen;
+
+        public int LeftMidOpen => Volatile.Read(ref leftMidOpen);
 
         public Run(int seed)
         {
@@ -123,6 +129,7 @@ public sealed class TunerAllocationStressTests
         public async Task PlayAsync()
         {
             await manager.StartAsync(CancellationToken.None);
+            await LeaveMidOpenAsync();
 
             Task[] workers = [.. Enumerable.Range(0, Workers).Select(worker => Task.Run(() => WorkAsync(worker)))];
 
@@ -154,6 +161,11 @@ public sealed class TunerAllocationStressTests
             if (!log.Refusals.IsEmpty)
             {
                 violations.Enqueue($"the table refused changes: {string.Join(" | ", log.Refusals.Take(3))}");
+            }
+
+            if (LeftMidOpen is 0)
+            {
+                violations.Enqueue("no request left while its tuner was being opened");
             }
 
             if (!violations.IsEmpty)
@@ -252,12 +264,56 @@ public sealed class TunerAllocationStressTests
             }
             catch (OperationCanceledException) when (leaving.IsCancellationRequested)
             {
+                if (devices.OpensUnderWay > 0)
+                {
+                    Interlocked.Increment(ref leftMidOpen);
+                }
+
                 return;
             }
             catch (TimeoutException)
             {
                 violations.Enqueue($"the start of {sessionId} waited for longer than {Forever}");
             }
+        }
+
+        private async Task LeaveMidOpenAsync()
+        {
+            using var leaving = new CancellationTokenSource();
+            ManualResetEventSlim held = devices.HoldTheNextOpen();
+            SessionId sessionId = SessionId.Parse("first-to-leave");
+
+            channelOf[sessionId] = Channels[0];
+
+            Task<SessionStart> starting = manager.BeginAsync(
+                new StartSessionRequest
+                {
+                    SessionId = sessionId,
+                    Purpose = SessionPurpose.Live,
+                    Tuning = new TuningRequest(TunerKind.Terrestrial, Channels[0], 50001),
+                },
+                leaving.Token
+            );
+
+            if (!held.Wait(Forever))
+            {
+                violations.Enqueue("the held open never started");
+            }
+
+            await leaving.CancelAsync();
+
+            try
+            {
+                await starting.WaitAsync(Forever);
+                violations.Enqueue("the request that left mid-open was not told it had left");
+            }
+            catch (OperationCanceledException)
+            {
+                Interlocked.Increment(ref leftMidOpen);
+            }
+
+            Check("after a request left mid-open");
+            devices.ReleaseTheHeldOpen();
         }
 
         private async Task StopAsync(Random random)
@@ -285,6 +341,11 @@ public sealed class TunerAllocationStressTests
                     {
                         violations.Enqueue($"{when}: {sink} sits on two tuners");
                     }
+                }
+
+                if ((tuner.DeviceOpen ? 1 : 0) + (tuner.PreviousDeviceOpen ? 1 : 0) + tuner.Closing + tuner.InFlight > 1)
+                {
+                    violations.Enqueue($"{when}: {tuner.DeviceId} has two operations on its device at once");
                 }
 
                 if (WhatIsWrongWith(tuner) is { } wrong)
@@ -385,14 +446,37 @@ public sealed class TunerAllocationStressTests
         private readonly List<Device> created = [];
         private readonly ThreadLocal<Random> random = new(() => new Random(HashCode.Combine(seed, Environment.CurrentManagedThreadId)));
 
+        private ManualResetEventSlim? holding;
+        private readonly ManualResetEventSlim heldOpen = new(false);
+        private readonly ManualResetEventSlim releaseHeld = new(false);
+        private int underWay;
+
+        public int OpensUnderWay => Volatile.Read(ref underWay);
+
+        public ManualResetEventSlim HoldTheNextOpen()
+        {
+            Volatile.Write(ref holding, releaseHeld);
+
+            return heldOpen;
+        }
+
+        public void ReleaseTheHeldOpen() => releaseHeld.Set();
+
         public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold)
         {
             string deviceId = device.Id!;
 
             BeginOpening(deviceId, "opened");
+            Interlocked.Increment(ref underWay);
 
             try
             {
+                if (Interlocked.Exchange(ref holding, null) is { } release)
+                {
+                    heldOpen.Set();
+                    release.Wait(Forever);
+                }
+
                 Thread.Sleep(random.Value!.Next(0, 6));
 
                 if (random.Value!.Next(60) is 0)
@@ -402,11 +486,13 @@ public sealed class TunerAllocationStressTests
             }
             catch
             {
+                Interlocked.Decrement(ref underWay);
                 EndOpening(deviceId, null);
 
                 throw;
             }
 
+            Interlocked.Decrement(ref underWay);
             var opened = new Device(this, deviceId, tuning.PhysicalChannel);
             EndOpening(deviceId, opened);
 
