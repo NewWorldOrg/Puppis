@@ -334,9 +334,13 @@ public sealed class TunerAllocationStressTests
                     "it still has someone on it or a device open",
                 TunerAllocationState.Ready when tuner.Sinks.Count > 0 || !tuner.DeviceOpen =>
                     "it has someone on it or no device open",
-                TunerAllocationState.Tuning or TunerAllocationState.InUse when !tuner.Sinks.Contains(tuner.Holder) =>
+                TunerAllocationState.Tuning when tuner.Sinks.Count is 0 && !tuner.OpeningInFlight =>
+                    "nobody is on it and nothing is being opened",
+                TunerAllocationState.Tuning or TunerAllocationState.InUse when tuner.Sinks.Count > 0 && !tuner.Sinks.Contains(tuner.Holder) =>
                     "its owner is not among those on it",
-                TunerAllocationState.HandingOver when tuner.Outgoing.Count is 0 || !tuner.Sinks.Contains(tuner.Holder) =>
+                TunerAllocationState.InUse when tuner.Sinks.Count is 0 =>
+                    "nobody is on it",
+                TunerAllocationState.HandingOver when (tuner.Outgoing.Count is 0 && !tuner.PreviousOpeningInFlight) || !tuner.Sinks.Contains(tuner.Holder) =>
                     "nobody is being waited for or its new owner is not on it",
                 _ => null,
             };
