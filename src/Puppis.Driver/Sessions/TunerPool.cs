@@ -1,3 +1,5 @@
+using System.Runtime.ExceptionServices;
+
 using Microsoft.Extensions.Logging;
 
 using Puppis.Contracts;
@@ -66,7 +68,14 @@ public sealed record TunerReadiness(bool Ready, TunerRefusal? Refusal, bool Lead
 
 public sealed record TunerClearance(Task<bool> Cleared, DateTimeOffset Since);
 
-public sealed record OpenTicket(string DeviceId, object Token, Task<TunerRefusal?> Outcome, bool Starts, bool Tunes);
+public sealed record OpenTicket(
+    string DeviceId,
+    object Token,
+    Task<TunerRefusal?> Outcome,
+    bool Starts,
+    bool Tunes,
+    DateTimeOffset Since
+);
 
 public sealed record TunerFault(string Detail, string? Title, DeviceFaultKind Kind);
 
@@ -81,6 +90,8 @@ public sealed record TunerAllocationView(
     bool PreviousDeviceOpen,
     bool OpeningInFlight,
     bool PreviousOpeningInFlight,
+    int Closing,
+    int InFlight,
     bool Enabled,
     bool Faulted
 );
@@ -121,6 +132,10 @@ public sealed class TunerPool(
         public TaskCompletionSource<TunerRefusal?>? Opening { get; set; }
 
         public bool InFlight { get; set; }
+
+        public DateTimeOffset OpeningSince { get; set; }
+
+        public bool CloseOnLanding { get; set; }
 
         public TaskCompletionSource Ready { get; set; } = Unset();
 
@@ -345,9 +360,11 @@ public sealed class TunerPool(
             .Allowed.Select(EntryOf)
             .Where(entry => entry.Enabled && entry.Fault is null && entry.State is not TunerAllocationState.Absent);
 
+    private static bool IsStill(Entry entry) => entry.Closing is 0 && entry.InFlight is 0;
+
     private PoolGrant? RideAlong(PoolRequest request, List<Action> after)
     {
-        foreach (Entry entry in Usable(request))
+        foreach (Entry entry in Usable(request).OrderBy(entry => entry.State is TunerAllocationState.Ready && !IsStill(entry) ? 1 : 0))
         {
             if (entry.Current is not { } occupancy || occupancy.Tuning != request.Tuning)
             {
@@ -402,6 +419,18 @@ public sealed class TunerPool(
         return null;
     }
 
+    private void Reuse(Entry entry, Occupancy occupancy, PoolRequest request)
+    {
+        occupancy.Holder = request.SessionId;
+        occupancy.Opener = request.SessionId;
+        occupancy.Displacing = null;
+        occupancy.Established = false;
+        occupancy.CloseOnLanding = false;
+        occupancy.Ready = Unset();
+        occupancy.Stirred = Unset();
+        Attach(entry, occupancy, request);
+    }
+
     private PoolGrant? Adopt(Entry entry, Occupancy occupancy, PoolRequest request)
     {
         if (entry.State is not TunerAllocationState.Tuning || !Move(entry, TunerAllocationEvent.Ride))
@@ -409,10 +438,7 @@ public sealed class TunerPool(
             return null;
         }
 
-        occupancy.Holder = request.SessionId;
-        occupancy.Opener = request.SessionId;
-        occupancy.Displacing = null;
-        Attach(entry, occupancy, request);
+        Reuse(entry, occupancy, request);
 
         return new PoolGrant(
             PoolVerdict.Granted,
@@ -455,14 +481,8 @@ public sealed class TunerPool(
             return null;
         }
 
-        occupancy.Holder = request.SessionId;
-        occupancy.Opener = request.SessionId;
-        occupancy.Displacing = null;
-        occupancy.Established = false;
         occupancy.Opening = null;
-        occupancy.Ready = Unset();
-        occupancy.Stirred = Unset();
-        Attach(entry, occupancy, request);
+        Reuse(entry, occupancy, request);
 
         return new PoolGrant(
             PoolVerdict.Granted,
@@ -477,7 +497,7 @@ public sealed class TunerPool(
 
     private PoolGrant? TakeAFreeTuner(PoolRequest request)
     {
-        foreach (Entry entry in Usable(request))
+        foreach (Entry entry in Usable(request).OrderBy(entry => IsStill(entry) ? 0 : 1))
         {
             if (entry.State is not TunerAllocationState.Free || HoldsBack(entry, request))
             {
@@ -508,7 +528,7 @@ public sealed class TunerPool(
 
     private PoolGrant? TakeATunerNobodyIsOn(PoolRequest request, List<Action> after)
     {
-        foreach (Entry entry in Usable(request))
+        foreach (Entry entry in Usable(request).OrderBy(entry => IsStill(entry) ? 0 : 1))
         {
             if (entry.State is not TunerAllocationState.Ready || entry.Current is not { } held)
             {
@@ -750,23 +770,25 @@ public sealed class TunerPool(
                 return null;
             }
 
+            DateTimeOffset now = timeProvider.GetUtcNow();
+
             if (occupancy.Device is not null)
             {
-                return new OpenTicket(deviceId, occupancy, Task.FromResult<TunerRefusal?>(null), Starts: false, Tunes: false);
+                return new OpenTicket(deviceId, occupancy, Task.FromResult<TunerRefusal?>(null), Starts: false, Tunes: false, now);
             }
 
             if (occupancy.Opening is { } underWay)
             {
-                return new OpenTicket(deviceId, occupancy, underWay.Task, Starts: false, Tunes: true);
+                return new OpenTicket(deviceId, occupancy, underWay.Task, Starts: false, Tunes: true, occupancy.OpeningSince);
             }
 
             var opening = new TaskCompletionSource<TunerRefusal?>(TaskCreationOptions.RunContinuationsAsynchronously);
             occupancy.Opening = opening;
+            occupancy.OpeningSince = now;
             occupancy.InFlight = true;
             entry.InFlight++;
-            entry.Quiet = Task.WhenAll(entry.Quiet, opening.Task);
 
-            return new OpenTicket(deviceId, occupancy, opening.Task, Starts: true, Tunes: true);
+            return new OpenTicket(deviceId, occupancy, opening.Task, Starts: true, Tunes: true, now);
         }
     }
 
@@ -794,7 +816,7 @@ public sealed class TunerPool(
 
                 if (occupancy.Sinks.Count is 0)
                 {
-                    AfterSomeoneLeft(entry, occupancy, after, closing: false);
+                    AfterSomeoneLeft(entry, occupancy, after, occupancy.CloseOnLanding);
                 }
             }
             else
@@ -843,6 +865,25 @@ public sealed class TunerPool(
             }
 
             after.Add(() => opening?.TrySetResult(refusal));
+        }
+
+        Run(after);
+    }
+
+    public void OpenTookTooLong(OpenTicket ticket, TunerRefusal refusal)
+    {
+        List<Action> after = [];
+        var occupancy = (Occupancy)ticket.Token;
+
+        lock (gate)
+        {
+            Entry entry = EntryOf(ticket.DeviceId);
+
+            if (ReferenceEquals(entry.Current, occupancy) && entry.State is TunerAllocationState.Tuning && occupancy.InFlight)
+            {
+                Evict(occupancy, refusal);
+                AfterSomeoneLeft(entry, occupancy, after, closing: true);
+            }
         }
 
         Run(after);
@@ -929,9 +970,7 @@ public sealed class TunerPool(
             {
                 lock (gate)
                 {
-                    return Readiness(deviceId, reader, out _) is { Refusal: not null } refused
-                        ? refused
-                        : new TunerReadiness(false, null);
+                    return Readiness(deviceId, reader, out _) ?? new TunerReadiness(false, null);
                 }
             }
         }
@@ -1200,6 +1239,7 @@ public sealed class TunerPool(
     {
         if (occupancy.Sinks.Count > 0 || occupancy.InFlight)
         {
+            occupancy.CloseOnLanding |= closing && occupancy.Sinks.Count is 0;
             Move(entry, TunerAllocationEvent.Released);
 
             return;
@@ -1550,6 +1590,11 @@ public sealed class TunerPool(
         {
             Evict(occupancy);
             Drop(entry, occupancy.Device, after);
+
+            if (occupancy is { InFlight: true, Opening: { } opening })
+            {
+                entry.Quiet = Task.WhenAll(entry.Quiet, opening.Task);
+            }
         }
 
         if (entry.Handover is { } handover)
@@ -1654,6 +1699,8 @@ public sealed class TunerPool(
             entry.Previous?.Device is not null,
             entry.Current?.InFlight ?? false,
             entry.Previous?.InFlight ?? false,
+            entry.Closing,
+            entry.InFlight,
             entry.Enabled,
             entry.Fault is not null
         );
@@ -1796,10 +1843,22 @@ public sealed class TunerPool(
     {
         Report();
 
+        ExceptionDispatchInfo? first = null;
+
         foreach (Action action in after)
         {
-            action();
+            try
+            {
+                action();
+            }
+            catch (Exception failed)
+            {
+                logger?.LogError(failed, "A step after a change to the tuners failed; the steps after it still ran.");
+                first ??= ExceptionDispatchInfo.Capture(failed);
+            }
         }
+
+        first?.Throw();
     }
 
     private void Report()

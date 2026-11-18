@@ -30,14 +30,20 @@ public sealed class TunerOpeningTests : IDisposable
             [.. devices.Select(id => new DeviceSettings(id, DeviceKind.Terrestrial))]
         );
 
-    private TunerSessionManager Manager(ITunerDeviceFactory factory, TimeSpan? grace = null) =>
+    private TunerSessionManager Manager(
+        ITunerDeviceFactory factory,
+        TimeSpan? grace = null,
+        TimeSpan? openLimit = null,
+        DriverConfiguration? configuration = null
+    ) =>
         new(
-            Configuration("adapter0"),
+            configuration ?? Configuration("adapter0"),
             factory,
             TimeProvider.System,
             NullLogger<TunerSessionManager>.Instance,
             tunerGrace: grace,
-            handOverLimit: Deadlock
+            handOverLimit: Deadlock,
+            openLimit: openLimit
         );
 
     private static StartSessionRequest Request(string sessionId, SessionPurpose purpose, int channel = 55) =>
@@ -141,6 +147,7 @@ public sealed class TunerOpeningTests : IDisposable
         Assert.Equal(2, factory.Opens);
         Assert.Equal(1, factory.MostOpenAtOnce);
         Assert.Equal(SessionStopReason.Preempted, scan.StopReason);
+        Assert.Equal(HeadHold.EveryProgramme, factory.LastHold);
 
         await StopAsync(taken);
     }
@@ -239,7 +246,275 @@ public sealed class TunerOpeningTests : IDisposable
         Task<TunerReadiness> late = pool.AwaitReadyAsync("adapter0", Deadlock, SessionId.Parse("rider"));
 
         Assert.True(late.IsCompleted);
-        Assert.False((await late).Ready);
+        TunerReadiness heard = await late;
+        Assert.False(heard.Ready);
+        Assert.NotNull(heard.Refusal);
+    }
+
+    [Fact]
+    public async Task ARequestForTheSameChannelTakesOverAnOpenNobodyIsWaitingForAnyMore()
+    {
+        var factory = new GatedFactory();
+        TunerSessionManager manager = Manager(factory);
+        using var leaving = new CancellationTokenSource();
+
+        Task<SessionStart> live = manager.BeginAsync(Request("live", SessionPurpose.Live), leaving.Token);
+        factory.AwaitOpening();
+        await leaving.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => live.WaitAsync(Deadlock));
+
+        Task<SessionStart> again = manager.BeginAsync(Request("again", SessionPurpose.Live));
+
+        Assert.Equal([SessionId.Parse("again")], Assert.Single(manager.Allocations()).Sinks);
+
+        factory.Open();
+        TunerSession taken = await StartedAsync(again);
+
+        Assert.Equal(1, factory.Opens);
+
+        await StopAsync(taken);
+    }
+
+    [Fact]
+    public async Task WhenTheOpenFailsAfterTheOpenerLeftEveryoneWaitingHearsTheSame()
+    {
+        var factory = new GatedFactory { Failure = TuningFailure.LockedWithoutData };
+        TunerSessionManager manager = Manager(factory);
+        using var leaving = new CancellationTokenSource();
+
+        Task<SessionStart> live = manager.BeginAsync(Request("live", SessionPurpose.Live), leaving.Token);
+        factory.AwaitOpening();
+        Task<SessionStart> recording = manager.BeginAsync(Request("rec", SessionPurpose.Recording));
+        Task<SessionStart> rider = manager.BeginAsync(Request("rider", SessionPurpose.Survey));
+
+        await leaving.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => live.WaitAsync(Deadlock));
+
+        factory.Open();
+        SessionStart[] answers = await Task.WhenAll(recording, rider).WaitAsync(Deadlock);
+
+        Assert.All(answers, answer => Assert.Equal(SessionRefusal.NoData, answer.Refusal));
+        Assert.Single(answers.Select(answer => answer.Detail).Distinct());
+    }
+
+    [Fact]
+    public async Task WhenTheOpenerFailsAfterTheTunerOpenedTheOneWaitingUsesTheSameDevice()
+    {
+        var factory = new GatedFactory { OpenAtOnce = true };
+        TunerSessionManager manager = Manager(factory, configuration: Configuration("adapter0") with { LiveSessionMinutes = 0 });
+        factory.HoldOpens();
+
+        Task<SessionStart> live = manager.BeginAsync(Request("live", SessionPurpose.Live));
+        factory.AwaitOpening();
+        Task<SessionStart> recording = manager.BeginAsync(Request("rec", SessionPurpose.Recording));
+        factory.Open();
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => live.WaitAsync(Deadlock));
+        TunerSession taken = await StartedAsync(recording);
+
+        Assert.Equal(1, factory.Opens);
+
+        await StopAsync(taken);
+    }
+
+    [Fact]
+    public async Task AnOpenThatNeverReturnsRefusesThoseWaitingWithItsOwnReason()
+    {
+        var factory = new GatedFactory();
+        TunerSessionManager manager = Manager(factory, openLimit: TimeSpan.FromMilliseconds(300));
+        using var leaving = new CancellationTokenSource();
+
+        Task<SessionStart> live = manager.BeginAsync(Request("live", SessionPurpose.Live), leaving.Token);
+        factory.AwaitOpening();
+        Task<SessionStart> recording = manager.BeginAsync(Request("rec", SessionPurpose.Recording));
+        await leaving.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => live.WaitAsync(Deadlock));
+
+        SessionStart refused = await recording.WaitAsync(Deadlock);
+
+        Assert.Equal(SessionRefusal.DeviceUnavailable, refused.Refusal);
+        Assert.Contains("did not open", refused.Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain("let go", refused.Detail, StringComparison.Ordinal);
+        Assert.Equal(TunerAllocationState.Tuning, Assert.Single(manager.Allocations()).State);
+
+        factory.Open();
+    }
+
+    [Fact]
+    public async Task AFreeTunerWithNothingUnderWayIsPreferredToOneStillClosingItsDevice()
+    {
+        var factory = new GatedFactory { OpenAtOnce = true };
+        TunerSessionManager manager = new(
+            Configuration("adapter0", "adapter1"),
+            factory,
+            TimeProvider.System,
+            NullLogger<TunerSessionManager>.Instance,
+            tunerGrace: TimeSpan.FromMilliseconds(100),
+            handOverLimit: Deadlock
+        );
+        TunerSession first = await StartedAsync(manager.BeginAsync(Request("first", SessionPurpose.Live, 57)));
+        Assert.Equal("adapter0", first.DeviceId);
+        factory.SlowClose();
+        await StopAsync(first);
+        factory.AwaitClosing();
+
+        TunerSession next = await StartedAsync(manager.BeginAsync(Request("next", SessionPurpose.Live)));
+
+        Assert.Equal("adapter1", next.DeviceId);
+
+        factory.FinishClosing();
+        await StopAsync(next);
+    }
+
+    [Fact]
+    public void AnOpenAbandonedMidWayIsClosedWhenItLandsRatherThanKept()
+    {
+        var pool = new TunerPool(TimeProvider.System, declared: [("adapter0", true)]);
+        PoolGrant opener = pool.Acquire(new PoolRequest(SessionId.Parse("live"), SessionPurpose.Live, Here, null, ["adapter0"]));
+        OpenTicket ticket = pool.StartOpening(opener.DeviceId, opener.Holder)!;
+
+        pool.Abandon(opener.DeviceId, opener.Holder);
+        var device = new ClosableTunerDevice();
+        pool.Opened(ticket, device);
+
+        Assert.True(device.Disposed);
+        Assert.Equal(TunerAllocationState.Free, pool.StateOf("adapter0"));
+    }
+
+    [Fact]
+    public void EveryActionAfterAChangeRunsEvenWhenOneOfThemThrows()
+    {
+        var pool = new TunerPool(
+            TimeProvider.System,
+            declared: [("adapter0", true)],
+            letGo: _ => throw new InvalidOperationException("the kept device would not let go")
+        );
+        PoolGrant opener = pool.Acquire(new PoolRequest(SessionId.Parse("live"), SessionPurpose.Live, Here, null, ["adapter0"]));
+        OpenTicket ticket = pool.StartOpening(opener.DeviceId, opener.Holder)!;
+        Assert.Throws<InvalidOperationException>(() => pool.Turn("adapter0", false));
+        pool.Leave(opener.Holder);
+        var device = new ClosableTunerDevice();
+
+        Assert.Throws<InvalidOperationException>(() => pool.Opened(ticket, device));
+
+        Assert.True(device.Disposed);
+        Assert.True(ticket.Outcome.IsCompleted);
+        Assert.True(pool.IsQuiet("adapter0"));
+        Assert.Equal(TunerAllocationState.Disabled, pool.StateOf("adapter0"));
+    }
+
+    [Fact]
+    public async Task ATunerTakenOverAfterItsOpenWasGivenUpServesTheRiderThatJoinsIt()
+    {
+        var pool = new TunerPool(TimeProvider.System, declared: [("adapter0", true)]);
+        string[] one = ["adapter0"];
+        PoolGrant opener = pool.Acquire(new PoolRequest(SessionId.Parse("live"), SessionPurpose.Live, Here, null, one));
+        OpenTicket ticket = pool.StartOpening(opener.DeviceId, opener.Holder)!;
+        pool.GiveBack(opener.DeviceId, opener.Holder, new TunerRefusal(SessionRefusal.DeviceBusy, "gave up"));
+
+        PoolGrant adopted = pool.Acquire(new PoolRequest(SessionId.Parse("again"), SessionPurpose.Live, Here, null, one));
+        pool.Acquire(new PoolRequest(SessionId.Parse("rider"), SessionPurpose.Survey, Here, null, one));
+        Task<TunerReadiness> riding = pool.AwaitReadyAsync("adapter0", Deadlock, SessionId.Parse("rider"));
+
+        Assert.False(riding.IsCompleted);
+
+        pool.Opened(ticket, new FakeTunerDevice(55));
+        pool.Ready(adopted.DeviceId, adopted.Holder);
+
+        Assert.True((await riding.WaitAsync(Deadlock)).Ready);
+    }
+
+    [Fact]
+    public void ARiderWhoseWaitRunsOutJustAsTheTunerBecomesReadyIsServed()
+    {
+        (TunerPool pool, SteppedTimeProvider clock, PoolGrant opener) = ARiderWaiting();
+
+        TunerReadiness heard = AtTheDeadline(clock, () => pool.AwaitReadyAsync("adapter0", TimeSpan.FromSeconds(5), SessionId.Parse("rider")), () => pool.Ready(opener.DeviceId, opener.Holder));
+
+        Assert.True(heard.Ready);
+    }
+
+    [Fact]
+    public void ARiderWhoseWaitRunsOutJustAsItIsMadeTheOpenerIsToldToOpen()
+    {
+        (TunerPool pool, SteppedTimeProvider clock, PoolGrant opener) = ARiderWaiting();
+
+        TunerReadiness heard = AtTheDeadline(clock, () => pool.AwaitReadyAsync("adapter0", TimeSpan.FromSeconds(5), SessionId.Parse("rider")), () => pool.Leave(opener.Holder));
+
+        Assert.True(heard.Leads);
+    }
+
+    private static (TunerPool Pool, SteppedTimeProvider Clock, PoolGrant Opener) ARiderWaiting()
+    {
+        var clock = new SteppedTimeProvider(new DateTimeOffset(2026, 8, 13, 21, 0, 0, TimeSpan.Zero));
+        var pool = new TunerPool(clock, declared: [("adapter0", true)]);
+        string[] one = ["adapter0"];
+        PoolGrant opener = pool.Acquire(new PoolRequest(SessionId.Parse("live"), SessionPurpose.Live, Here, null, one));
+        pool.Acquire(new PoolRequest(SessionId.Parse("rider"), SessionPurpose.Survey, Here, null, one));
+
+        return (pool, clock, opener);
+    }
+
+    private static TunerReadiness AtTheDeadline(SteppedTimeProvider clock, Func<Task<TunerReadiness>> wait, Action meanwhile)
+    {
+        SynchronizationContext? before = SynchronizationContext.Current;
+        var queued = new QueuedContext();
+
+        SynchronizationContext.SetSynchronizationContext(queued);
+
+        try
+        {
+            Task<TunerReadiness> waiting = wait();
+
+            var advancing = new Thread(() => clock.Advance(TimeSpan.FromSeconds(5)));
+            advancing.Start();
+            Assert.True(advancing.Join(Deadlock));
+            meanwhile();
+            queued.RunAll();
+
+            Assert.True(waiting.IsCompleted);
+
+            return waiting.Result;
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(before);
+        }
+    }
+
+    private sealed class QueuedContext : SynchronizationContext
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> queue = new();
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            lock (queue)
+            {
+                queue.Enqueue((d, state));
+            }
+        }
+
+        public void RunAll()
+        {
+            DateTime giveUp = DateTime.UtcNow + Deadlock;
+
+            while (DateTime.UtcNow < giveUp)
+            {
+                (SendOrPostCallback Callback, object? State) next;
+
+                lock (queue)
+                {
+                    if (queue.Count is 0)
+                    {
+                        return;
+                    }
+
+                    next = queue.Dequeue();
+                }
+
+                next.Callback(next.State);
+            }
+        }
     }
 
     private sealed class GatedFactory : ITunerDeviceFactory
@@ -256,6 +531,10 @@ public sealed class TunerOpeningTests : IDisposable
         private int opens;
 
         public bool OpenAtOnce { get; set; }
+
+        public HeadHold? LastHold { get; private set; }
+
+        public void HoldOpens() => OpenAtOnce = false;
 
         public TuningFailure? Failure { get; init; }
 
@@ -297,6 +576,7 @@ public sealed class TunerOpeningTests : IDisposable
             }
 
             Interlocked.Increment(ref opens);
+            LastHold = hold;
             opening.Release();
 
             if (!OpenAtOnce)

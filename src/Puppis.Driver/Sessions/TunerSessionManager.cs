@@ -29,7 +29,8 @@ public sealed class TunerSessionManager(
     TimeSpan? handOverLimit = null,
     TimeSpan? progressInterval = null,
     ITunerDeviceCheck? deviceCheck = null,
-    Func<DeviceSettings, bool?>? presence = null
+    Func<DeviceSettings, bool?>? presence = null,
+    TimeSpan? openLimit = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
@@ -39,6 +40,8 @@ public sealed class TunerSessionManager(
     public static readonly TimeSpan DefaultHardStopLimit = TimeSpan.FromSeconds(30);
 
     public static readonly TimeSpan HandOverLimit = TimeSpan.FromSeconds(10);
+
+    public static readonly TimeSpan OpenLimit = TimeSpan.FromSeconds(30);
 
     public static readonly TimeSpan LetGoLimit =
         DvbTunerSettings.Default.BytePatience + TimeSpan.FromSeconds(3);
@@ -67,6 +70,7 @@ public sealed class TunerSessionManager(
     private readonly TimeSpan hardStop = hardStopLimit ?? DefaultHardStopLimit;
     private readonly TimeSpan letGo = letGoLimit ?? LetGoLimit;
     private readonly TimeSpan handOver = handOverLimit ?? HandOverLimit;
+    private readonly TimeSpan opening = openLimit ?? OpenLimit;
     private readonly IRecordingWriterFactory writerFactory =
         recordingWriters ?? new RecordingWriterFactory();
     private FaultedTunerRecheck? rechecking;
@@ -648,7 +652,24 @@ public sealed class TunerSessionManager(
             OpenInTheBackground(ticket, request);
         }
 
-        if (await ticket.Outcome.WaitAsync(cancellationToken) is { } failed)
+        TunerRefusal? failed;
+
+        try
+        {
+            failed = ticket.Starts
+                ? await ticket.Outcome.WaitAsync(cancellationToken)
+                : await ticket.Outcome.WaitAsync(OpeningLeft(ticket), timeProvider, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            failed = new TunerRefusal(
+                SessionRefusal.DeviceUnavailable,
+                $"The device '{deviceId}' did not open within {opening}."
+            );
+            pool.OpenTookTooLong(ticket, failed);
+        }
+
+        if (failed is not null)
         {
             claim.Leave();
 
@@ -678,11 +699,20 @@ public sealed class TunerSessionManager(
         );
     }
 
+    private TimeSpan OpeningLeft(OpenTicket ticket)
+    {
+        TimeSpan left = opening - (timeProvider.GetUtcNow() - ticket.Since);
+
+        return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+    }
+
     private SessionStart Lost(TunerClaim claim, SessionId sessionId)
     {
+        TunerRefusal? told = pool.RefusalOf(sessionId);
+
         claim.Leave();
 
-        return pool.RefusalOf(sessionId) is { } refusal
+        return told is { } refusal
             ? SessionStart.Refused(refusal.Refusal, refusal.Detail)
             : SessionStart.Refused(
                 SessionRefusal.DeviceBusy,
@@ -712,17 +742,29 @@ public sealed class TunerSessionManager(
         }
         catch (Exception error)
         {
-            pool.OpenFailed(
+            Report(() => pool.OpenFailed(
                 ticket,
                 RefusalForTheOpen(deviceId, request, error),
                 error,
                 () => NoteTheFailedOpen(deviceId, request, error)
-            );
+            ), deviceId);
 
             return;
         }
 
-        pool.Opened(ticket, opened);
+        Report(() => pool.Opened(ticket, opened), deviceId);
+    }
+
+    private void Report(Action toTheTable, string deviceId)
+    {
+        try
+        {
+            toTheTable();
+        }
+        catch (Exception failed)
+        {
+            logger.LogError(failed, "What happened to the open of {DeviceId} was written down, and a step after it failed.", deviceId);
+        }
     }
 
     private void NoteTheFailedOpen(string deviceId, StartSessionRequest request, Exception error)
