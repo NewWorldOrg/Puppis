@@ -246,6 +246,8 @@ public sealed class TunerSession : IDisposable
 
     public SignalQualitySample? Quality => quality?.Latest;
 
+    public IReadOnlyList<double> CarrierToNoiseReadings => quality?.CarrierToNoiseReadings ?? [];
+
     public long LockLosses => quality?.LockLosses ?? 0;
 
     public bool Concluded => completion.Task.IsCompleted;

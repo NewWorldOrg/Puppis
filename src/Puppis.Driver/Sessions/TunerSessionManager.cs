@@ -9,6 +9,7 @@ using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
 using Puppis.Driver.Diagnostics;
 using Puppis.Driver.Events;
+using Puppis.Driver.Reception;
 using Puppis.Driver.Recording;
 using Puppis.Driver.Tuning;
 using Puppis.Driver.Tuning.Dvb;
@@ -30,7 +31,8 @@ public sealed class TunerSessionManager(
     TimeSpan? progressInterval = null,
     ITunerDeviceCheck? deviceCheck = null,
     Func<DeviceSettings, bool?>? presence = null,
-    TimeSpan? openLimit = null
+    TimeSpan? openLimit = null,
+    ReceptionBook? reception = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
@@ -54,7 +56,9 @@ public sealed class TunerSessionManager(
         [.. (configuration.Devices ?? []).Where(device => device?.Id is not null).Select(device => (device.Id!, device.Enabled))],
         deviceId => LetGo(configuration, deviceCheck, deviceId),
         logger,
-        deviceId => Look(configuration, presence, deviceId)
+        deviceId => Look(configuration, presence, deviceId),
+        StandingIn(reception),
+        deviceId => IsKeptOpen(configuration, deviceCheck, deviceId)
     );
     private readonly ConcurrentDictionary<string, DateTimeOffset> healthChangedAt = new(
         StringComparer.Ordinal
@@ -776,6 +780,7 @@ public sealed class TunerSessionManager(
 
         try
         {
+            NoteTheReception(deviceId, TuningKey.Of(request), locked: false, null);
             RecordTuneFailure(deviceId, TuningKey.Of(request), failed, request.Purpose);
         }
         catch (Exception unexpected)
@@ -1186,6 +1191,7 @@ public sealed class TunerSessionManager(
             events?.Signal(DriverEvents.SessionTuned);
         }
 
+        reception?.Know(TuningKey.Of(request));
         Announce();
         claim.PassTo(session);
 
@@ -1542,6 +1548,8 @@ public sealed class TunerSessionManager(
     {
         if (tunings.TryRemove(session.SessionId, out TuningKey? tuning))
         {
+            NoteTheReceptionOf(session, tuning);
+
             if (session.State is SessionState.Stopped)
             {
                 ForgiveTuneFailures(session.DeviceId);
@@ -1562,6 +1570,41 @@ public sealed class TunerSessionManager(
             FaultAfterFailing(session);
         }
     }
+
+    private void NoteTheReceptionOf(TunerSession session, TuningKey tuning)
+    {
+        if (session.RidesOn is not null || session.StopReason is SessionStopReason.DeviceFailed)
+        {
+            return;
+        }
+
+        bool locked = session.FailureCause
+            is not DvbDeviceException { Failure: TuningFailure.NoLock or TuningFailure.LockedWithoutData };
+
+        NoteTheReception(session.DeviceId, tuning, locked, locked ? Median.Of(session.CarrierToNoiseReadings) : null);
+    }
+
+    private void NoteTheReception(string deviceId, TuningKey tuning, bool locked, double? carrierToNoise)
+    {
+        ReceptionChannel channel = ReceptionChannel.Of(tuning);
+
+        reception?.Note(
+            deviceId,
+            channel,
+            new ReceptionResult(timeProvider.GetUtcNow(), locked, carrierToNoise),
+            () => IsReceivedOnAnotherTuner(channel, deviceId)
+        );
+    }
+
+    public bool IsReceivedOnAnotherTuner(ReceptionChannel channel, string deviceId) =>
+        sessions.Values.Any(other =>
+            other.DeviceId != deviceId
+            && other.RidesOn is null
+            && other.State is SessionState.Active
+            && other.Quality?.HasLock is true
+            && tunings.TryGetValue(other.SessionId, out TuningKey? receiving)
+            && ReceptionChannel.Of(receiving) == channel
+        );
 
     private void FaultAfterFailing(TunerSession session)
     {
@@ -1822,11 +1865,19 @@ public sealed class TunerSessionManager(
         }
     }
 
+    private static Func<string, TuningKey, ReceptionStanding>? StandingIn(ReceptionBook? book) =>
+        book is null ? null : (deviceId, tuning) => book.StandingOf(deviceId, ReceptionChannel.Of(tuning));
+
     private static bool? Look(DriverConfiguration configuration, Func<DeviceSettings, bool?>? presence, string deviceId) =>
         presence is not null
         && (configuration.Devices ?? []).FirstOrDefault(candidate => candidate?.Id == deviceId) is { } device
             ? presence(device)
             : null;
+
+    private static bool IsKeptOpen(DriverConfiguration configuration, ITunerDeviceCheck? check, string deviceId) =>
+        check is not null
+        && (configuration.Devices ?? []).FirstOrDefault(candidate => candidate?.Id == deviceId) is { } device
+        && check.IsKeptOpen(device);
 
     private static void LetGo(DriverConfiguration configuration, ITunerDeviceCheck? check, string deviceId)
     {

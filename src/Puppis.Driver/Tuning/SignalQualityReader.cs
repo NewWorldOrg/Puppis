@@ -26,6 +26,8 @@ public sealed class SignalQualityReader
 
     public static readonly TimeSpan WhileWalkingChannels = TimeSpan.FromSeconds(2);
 
+    public const int MostCarrierToNoiseReadingsKept = 720;
+
     private readonly ISignalQualitySource source;
     private readonly TimeProvider time;
     private readonly TimeSpan interval;
@@ -33,6 +35,7 @@ public sealed class SignalQualityReader
     private readonly Action<Exception>? problem;
     private readonly Lock gate = new();
 
+    private readonly Queue<double> carrierToNoise = new();
     private SignalQualitySample? latest;
     private DateTimeOffset? readAt;
     private bool holdingLock = true;
@@ -70,6 +73,17 @@ public sealed class SignalQualityReader
             lock (gate)
             {
                 return latest;
+            }
+        }
+    }
+
+    public IReadOnlyList<double> CarrierToNoiseReadings
+    {
+        get
+        {
+            lock (gate)
+            {
+                return [.. carrierToNoise];
             }
         }
     }
@@ -112,6 +126,7 @@ public sealed class SignalQualityReader
         {
             latest = sample;
             readAt = sample.MeasuredAt;
+            Keep(sample);
         }
 
         if (refusal is not null)
@@ -124,6 +139,21 @@ public sealed class SignalQualityReader
         Judge(sample);
 
         return sample;
+    }
+
+    private void Keep(SignalQualitySample sample)
+    {
+        if (!sample.HasLock || !sample.Quality!.CarrierToNoise.TryGetDecibels(out double decibels))
+        {
+            return;
+        }
+
+        carrierToNoise.Enqueue(decibels);
+
+        if (carrierToNoise.Count > MostCarrierToNoiseReadingsKept)
+        {
+            carrierToNoise.Dequeue();
+        }
     }
 
     private void Judge(SignalQualitySample sample)
