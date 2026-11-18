@@ -39,6 +39,8 @@ public sealed class TunerSessionManager(
 
     public const int DifferentChannelsThatFaultTheDevice = 2;
 
+    public const int LockReadingsThatCountAsNow = 2;
+
     public static readonly TimeSpan DefaultHardStopLimit = TimeSpan.FromSeconds(30);
 
     public static readonly TimeSpan HandOverLimit = TimeSpan.FromSeconds(10);
@@ -1670,8 +1672,8 @@ public sealed class TunerSessionManager(
             return;
         }
 
-        bool locked = session.FailureCause
-            is not DvbDeviceException { Failure: TuningFailure.NoLock or TuningFailure.LockedWithoutData };
+        bool locked = session.HasHeldTheLock
+            || session.FailureCause is not DvbDeviceException { Failure: TuningFailure.NoLock or TuningFailure.LockedWithoutData };
 
         NoteTheReception(session.DeviceId, tuning, locked, locked ? Median.Of(session.CarrierToNoiseReadings) : null);
     }
@@ -1688,15 +1690,23 @@ public sealed class TunerSessionManager(
         );
     }
 
-    public bool IsReceivedOnAnotherTuner(ReceptionChannel channel, string deviceId) =>
-        sessions.Values.Any(other =>
+    public bool IsReceivedOnAnotherTuner(ReceptionChannel channel, string deviceId)
+    {
+        DateTimeOffset now = timeProvider.GetUtcNow();
+
+        return sessions.Values.Any(other =>
             other.DeviceId != deviceId
             && other.RidesOn is null
             && other.State is SessionState.Active
-            && other.Quality?.HasLock is true
+            && HeldTheLockLately(other, now)
             && tunings.TryGetValue(other.SessionId, out TuningKey? receiving)
             && ReceptionChannel.Of(receiving) == channel
         );
+    }
+
+    private bool HeldTheLockLately(TunerSession session, DateTimeOffset now) =>
+        session.Quality is { HasLock: true } reading
+        && now - reading.LockReadAt <= Interval(session.Purpose) * LockReadingsThatCountAsNow;
 
     private void FaultAfterFailing(TunerSession session)
     {

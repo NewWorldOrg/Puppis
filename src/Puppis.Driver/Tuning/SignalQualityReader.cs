@@ -36,6 +36,7 @@ public sealed class SignalQualityReader
     private readonly Lock gate = new();
 
     private readonly Queue<double> carrierToNoise = new();
+    private bool heldTheLock;
     private SignalQualitySample? latest;
     private DateTimeOffset? readAt;
     private bool holdingLock = true;
@@ -84,6 +85,17 @@ public sealed class SignalQualityReader
             lock (gate)
             {
                 return [.. carrierToNoise];
+            }
+        }
+    }
+
+    public bool HasHeldTheLock
+    {
+        get
+        {
+            lock (gate)
+            {
+                return heldTheLock;
             }
         }
     }
@@ -143,6 +155,8 @@ public sealed class SignalQualityReader
 
     private void Keep(SignalQualitySample sample)
     {
+        heldTheLock |= sample.HasLock;
+
         if (!sample.HasLock || !sample.Quality!.CarrierToNoise.TryGetDecibels(out double decibels))
         {
             return;

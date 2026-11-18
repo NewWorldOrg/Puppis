@@ -193,6 +193,32 @@ public sealed class SessionReceptionTests
     }
 
     [Fact]
+    public void AnotherTunersLockCountsOnlyWhileItWasReadWithinTheLastTwoIntervals()
+    {
+        devices.Signals["south"] = new ScriptedQualitySource();
+        devices.Dead.Add(("north", 31));
+        TunerSessionManager manager = Manager();
+        TunerSession receiving = Begin(manager, "receiving", "south");
+        ReadOnce("south");
+
+        clock.Advance(TimeSpan.FromSeconds(21));
+        manager.Begin(Live("late", "north"));
+
+        Assert.Equal(ReceptionStanding.Unmeasured, book.StandingOf("north", Here));
+        Assert.False(book.IsDue("north", Here, clock.GetUtcNow()));
+
+        clock.Advance(TimeSpan.FromSeconds(6));
+        ReadOnce("south");
+        clock.Advance(TimeSpan.FromSeconds(20));
+        manager.Begin(Live("in-time", "north"));
+
+        Assert.Equal(new ReceptionStanding(1, 0, null, clock.GetUtcNow()), book.StandingOf("north", Here));
+
+        devices.Opened["south"].Allow(1000);
+        Stop(receiving);
+    }
+
+    [Fact]
     public void AnotherTunerOnADifferentChannelDoesNotCountAsReceiving()
     {
         devices.Signals["south"] = new ScriptedQualitySource();
@@ -210,10 +236,10 @@ public sealed class SessionReceptionTests
     }
 
     [Fact]
-    public async Task ASessionThatLostTheChannelPartWayIsKeptAsNotLockedOnlyWhileAnotherTunerReceivesIt()
+    public async Task ASessionThatNeverHeldTheLockAndEndedWithoutItIsKeptOnlyWhileAnotherTunerReceivesTheChannel()
     {
         devices.Signals["south"] = new ScriptedQualitySource();
-        devices.LosesTheChannel.Add("north");
+        devices.LosesTheChannelAfter["north"] = 0;
         TunerSessionManager manager = Manager();
         TunerSession receiving = Begin(manager, "receiving", "south");
         ReadOnce("south");
@@ -232,6 +258,40 @@ public sealed class SessionReceptionTests
         await alone.Completion.WaitAsync(Deadlock);
 
         Assert.Equal(1, book.StandingOf("north", Here).Kept);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ASessionThatHeldTheLockAndLaterLostTheChannelIsKeptAsLockedWithWhatItReadWhileItHadData(bool anotherReceives)
+    {
+        devices.Signals["south"] = new ScriptedQualitySource();
+        devices.Signals["north"] = new ScriptedQualitySource().Answer(Readings.Measured(19), Readings.Measured(23));
+        devices.LosesTheChannelAfter["north"] = 2;
+        TunerSessionManager manager = Manager();
+        TunerSession? receiving = anotherReceives ? Begin(manager, "receiving", "south") : null;
+
+        if (receiving is not null)
+        {
+            ReadOnce("south");
+        }
+
+        TunerSession recording = Begin(manager, "recording", "north");
+
+        ReadOnce("north");
+        clock.Advance(TimeSpan.FromSeconds(10));
+        ReadOnce("north");
+        devices.Opened["north"].Allow(1);
+        await recording.Completion.WaitAsync(Deadlock);
+
+        Assert.Equal(SessionState.Failed, recording.State);
+        Assert.Equal(new ReceptionStanding(1, 1, 21, clock.GetUtcNow()), book.StandingOf("north", Here));
+
+        if (receiving is not null)
+        {
+            devices.Opened["south"].Allow(1000);
+            Stop(receiving);
+        }
     }
 
     [Fact]
@@ -290,7 +350,7 @@ public sealed class SessionReceptionTests
 
         public HashSet<(string DeviceId, int Channel)> Dead { get; } = [];
 
-        public HashSet<string> LosesTheChannel { get; } = [];
+        public Dictionary<string, int> LosesTheChannelAfter { get; } = [];
 
         public HashSet<string> Breaks { get; } = [];
 
@@ -309,25 +369,27 @@ public sealed class SessionReceptionTests
 
             Opened[deviceId] = paced;
 
-            if (LosesTheChannel.Contains(deviceId))
+            if (LosesTheChannelAfter.TryGetValue(deviceId, out int goodReads))
             {
-                return new Failing(paced, DvbFailure.NoLock($"{deviceId} is no longer locked."));
+                return new Failing(paced, goodReads, DvbFailure.NoLock($"{deviceId} is no longer locked."));
             }
 
-            return Breaks.Contains(deviceId) ? new Failing(paced, new IOException($"{deviceId} stopped answering.")) : paced;
+            return Breaks.Contains(deviceId) ? new Failing(paced, 0, new IOException($"{deviceId} stopped answering.")) : paced;
         }
 
-        private sealed class Failing(PacedTunerDevice inner, Exception failure) : ITunerDevice
+        private sealed class Failing(PacedTunerDevice inner, int goodReads, Exception failure) : ITunerDevice
         {
+            private int reads;
+
             public long Overflows => 0;
 
             public ISignalQualitySource? Quality => inner.Quality;
 
             public byte[] Read(int count, CancellationToken cancellationToken)
             {
-                inner.Read(count, cancellationToken);
+                byte[] read = inner.Read(count, cancellationToken);
 
-                throw failure;
+                return reads++ < goodReads ? read : throw failure;
             }
 
             public void Dispose() => inner.Dispose();

@@ -248,6 +248,8 @@ public sealed class TunerSession : IDisposable
 
     public IReadOnlyList<double> CarrierToNoiseReadings => quality?.CarrierToNoiseReadings ?? [];
 
+    public bool HasHeldTheLock => quality?.HasHeldTheLock ?? false;
+
     public long LockLosses => quality?.LockLosses ?? 0;
 
     public bool Concluded => completion.Task.IsCompleted;
