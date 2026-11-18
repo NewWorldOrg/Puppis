@@ -28,7 +28,8 @@ public sealed class TunerSessionManager(
     TimeSpan? letGoLimit = null,
     TimeSpan? handOverLimit = null,
     TimeSpan? progressInterval = null,
-    ITunerDeviceCheck? deviceCheck = null
+    ITunerDeviceCheck? deviceCheck = null,
+    Func<DeviceSettings, bool>? presence = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
@@ -49,7 +50,8 @@ public sealed class TunerSessionManager(
         tunerGrace,
         [.. (configuration.Devices ?? []).Where(device => device?.Id is not null).Select(device => (device.Id!, device.Enabled))],
         deviceId => LetGo(configuration, deviceCheck, deviceId),
-        logger
+        logger,
+        deviceId => Look(configuration, presence, deviceId)
     );
     private readonly ConcurrentDictionary<string, DateTimeOffset> healthChangedAt = new(
         StringComparer.Ordinal
@@ -67,9 +69,30 @@ public sealed class TunerSessionManager(
     private readonly TimeSpan handOver = handOverLimit ?? HandOverLimit;
     private readonly IRecordingWriterFactory writerFactory =
         recordingWriters ?? new RecordingWriterFactory();
-    private readonly FaultedTunerRecheck? recheck = deviceCheck is null
-        ? null
-        : new FaultedTunerRecheck(deviceCheck, timeProvider, logger);
+    private FaultedTunerRecheck? rechecking;
+
+    private FaultedTunerRecheck? recheck =>
+        deviceCheck is null
+            ? null
+            : LazyInitializer.EnsureInitialized(
+                ref rechecking,
+                () => new FaultedTunerRecheck(new CheckedOnceQuiet(pool, deviceCheck), timeProvider, logger)
+            );
+
+    private sealed class CheckedOnceQuiet(TunerPool pool, ITunerDeviceCheck check) : ITunerDeviceCheck
+    {
+        public void Check(DeviceSettings device)
+        {
+            if (device.Id is { } deviceId && !pool.IsQuiet(deviceId))
+            {
+                throw new IOException($"The device '{deviceId}' is still being closed after its fault.");
+            }
+
+            check.Check(device);
+        }
+
+        public void LetGo(DeviceSettings device) => check.LetGo(device);
+    }
 
     private readonly Lock drainGate = new();
 
@@ -287,7 +310,10 @@ public sealed class TunerSessionManager(
         }
     }
 
-    public async Task<SessionStart> BeginAsync(StartSessionRequest request)
+    public async Task<SessionStart> BeginAsync(
+        StartSessionRequest request,
+        CancellationToken cancellationToken = default
+    )
     {
         DateTimeOffset now = timeProvider.GetUtcNow();
 
@@ -317,7 +343,7 @@ public sealed class TunerSessionManager(
 
         try
         {
-            return await BeginAloneAsync(request, now);
+            return await BeginAloneAsync(request, now, cancellationToken);
         }
         finally
         {
@@ -328,7 +354,11 @@ public sealed class TunerSessionManager(
         }
     }
 
-    private async Task<SessionStart> BeginAloneAsync(StartSessionRequest request, DateTimeOffset now)
+    private async Task<SessionStart> BeginAloneAsync(
+        StartSessionRequest request,
+        DateTimeOffset now,
+        CancellationToken cancellationToken
+    )
     {
         if (sessions.ContainsKey(request.SessionId))
         {
@@ -363,14 +393,74 @@ public sealed class TunerSessionManager(
             return Refusal(request, grant);
         }
 
-        DateTimeOffset endsAt = EndOf(request, now);
+        var claim = new TunerClaim(pool, grant.DeviceId, request.SessionId);
 
-        return grant.Verdict switch
+        try
         {
-            PoolVerdict.Shared => await RideAlongAsync(request, grant, directory, now, endsAt),
-            PoolVerdict.Swapped => await TakeTheSeatAsync(request, grant, directory, now, endsAt),
-            _ => await TakeTheTunerAsync(request, grant, directory, now, endsAt),
-        };
+            DateTimeOffset endsAt = EndOf(request, now);
+
+            return grant.Verdict switch
+            {
+                PoolVerdict.Shared => await RideAlongAsync(request, grant, claim, directory, now, endsAt, cancellationToken),
+                PoolVerdict.Swapped => await TakeTheSeatAsync(request, grant, claim, directory, now, endsAt, cancellationToken),
+                _ => await TakeTheTunerAsync(request, grant, claim, directory, now, endsAt, cancellationToken),
+            };
+        }
+        catch
+        {
+            claim.Abandon();
+
+            throw;
+        }
+    }
+
+    private sealed class TunerClaim(TunerPool pool, string deviceId, SessionId sessionId)
+    {
+        private int reported;
+
+        public void Leave()
+        {
+            if (Report())
+            {
+                pool.Leave(sessionId);
+            }
+        }
+
+        public void GiveBack()
+        {
+            if (Report())
+            {
+                pool.GiveBack(deviceId, sessionId);
+            }
+        }
+
+        public void Fail(Exception cause)
+        {
+            if (Report())
+            {
+                pool.TuningFailed(deviceId, sessionId, cause);
+            }
+        }
+
+        public void Abandon()
+        {
+            if (Report())
+            {
+                pool.Abandon(deviceId, sessionId);
+            }
+        }
+
+        public void PassTo(TunerSession session)
+        {
+            if (!Report())
+            {
+                throw new InvalidOperationException(
+                    $"The tuner '{deviceId}' was already given back for '{session.SessionId}', so the session cannot hold it."
+                );
+            }
+        }
+
+        private bool Report() => Interlocked.Exchange(ref reported, 1) is 0;
     }
 
     private SessionStart Refusal(StartSessionRequest request, PoolGrant grant) =>
@@ -503,9 +593,11 @@ public sealed class TunerSessionManager(
     private async Task<SessionStart> TakeTheTunerAsync(
         StartSessionRequest request,
         PoolGrant grant,
+        TunerClaim claim,
         string? directory,
         DateTimeOffset now,
-        DateTimeOffset endsAt
+        DateTimeOffset endsAt,
+        CancellationToken cancellationToken
     )
     {
         string deviceId = grant.DeviceId;
@@ -532,11 +624,11 @@ public sealed class TunerSessionManager(
 
         try
         {
-            cleared = await grant.Cleared.WaitAsync(handOver, timeProvider);
+            cleared = await grant.Cleared.WaitAsync(handOver, timeProvider, cancellationToken);
         }
         catch (TimeoutException)
         {
-            pool.GiveBack(deviceId, sessionId);
+            claim.GiveBack();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceBusy,
@@ -546,7 +638,7 @@ public sealed class TunerSessionManager(
 
         if (!cleared)
         {
-            pool.Leave(sessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceBusy,
@@ -554,13 +646,14 @@ public sealed class TunerSessionManager(
             );
         }
 
-        if (!TryTune(request, grant, out ITunerDevice? tuner, out SessionStart? tuneRefusal))
+        if (!TryTune(request, grant, claim, out ITunerDevice? tuner, out SessionStart? tuneRefusal))
         {
             return tuneRefusal;
         }
 
         return await OpenAsync(
             request,
+            claim,
             deviceId,
             tuner,
             directory,
@@ -574,6 +667,7 @@ public sealed class TunerSessionManager(
     private bool TryTune(
         StartSessionRequest request,
         PoolGrant grant,
+        TunerClaim claim,
         [NotNullWhen(true)] out ITunerDevice? tuner,
         [NotNullWhen(false)] out SessionStart? refusal
     )
@@ -591,7 +685,7 @@ public sealed class TunerSessionManager(
                 return true;
             }
 
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             refusal = SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -605,6 +699,18 @@ public sealed class TunerSessionManager(
             string.Equals(entry?.Id, deviceId, StringComparison.Ordinal)
         )!;
 
+        if (!pool.Confirm(deviceId, request.SessionId))
+        {
+            claim.Leave();
+
+            refusal = SessionStart.Refused(
+                SessionRefusal.DeviceBusy,
+                $"The device '{deviceId}' was taken from '{request.SessionId}' while it was being tuned."
+            );
+
+            return false;
+        }
+
         try
         {
             ITunerDevice opened = deviceFactory.Create(
@@ -616,6 +722,8 @@ public sealed class TunerSessionManager(
 
             if (!pool.Tuned(deviceId, request.SessionId, opened))
             {
+                claim.Leave();
+
                 refusal = SessionStart.Refused(
                     SessionRefusal.DeviceBusy,
                     $"The device '{deviceId}' was taken from '{request.SessionId}' while it was being tuned."
@@ -630,7 +738,7 @@ public sealed class TunerSessionManager(
         }
         catch (Exception error)
         {
-            pool.TuningFailed(deviceId, request.SessionId, error);
+            claim.Fail(error);
 
             if (
                 error is DvbDeviceException
@@ -666,17 +774,19 @@ public sealed class TunerSessionManager(
     private async Task<SessionStart> RideAlongAsync(
         StartSessionRequest request,
         PoolGrant grant,
+        TunerClaim claim,
         string? directory,
         DateTimeOffset now,
-        DateTimeOffset endsAt
+        DateTimeOffset endsAt,
+        CancellationToken cancellationToken
     )
     {
         if (
-            !await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId)
+            !await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken)
             || !sessions.TryGetValue(grant.Holder, out TunerSession? host)
         )
         {
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -686,7 +796,7 @@ public sealed class TunerSessionManager(
 
         if (host.EndsAt <= now)
         {
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -696,7 +806,7 @@ public sealed class TunerSessionManager(
 
         if (!host.Broadcaster.TrySubscribe(SeatFor(request.Purpose), out SessionSubscription? seat))
         {
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceBusy,
@@ -706,6 +816,7 @@ public sealed class TunerSessionManager(
 
         return await OpenAsync(
             request,
+            claim,
             grant.DeviceId,
             new PiggybackTunerDevice(host, seat),
             directory,
@@ -721,17 +832,19 @@ public sealed class TunerSessionManager(
     private async Task<SessionStart> TakeTheSeatAsync(
         StartSessionRequest request,
         PoolGrant grant,
+        TunerClaim claim,
         string? directory,
         DateTimeOffset now,
-        DateTimeOffset endsAt
+        DateTimeOffset endsAt,
+        CancellationToken cancellationToken
     )
     {
         if (
-            !await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId)
+            !await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken)
             || !sessions.TryGetValue(grant.Outgoing, out TunerSession? outgoing)
         )
         {
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -741,7 +854,7 @@ public sealed class TunerSessionManager(
 
         if (outgoing.EndsAt <= now)
         {
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -749,13 +862,14 @@ public sealed class TunerSessionManager(
             );
         }
 
-        if (!TryTune(request, grant, out ITunerDevice? tuner, out SessionStart? refusal))
+        if (!TryTune(request, grant, claim, out ITunerDevice? tuner, out SessionStart? refusal))
         {
             return refusal;
         }
 
         return await OpenAsync(
             request,
+            claim,
             grant.DeviceId,
             tuner,
             directory,
@@ -804,6 +918,7 @@ public sealed class TunerSessionManager(
 
     private async Task<SessionStart> OpenAsync(
         StartSessionRequest request,
+        TunerClaim claim,
         string deviceId,
         ITunerDevice tunerDevice,
         string? directory,
@@ -823,7 +938,7 @@ public sealed class TunerSessionManager(
         {
             if (!writing.TryAdd(recordingId, sessionId))
             {
-                pool.Leave(sessionId);
+                claim.Leave();
                 tunerDevice.Dispose();
 
                 return SessionStart.Refused(
@@ -840,6 +955,7 @@ public sealed class TunerSessionManager(
         {
             SessionStart? refusal = TryOpenRecording(
                 directory,
+                claim,
                 sessionId,
                 request.OutputRoot!,
                 request.RecordingId!,
@@ -855,33 +971,71 @@ public sealed class TunerSessionManager(
             }
         }
 
-        var session = new TunerSession(
-            sessionId,
-            request.Purpose,
-            deviceId,
-            tunerDevice,
-            now,
-            endsAt,
-            timeProvider,
-            writer,
-            logger: logger,
-            outputRoot: request.OutputRoot,
-            recordingId: request.RecordingId,
-            diagnostics: diagnostics,
-            watch: Watch(request.Purpose),
-            tune: request.Tune,
-            ridesOn: ridesOn,
-            seat: seat,
-            demuxBufferBytes: configuration.Tuner?.DemuxBufferBytes
-                ?? TunerSettings.DefaultDemuxBufferBytes,
-            takesTheSeatFromAnother: demoting is not null
-        );
+        TunerSession session;
+
+        try
+        {
+            session = new TunerSession(
+                sessionId,
+                request.Purpose,
+                deviceId,
+                tunerDevice,
+                now,
+                endsAt,
+                timeProvider,
+                writer,
+                logger: logger,
+                outputRoot: request.OutputRoot,
+                recordingId: request.RecordingId,
+                diagnostics: diagnostics,
+                watch: Watch(request.Purpose),
+                tune: request.Tune,
+                ridesOn: ridesOn,
+                seat: seat,
+                demuxBufferBytes: configuration.Tuner?.DemuxBufferBytes
+                    ?? TunerSettings.DefaultDemuxBufferBytes,
+                takesTheSeatFromAnother: demoting is not null
+            );
+        }
+        catch
+        {
+            tunerDevice.Dispose();
+            writer?.Dispose();
+            LetGoOfTheRecording(claimed, sessionId);
+
+            throw;
+        }
+
+        try
+        {
+            return await LaunchAsync(request, claim, session, claimed, deviceId, holds, tuned, demoting);
+        }
+        catch
+        {
+            Forsake(session, claimed);
+
+            throw;
+        }
+    }
+
+    private async Task<SessionStart> LaunchAsync(
+        StartSessionRequest request,
+        TunerClaim claim,
+        TunerSession session,
+        string? claimed,
+        string deviceId,
+        bool holds,
+        bool tuned,
+        TunerSession? demoting
+    )
+    {
+        SessionId sessionId = request.SessionId;
 
         lock (drainGate)
         {
             if (draining)
             {
-                pool.Leave(sessionId);
+                claim.Leave();
                 LetGoOfTheRecording(claimed, sessionId);
                 session.Dispose();
 
@@ -893,7 +1047,7 @@ public sealed class TunerSessionManager(
 
             if (!sessions.TryAdd(sessionId, session))
             {
-                pool.Leave(sessionId);
+                claim.Leave();
                 LetGoOfTheRecording(claimed, sessionId);
                 session.Dispose();
 
@@ -908,7 +1062,7 @@ public sealed class TunerSessionManager(
 
         if (!pool.Confirm(deviceId, sessionId))
         {
-            Abandon(session, claimed);
+            Abandon(session, claimed, claim);
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceBusy,
@@ -925,19 +1079,34 @@ public sealed class TunerSessionManager(
         }
         catch (Exception error)
         {
-            Abandon(session, claimed);
+            bool stoppedBeforeItStarted = session.StopReason is SessionStopReason.Preempted or SessionStopReason.Requested;
 
-            return SessionStart.Refused(
-                SessionRefusal.DeviceUnavailable,
-                $"The session '{sessionId}' could not be started: {error.Message}"
-            );
+            Abandon(session, claimed, claim);
+
+            if (stoppedBeforeItStarted && draining)
+            {
+                return SessionStart.Refused(
+                    SessionRefusal.Draining,
+                    "The driver is shutting down, so no session can start."
+                );
+            }
+
+            return !stoppedBeforeItStarted
+                ? SessionStart.Refused(
+                    SessionRefusal.DeviceUnavailable,
+                    $"The session '{sessionId}' could not be started: {error.Message}"
+                )
+                : SessionStart.Refused(
+                    SessionRefusal.DeviceBusy,
+                    $"The device '{deviceId}' was taken from '{sessionId}' before it could start."
+                );
         }
 
         if (demoting is { } outgoing)
         {
             if (!await DemoteAsync(outgoing, session))
             {
-                Abandon(session, claimed);
+                Abandon(session, claimed, claim);
 
                 return SessionStart.Refused(
                     SessionRefusal.DeviceBusy,
@@ -959,11 +1128,18 @@ public sealed class TunerSessionManager(
         }
 
         Announce();
+        claim.PassTo(session);
 
         return SessionStart.Started(session);
     }
 
-    private void Abandon(TunerSession session, string? claimed)
+    private void Abandon(TunerSession session, string? claimed, TunerClaim claim)
+    {
+        Forsake(session, claimed);
+        claim.Leave();
+    }
+
+    private void Forsake(TunerSession session, string? claimed)
     {
         sessions.TryRemove(
             new KeyValuePair<SessionId, TunerSession>(session.SessionId, session)
@@ -971,7 +1147,6 @@ public sealed class TunerSessionManager(
         tunings.TryRemove(session.SessionId, out _);
         session.Ending -= PassTheTunerOn;
         session.Ended -= Forget;
-        pool.Leave(session.SessionId);
         LetGoOfTheRecording(claimed, session.SessionId);
         session.Dispose();
     }
@@ -1013,6 +1188,7 @@ public sealed class TunerSessionManager(
 
     private SessionStart? TryOpenRecording(
         string directory,
+        TunerClaim claim,
         SessionId sessionId,
         string outputRoot,
         string recordingId,
@@ -1029,7 +1205,7 @@ public sealed class TunerSessionManager(
         }
         catch (Exception error)
         {
-            pool.Leave(sessionId);
+            claim.Leave();
 
             logger.LogError(
                 error,
@@ -1586,6 +1762,12 @@ public sealed class TunerSessionManager(
             pool.Looked(deviceId, present);
         }
     }
+
+    private static bool? Look(DriverConfiguration configuration, Func<DeviceSettings, bool>? presence, string deviceId) =>
+        presence is not null
+        && (configuration.Devices ?? []).FirstOrDefault(candidate => candidate?.Id == deviceId) is { } device
+            ? presence(device)
+            : null;
 
     private static void LetGo(DriverConfiguration configuration, ITunerDeviceCheck? check, string deviceId)
     {

@@ -274,7 +274,16 @@ public static class DriverApi
             return;
         }
 
-        SessionStart start = await manager.BeginAsync(request);
+        SessionStart start;
+
+        try
+        {
+            start = await manager.BeginAsync(request, context.RequestAborted);
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+            return;
+        }
 
         if (!start.TryGetSession(out TunerSession? session))
         {

@@ -80,7 +80,8 @@ public sealed class TunerPool(
     TimeSpan? grace = null,
     IEnumerable<(string DeviceId, bool Enabled)>? declared = null,
     Action<string>? letGo = null,
-    ILogger? logger = null
+    ILogger? logger = null,
+    Func<string, bool?>? look = null
 ) : IDisposable
 {
     public static readonly TimeSpan DefaultGrace = TimeSpan.FromSeconds(5);
@@ -136,9 +137,13 @@ public sealed class TunerPool(
 
         public Exception? HeldBack { get; set; }
 
+        public TuningKey? HeldBackFor { get; set; }
+
         public DateTimeOffset HeldBackUntil { get; set; }
 
         public Task Quiet { get; set; } = Task.CompletedTask;
+
+        public int Closing { get; set; }
 
         public Dictionary<SessionId, TaskCompletionSource> Stragglers { get; } = [];
 
@@ -176,20 +181,62 @@ public sealed class TunerPool(
 
     public PoolGrant Acquire(PoolRequest request)
     {
+        if (Decide(request, look is not null, out IReadOnlyList<string> absent) is { } grant)
+        {
+            return grant;
+        }
+
+        foreach (string deviceId in absent)
+        {
+            if (LookAt(deviceId) is { } present)
+            {
+                Looked(deviceId, present);
+            }
+        }
+
+        return Decide(request, false, out _)!;
+    }
+
+    private bool? LookAt(string deviceId)
+    {
+        try
+        {
+            return look?.Invoke(deviceId);
+        }
+        catch (Exception failed) when (failed is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private PoolGrant? Decide(PoolRequest request, bool mayLookAgain, out IReadOnlyList<string> absent)
+    {
         List<Action> after = [];
-        PoolGrant grant;
+        PoolGrant? grant;
+
+        absent = [];
 
         lock (gate)
         {
             Expire(after);
 
             grant =
-                Ineligible(request)
+                Ineligible(request, mayLookAgain)
                 ?? RideAlong(request, after)
                 ?? TakeAFreeTuner(request)
-                ?? TakeATunerNobodyIsOn(request, after)
-                ?? TakeATunerFromSomethingLessImportant(request, after)
-                ?? TurnAway(request);
+                ?? TakeATunerNobodyIsOn(request, after);
+
+            if (grant is null && mayLookAgain)
+            {
+                absent = Unplugged(request);
+            }
+
+            if (grant is null && absent.Count is 0)
+            {
+                grant =
+                    TakeATunerFromSomethingLessImportant(request, after)
+                    ?? TurnAway(request);
+            }
         }
 
         Run(after);
@@ -197,7 +244,15 @@ public sealed class TunerPool(
         return grant;
     }
 
-    private PoolGrant? Ineligible(PoolRequest request)
+    private string[] Unplugged(PoolRequest request) =>
+    [
+        .. request
+            .Allowed.Select(EntryOf)
+            .Where(entry => entry.Enabled && entry.Fault is null && entry.State is TunerAllocationState.Absent)
+            .Select(entry => entry.DeviceId),
+    ];
+
+    private PoolGrant? Ineligible(PoolRequest request, bool lookingAgain)
     {
         if (disposed)
         {
@@ -206,7 +261,7 @@ public sealed class TunerPool(
 
         if (request.DeviceId is { } named)
         {
-            return IneligibleNamed(EntryOf(named), request);
+            return IneligibleNamed(EntryOf(named), request, lookingAgain);
         }
 
         Entry[] enabled = [.. request.Candidates.Select(EntryOf).Where(entry => entry.Enabled)];
@@ -227,7 +282,7 @@ public sealed class TunerPool(
             : null;
     }
 
-    private static PoolGrant? IneligibleNamed(Entry entry, PoolRequest request)
+    private static PoolGrant? IneligibleNamed(Entry entry, PoolRequest request, bool lookingAgain)
     {
         string named = entry.DeviceId;
 
@@ -251,7 +306,7 @@ public sealed class TunerPool(
             return PoolGrant.Refused(PoolVerdict.WrongDeviceKind, string.Empty);
         }
 
-        return entry.State is TunerAllocationState.Absent
+        return entry.State is TunerAllocationState.Absent && !lookingAgain
             ? PoolGrant.Refused(
                 PoolVerdict.DeviceUnavailable,
                 $"The device '{named}' is not plugged in."
@@ -361,7 +416,7 @@ public sealed class TunerPool(
             NeedsTuning: false,
             [],
             $"The tuner '{entry.DeviceId}' was still on {request.Tuning}, so '{request.SessionId}' takes it back without tuning it again.",
-            Clearing: ClearedOnce(QuietOf(entry))
+            Clearing: ClearedOnce(entry.Quiet)
         );
     }
 
@@ -369,7 +424,7 @@ public sealed class TunerPool(
     {
         foreach (Entry entry in Usable(request))
         {
-            if (entry.State is not TunerAllocationState.Free || entry.HeldBack is not null)
+            if (entry.State is not TunerAllocationState.Free || HoldsBack(entry, request))
             {
                 continue;
             }
@@ -389,7 +444,7 @@ public sealed class TunerPool(
                 NeedsTuning: true,
                 [],
                 $"The tuner '{entry.DeviceId}' is free and goes to '{request.SessionId}' for {request.Tuning}.",
-                Clearing: ClearedOnce(QuietOf(entry))
+                Clearing: ClearedOnce(entry.Quiet)
             );
         }
 
@@ -421,7 +476,7 @@ public sealed class TunerPool(
                 NeedsTuning: true,
                 [],
                 $"The tuner '{entry.DeviceId}' was being held for whoever came back to {held.Tuning}; nobody did, so '{request.SessionId}' takes it for {request.Tuning}.",
-                Clearing: ClearedOnce(QuietOf(entry))
+                Clearing: ClearedOnce(entry.Quiet)
             );
         }
 
@@ -446,7 +501,7 @@ public sealed class TunerPool(
         if (loser.Previous is null)
         {
             loser.Previous = taken;
-            WakeEveryoneWaitingOn(taken);
+            taken.Ready.TrySetResult();
         }
         else
         {
@@ -481,31 +536,31 @@ public sealed class TunerPool(
         {
             return PoolGrant.Refused(
                 PoolVerdict.DeviceBusy,
-                entries.TryGetValue(named, out Entry? entry) && (entry.Current is not null || entry.HeldBack is not null)
+                entries.TryGetValue(named, out Entry? entry) && (entry.Current is not null || HoldsBack(entry, request))
                     ? WhyNot(entry, request)
                     : $"The tuner '{named}' cannot be had for {request.Tuning}."
             );
         }
 
-        string[] reasons =
-        [
-            .. request
-                .Candidates.Select(EntryOf)
-                .Where(entry => entry.Enabled && entry.Fault is null)
-                .Select(entry => WhyNot(entry, request)),
-        ];
+        Entry[] considered = [.. request.Candidates.Select(EntryOf).Where(entry => entry.Enabled && entry.Fault is null)];
+        string[] reasons = [.. considered.Select(entry => WhyNot(entry, request))];
 
         return PoolGrant.Refused(
-            PoolVerdict.NoDeviceFree,
+            considered.Any(entry => entry.State is TunerAllocationState.Absent)
+                ? PoolVerdict.DeviceUnavailable
+                : PoolVerdict.NoDeviceFree,
             reasons.Length is 0
                 ? $"No tuner can serve {request.Tuning}."
                 : string.Join(" ", reasons)
         );
     }
 
+    private static bool HoldsBack(Entry entry, PoolRequest request) =>
+        entry.HeldBack is not null && entry.HeldBackFor == request.Tuning;
+
     private static string WhyNot(Entry entry, PoolRequest request)
     {
-        if (entry.HeldBack is { } failure)
+        if (HoldsBack(entry, request) && entry.HeldBack is { } failure)
         {
             return $"The tuner '{entry.DeviceId}' is held back after it could not be tuned: {failure.Message}";
         }
@@ -529,7 +584,7 @@ public sealed class TunerPool(
 
     public bool Tuned(string deviceId, SessionId tuner, ITunerDevice device)
     {
-        List<Action> after = [];
+        bool taken = false;
 
         lock (gate)
         {
@@ -543,9 +598,15 @@ public sealed class TunerPool(
             )
             {
                 occupancy.Device = device;
-
-                return true;
+                taken = true;
             }
+        }
+
+        Report();
+
+        if (taken)
+        {
+            return true;
         }
 
         Close(device);
@@ -556,8 +617,6 @@ public sealed class TunerPool(
 
     public void Ready(string deviceId, SessionId holder)
     {
-        List<Action> after = [];
-
         lock (gate)
         {
             if (
@@ -572,7 +631,7 @@ public sealed class TunerPool(
             }
         }
 
-        Run(after);
+        Report();
     }
 
     public void TuningFailed(string deviceId, SessionId tuner, Exception cause)
@@ -596,6 +655,7 @@ public sealed class TunerPool(
                 if (entry.Enabled)
                 {
                     entry.HeldBack = cause;
+                    entry.HeldBackFor = occupancy.Tuning;
                     entry.HeldBackUntil = timeProvider.GetUtcNow() + linger;
                     LetLinger();
                 }
@@ -613,7 +673,12 @@ public sealed class TunerPool(
         Run(after);
     }
 
-    public async Task<bool> AwaitReadyAsync(string deviceId, TimeSpan limit, SessionId reader = default)
+    public async Task<bool> AwaitReadyAsync(
+        string deviceId,
+        TimeSpan limit,
+        SessionId reader = default,
+        CancellationToken cancellationToken = default
+    )
     {
         Task ready;
 
@@ -634,7 +699,7 @@ public sealed class TunerPool(
 
         try
         {
-            await ready.WaitAsync(limit, timeProvider);
+            await ready.WaitAsync(limit, timeProvider, cancellationToken);
         }
         catch (TimeoutException)
         {
@@ -654,6 +719,15 @@ public sealed class TunerPool(
 
     private static TaskCompletionSource Unset() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public bool IsQuiet(string deviceId)
+    {
+        lock (gate)
+        {
+            return !entries.TryGetValue(deviceId, out Entry? entry)
+                || (entry.Closing is 0 && entry.Stragglers.Count is 0);
+        }
+    }
 
     public bool Confirm(string deviceId, SessionId sessionId)
     {
@@ -731,6 +805,29 @@ public sealed class TunerPool(
         return true;
     }
 
+    public void Abandon(string deviceId, SessionId sessionId)
+    {
+        List<Action> after = [];
+
+        lock (gate)
+        {
+            if (
+                entries.TryGetValue(deviceId, out Entry? entry)
+                && entry.State is TunerAllocationState.HandingOver
+                && entry.Current?.Holder == sessionId
+            )
+            {
+                GiveBackUnderGate(entry, after);
+            }
+            else
+            {
+                LeaveUnderGate(sessionId, after, closing: true);
+            }
+        }
+
+        Run(after);
+    }
+
     public void Leave(SessionId sessionId)
     {
         List<Action> after = [];
@@ -743,7 +840,7 @@ public sealed class TunerPool(
         Run(after);
     }
 
-    private void LeaveUnderGate(SessionId sessionId, List<Action> after)
+    private void LeaveUnderGate(SessionId sessionId, List<Action> after, bool closing = false)
     {
         if (straggling.Remove(sessionId, out Entry? strayedFrom))
         {
@@ -758,7 +855,7 @@ public sealed class TunerPool(
         if (entry.Current is { } current && current.Has(sessionId))
         {
             LeaveOccupancy(current, sessionId);
-            AfterSomeoneLeft(entry, current, after);
+            AfterSomeoneLeft(entry, current, after, closing);
 
             return;
         }
@@ -791,7 +888,7 @@ public sealed class TunerPool(
         occupancy.Displacing = null;
     }
 
-    private void AfterSomeoneLeft(Entry entry, Occupancy occupancy, List<Action> after)
+    private void AfterSomeoneLeft(Entry entry, Occupancy occupancy, List<Action> after, bool closing)
     {
         if (occupancy.Sinks.Count > 0)
         {
@@ -821,7 +918,7 @@ public sealed class TunerPool(
             return;
         }
 
-        if (occupancy.Device is not null)
+        if (occupancy.Device is not null && !closing)
         {
             if (Move(entry, TunerAllocationEvent.Emptied))
             {
@@ -834,6 +931,7 @@ public sealed class TunerPool(
 
         if (Move(entry, TunerAllocationEvent.EmptiedClosed))
         {
+            Drop(entry, occupancy.Device, after);
             entry.Current = null;
         }
     }
@@ -855,7 +953,7 @@ public sealed class TunerPool(
 
         if (entry.Handover is { } handover)
         {
-            Task quiet = QuietOf(entry);
+            Task quiet = entry.Quiet;
             after.Add(() => quiet.ContinueWith(
                 _ => handover.TrySetResult(true),
                 CancellationToken.None,
@@ -893,8 +991,15 @@ public sealed class TunerPool(
 
     public bool HandTheTunerOn(SessionId holder, SessionId next)
     {
-        List<Action> after = [];
+        bool handed = HandTheTunerOnUnderGate(holder, next);
 
+        Report();
+
+        return handed;
+    }
+
+    private bool HandTheTunerOnUnderGate(SessionId holder, SessionId next)
+    {
         lock (gate)
         {
             if (
@@ -921,8 +1026,6 @@ public sealed class TunerPool(
 
     public void SeatTaken(string deviceId, SessionId holder)
     {
-        List<Action> after = [];
-
         lock (gate)
         {
             if (
@@ -937,7 +1040,7 @@ public sealed class TunerPool(
             }
         }
 
-        Run(after);
+        Report();
     }
 
     private static SessionId? TheOneItWasTakenFrom(Occupancy occupancy) =>
@@ -959,8 +1062,6 @@ public sealed class TunerPool(
 
     private static bool Holds(Entry entry, Occupancy occupancy) =>
         ReferenceEquals(entry.Current, occupancy) || ReferenceEquals(entry.Previous, occupancy);
-
-    private static void WakeEveryoneWaitingOn(Occupancy occupancy) => occupancy.Ready.TrySetResult();
 
     public void Sweep()
     {
@@ -1026,7 +1127,7 @@ public sealed class TunerPool(
 
             if (enabled)
             {
-                Enable(entry, after);
+                Enable(entry);
             }
             else
             {
@@ -1037,7 +1138,7 @@ public sealed class TunerPool(
         Run(after);
     }
 
-    private void Enable(Entry entry, List<Action> after)
+    private void Enable(Entry entry)
     {
         if (entry.Enabled)
         {
@@ -1372,8 +1473,6 @@ public sealed class TunerPool(
         return entry;
     }
 
-    private static Task QuietOf(Entry entry) => entry.Quiet;
-
     private static Task<bool> ClearedOnce(Task quiet) =>
         quiet.IsCompleted
             ? Task.FromResult(true)
@@ -1384,7 +1483,7 @@ public sealed class TunerPool(
                 TaskScheduler.Default
             );
 
-    private static void Drop(Entry entry, ITunerDevice? device, List<Action> after)
+    private void Drop(Entry entry, ITunerDevice? device, List<Action> after)
     {
         if (device is null)
         {
@@ -1394,9 +1493,16 @@ public sealed class TunerPool(
         TaskCompletionSource closed = Unset();
 
         entry.Quiet = entry.Quiet.IsCompleted ? closed.Task : Task.WhenAll(entry.Quiet, closed.Task);
+        entry.Closing++;
         after.Add(() =>
         {
             Close(device);
+
+            lock (gate)
+            {
+                entry.Closing--;
+            }
+
             closed.TrySetResult();
         });
     }
@@ -1418,6 +1524,16 @@ public sealed class TunerPool(
 
     private void Run(List<Action> after)
     {
+        Report();
+
+        foreach (Action action in after)
+        {
+            action();
+        }
+    }
+
+    private void Report()
+    {
         string[] refused;
 
         lock (gate)
@@ -1429,11 +1545,6 @@ public sealed class TunerPool(
         foreach (string message in refused)
         {
             logger?.LogError("{Refused}", message);
-        }
-
-        foreach (Action action in after)
-        {
-            action();
         }
     }
 

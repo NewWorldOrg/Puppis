@@ -191,7 +191,8 @@ public static class DriverHost
             events: provider.GetRequiredService<DriverEventHub>(),
             diagnostics: provider.GetRequiredService<DiagnosticsStore>(),
             recordingWriters: provider.GetRequiredService<IRecordingWriterFactory>(),
-            deviceCheck: provider.GetRequiredService<ITunerDeviceCheck>()
+            deviceCheck: provider.GetRequiredService<ITunerDeviceCheck>(),
+            presence: LookedFor(configuration, provider.GetRequiredService<TunerHardwareBook>())
         ));
 
         builder.Services.AddSingleton<RecordingEraser>();
@@ -232,5 +233,18 @@ public static class DriverHost
         DriverApi.Map(app);
 
         return DriverHostResult.Serving(app);
+    }
+
+    private static Func<DeviceSettings, bool> LookedFor(DriverConfiguration configuration, TunerHardwareBook book)
+    {
+        ITunerPresence presence = TunerPresences.For(configuration);
+
+        return device =>
+        {
+            bool present = presence.IsPresent(device, book.For(device));
+            book.Looked(device, present);
+
+            return present;
+        };
     }
 }
