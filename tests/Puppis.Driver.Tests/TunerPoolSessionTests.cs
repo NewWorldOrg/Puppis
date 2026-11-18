@@ -490,7 +490,7 @@ public sealed class TunerPoolSessionTests : IDisposable
 
         Assert.Equal(SessionRefusal.DeviceUnavailable, first.Refusal);
 
-        SessionStart second = manager.Begin(Request("s-2", SessionPurpose.Recording, channel: 57));
+        SessionStart second = manager.Begin(Request("s-2", SessionPurpose.Recording));
 
         Assert.Equal(SessionRefusal.NoDeviceFree, second.Refusal);
         Assert.Contains("would not lock", second.Detail, StringComparison.Ordinal);

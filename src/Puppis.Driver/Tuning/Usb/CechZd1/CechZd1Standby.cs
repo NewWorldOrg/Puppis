@@ -106,6 +106,19 @@ public sealed class CechZd1Standby : IDisposable
         Keep(taken);
     }
 
+    public void Release()
+    {
+        KeptTuner? closing;
+
+        lock (gate)
+        {
+            closing = kept;
+            kept = null;
+        }
+
+        closing?.Usb.Dispose();
+    }
+
     public void Dispose()
     {
         KeptTuner? closing;

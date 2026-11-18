@@ -238,6 +238,28 @@ public sealed class Dt295KeptTests
         Assert.Equal(["usb1-2 False"], letGo);
     }
 
+    [Fact]
+    public void ALookAtOneTunerOutsideTheWalkIsHandedOnTheSameWayAndAnswered()
+    {
+        var device = new DeviceSettings("usb1-2", DeviceKind.Terrestrial, Path);
+        var configuration = new DriverConfiguration("/run/carina/driver.sock", [], 6, new TunerSettings(TunerBackend.Usb), [device]);
+        var book = new TunerHardwareBook(configuration, TimeProvider.System);
+        List<string> handedOn = [];
+        var patrol = new TunerPatrol(
+            configuration,
+            book,
+            new Absent(),
+            () => [],
+            TimeProvider.System,
+            null,
+            (seen, present) => handedOn.Add($"{seen.Id} {present}")
+        );
+
+        Assert.False(patrol.LookAt(device));
+        Assert.Equal(["usb1-2 False"], handedOn);
+        Assert.False(book.For(device).Present);
+    }
+
     private sealed class RecordingCheck : ITunerDeviceCheck
     {
         private readonly ConcurrentQueue<string> letGo = new();

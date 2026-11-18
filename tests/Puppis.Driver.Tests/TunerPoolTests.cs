@@ -668,7 +668,6 @@ public sealed class TunerPoolTests
         pool.Leave(SessionId.Parse("s-1"));
 
         pool.Acquire(Wanting("s-2", SessionPurpose.Live, Elsewhere));
-        pool.HandOver("adapter0");
 
         Assert.True(device.Disposed);
     }
@@ -874,6 +873,7 @@ public sealed class TunerPoolTests
 
         Assert.False(pool.AwaitReady("adapter0", TimeSpan.Zero));
 
+        pool.Leave(first.Holder);
         pool.Ready(second.DeviceId, second.Holder);
 
         Assert.True(pool.AwaitReady("adapter0", TimeSpan.Zero));
@@ -889,7 +889,7 @@ public sealed class TunerPoolTests
         pool.Tuned(first.DeviceId, first.Holder, device);
         pool.Ready(first.DeviceId, first.Holder);
         pool.Leave(SessionId.Parse("s-1"));
-        pool.Discard("adapter0");
+        pool.Fault("adapter0", new TunerFault("taken out of service", null, DeviceFaultKind.Failed));
 
         Assert.False(pool.IsLingering("adapter0"));
         Assert.True(device.Disposed);

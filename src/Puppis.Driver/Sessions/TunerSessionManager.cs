@@ -28,7 +28,9 @@ public sealed class TunerSessionManager(
     TimeSpan? letGoLimit = null,
     TimeSpan? handOverLimit = null,
     TimeSpan? progressInterval = null,
-    ITunerDeviceCheck? deviceCheck = null
+    ITunerDeviceCheck? deviceCheck = null,
+    Func<DeviceSettings, bool?>? presence = null,
+    TimeSpan? openLimit = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
@@ -39,17 +41,20 @@ public sealed class TunerSessionManager(
 
     public static readonly TimeSpan HandOverLimit = TimeSpan.FromSeconds(10);
 
+    public static readonly TimeSpan OpenLimit = TimeSpan.FromSeconds(30);
+
     public static readonly TimeSpan LetGoLimit =
         DvbTunerSettings.Default.BytePatience + TimeSpan.FromSeconds(3);
 
     private readonly ConcurrentDictionary<SessionId, TunerSession> sessions = [];
     private readonly ConcurrentDictionary<SessionId, TaskCompletionSource> starting = [];
-    private readonly TunerPool pool = new(timeProvider, tunerGrace);
-    private readonly ConcurrentDictionary<string, DeviceFault> faultedDevices = new(
-        StringComparer.Ordinal
-    );
-    private readonly ConcurrentDictionary<string, bool> toggledDevices = new(
-        StringComparer.Ordinal
+    private readonly TunerPool pool = new(
+        timeProvider,
+        tunerGrace,
+        [.. (configuration.Devices ?? []).Where(device => device?.Id is not null).Select(device => (device.Id!, device.Enabled))],
+        deviceId => LetGo(configuration, deviceCheck, deviceId),
+        logger,
+        deviceId => Look(configuration, presence, deviceId)
     );
     private readonly ConcurrentDictionary<string, DateTimeOffset> healthChangedAt = new(
         StringComparer.Ordinal
@@ -65,11 +70,18 @@ public sealed class TunerSessionManager(
     private readonly TimeSpan hardStop = hardStopLimit ?? DefaultHardStopLimit;
     private readonly TimeSpan letGo = letGoLimit ?? LetGoLimit;
     private readonly TimeSpan handOver = handOverLimit ?? HandOverLimit;
+    private readonly TimeSpan opening = openLimit ?? OpenLimit;
     private readonly IRecordingWriterFactory writerFactory =
         recordingWriters ?? new RecordingWriterFactory();
-    private readonly FaultedTunerRecheck? recheck = deviceCheck is null
-        ? null
-        : new FaultedTunerRecheck(deviceCheck, timeProvider, logger);
+    private FaultedTunerRecheck? rechecking;
+
+    private FaultedTunerRecheck? recheck =>
+        deviceCheck is null
+            ? null
+            : LazyInitializer.EnsureInitialized(
+                ref rechecking,
+                () => new FaultedTunerRecheck(deviceCheck, timeProvider, logger, pool.IsQuiet)
+            );
 
     private readonly Lock drainGate = new();
 
@@ -287,7 +299,10 @@ public sealed class TunerSessionManager(
         }
     }
 
-    public SessionStart Begin(StartSessionRequest request)
+    public async Task<SessionStart> BeginAsync(
+        StartSessionRequest request,
+        CancellationToken cancellationToken = default
+    )
     {
         DateTimeOffset now = timeProvider.GetUtcNow();
 
@@ -317,7 +332,7 @@ public sealed class TunerSessionManager(
 
         try
         {
-            return BeginAlone(request, now);
+            return await BeginAloneAsync(request, now, cancellationToken);
         }
         finally
         {
@@ -328,7 +343,11 @@ public sealed class TunerSessionManager(
         }
     }
 
-    private SessionStart BeginAlone(StartSessionRequest request, DateTimeOffset now)
+    private async Task<SessionStart> BeginAloneAsync(
+        StartSessionRequest request,
+        DateTimeOffset now,
+        CancellationToken cancellationToken
+    )
     {
         if (sessions.ContainsKey(request.SessionId))
         {
@@ -351,40 +370,102 @@ public sealed class TunerSessionManager(
             return outputRefusal;
         }
 
-        if (!TryEligibleDevices(request, out IReadOnlyList<string>? candidates, out SessionStart? deviceRefusal))
+        if (!TryDeclaredDevices(request, out PoolRequest? asking, out SessionStart? deviceRefusal))
         {
             return deviceRefusal;
         }
 
-        PoolGrant grant = pool.Acquire(
-            new PoolRequest(
-                request.SessionId,
-                request.Purpose,
-                TuningKey.Of(request),
-                request.DeviceId,
-                candidates
-            )
-        );
+        PoolGrant grant = pool.Acquire(asking);
 
         if (!grant.IsGranted)
         {
-            return SessionStart.Refused(
-                grant.Verdict is PoolVerdict.DeviceBusy
-                    ? SessionRefusal.DeviceBusy
-                    : SessionRefusal.NoDeviceFree,
-                grant.Detail
-            );
+            return Refusal(request, grant);
         }
 
-        DateTimeOffset endsAt = EndOf(request, now);
+        var claim = new TunerClaim(pool, grant.DeviceId, request.SessionId);
 
-        return grant.Verdict switch
+        try
         {
-            PoolVerdict.Shared => RideAlong(request, grant, directory, now, endsAt),
-            PoolVerdict.Swapped => TakeTheSeat(request, grant, directory, now, endsAt),
-            _ => TakeTheTuner(request, grant, directory, now, endsAt),
-        };
+            DateTimeOffset endsAt = EndOf(request, now);
+
+            return grant.Verdict switch
+            {
+                PoolVerdict.Shared => await RideAlongAsync(request, grant, claim, directory, now, endsAt, cancellationToken),
+                PoolVerdict.Swapped => await TakeTheSeatAsync(request, grant, claim, directory, now, endsAt, cancellationToken),
+                _ => await TakeTheTunerAsync(request, grant, claim, directory, now, endsAt, cancellationToken),
+            };
+        }
+        catch
+        {
+            claim.Abandon();
+
+            throw;
+        }
     }
+
+    private sealed class TunerClaim(TunerPool pool, string deviceId, SessionId sessionId)
+    {
+        private int reported;
+
+        public void Leave()
+        {
+            if (Report())
+            {
+                pool.Leave(sessionId);
+            }
+        }
+
+        public string DeviceId => deviceId;
+
+        public void GiveBack(TunerRefusal why)
+        {
+            if (Report())
+            {
+                pool.GiveBack(deviceId, sessionId, why);
+            }
+        }
+
+        public void Abandon()
+        {
+            if (Report())
+            {
+                pool.Abandon(deviceId, sessionId);
+            }
+        }
+
+        public void PassTo(TunerSession session)
+        {
+            if (!Report())
+            {
+                throw new InvalidOperationException(
+                    $"The tuner '{deviceId}' was already given back for '{session.SessionId}', so the session cannot hold it."
+                );
+            }
+        }
+
+        private bool Report() => Interlocked.Exchange(ref reported, 1) is 0;
+    }
+
+    private SessionStart Refusal(StartSessionRequest request, PoolGrant grant) =>
+        grant.Verdict switch
+        {
+            PoolVerdict.DeviceBusy => SessionStart.Refused(SessionRefusal.DeviceBusy, grant.Detail),
+            PoolVerdict.DisabledDevice => SessionStart.Refused(SessionRefusal.DisabledDevice, grant.Detail),
+            PoolVerdict.FaultedDevice when request.DeviceId is { } named => SessionStart.Refused(
+                SessionRefusal.FaultedDevice,
+                recheck?.NextTryOf(named) is { } nextTryAt
+                    ? $"The device '{named}' is faulted and is not handed out until it opens again; it is next tried at {nextTryAt:O}: {grant.Detail}"
+                    : $"The device '{named}' is faulted and is not handed out until the driver restarts: {grant.Detail}"
+            ),
+            PoolVerdict.FaultedDevice => SessionStart.Refused(SessionRefusal.FaultedDevice, grant.Detail),
+            PoolVerdict.WrongDeviceKind => SessionStart.Refused(
+                SessionRefusal.WrongDeviceKind,
+                $"The device '{request.DeviceId}' serves {DeviceNamed(request.DeviceId!)?.Kind}, and the request asks for {KindOf(request)}."
+            ),
+            PoolVerdict.NoDeviceOfThatKind => SessionStart.Refused(SessionRefusal.NoDeviceOfThatKind, grant.Detail),
+            PoolVerdict.DeviceUnavailable => SessionStart.Refused(SessionRefusal.DeviceUnavailable, grant.Detail),
+            _ => SessionStart.Refused(SessionRefusal.NoDeviceFree, grant.Detail),
+        };
 
     private DateTimeOffset EndOf(StartSessionRequest request, DateTimeOffset now)
     {
@@ -447,149 +528,63 @@ public sealed class TunerSessionManager(
         return false;
     }
 
-    private bool TryEligibleDevices(
+    private bool TryDeclaredDevices(
         StartSessionRequest request,
-        [NotNullWhen(true)] out IReadOnlyList<string>? candidates,
+        [NotNullWhen(true)] out PoolRequest? asking,
         [NotNullWhen(false)] out SessionStart? refusal
     )
     {
-        candidates = null;
+        asking = null;
         refusal = null;
 
         IReadOnlyList<DeviceSettings> declared = configuration.Devices ?? [];
-
-        if (request.DeviceId is { } named)
+        TunerKind kind = KindOf(request);
+        PoolRequest wanted = new(request.SessionId, request.Purpose, TuningKey.Of(request), request.DeviceId, [])
         {
-            DeviceSettings? candidate = declared.FirstOrDefault(entry => entry.Id == named);
+            Serves = kind,
+        };
 
-            if (candidate is null)
+        if (request.DeviceId is not { } named)
+        {
+            asking = wanted with
             {
-                refusal = SessionStart.Refused(
-                    SessionRefusal.UnknownDevice,
-                    $"No device is called '{named}'."
-                );
-
-                return false;
-            }
-
-            if (!IsEnabled(candidate))
-            {
-                refusal = SessionStart.Refused(
-                    SessionRefusal.DisabledDevice,
-                    IsClaimed(named)
-                        ? $"The device '{named}' is being taken out of service and is finishing the session it holds."
-                        : $"The device '{named}' is disabled."
-                );
-
-                return false;
-            }
-
-            if (IsFaulted(named, out string? fault))
-            {
-                refusal = SessionStart.Refused(
-                    SessionRefusal.FaultedDevice,
-                    recheck?.NextTryOf(named) is { } nextTryAt
-                        ? $"The device '{named}' is faulted and is not handed out until it opens again; it is next tried at {nextTryAt:O}: {fault}"
-                        : $"The device '{named}' is faulted and is not handed out until the driver restarts: {fault}"
-                );
-
-                return false;
-            }
-
-            if (!Matches(candidate.Kind, KindOf(request)))
-            {
-                refusal = SessionStart.Refused(
-                    SessionRefusal.WrongDeviceKind,
-                    $"The device '{named}' serves {candidate.Kind}, and the request asks for {KindOf(request)}."
-                );
-
-                return false;
-            }
-
-            candidates = [named];
+                Candidates = [.. declared.Where(entry => Matches(entry.Kind, kind)).Select(entry => entry.Id!)],
+            };
 
             return true;
         }
 
-        DeviceSettings[] usable = declared
-            .Where(entry => IsEnabled(entry) && Matches(entry.Kind, KindOf(request)))
-            .ToArray();
-
-        if (usable.Length is 0)
+        if (declared.FirstOrDefault(entry => entry.Id == named) is not { } candidate)
         {
             refusal = SessionStart.Refused(
-                SessionRefusal.NoDeviceOfThatKind,
-                $"This driver has no enabled device that serves {KindOf(request)}."
+                SessionRefusal.UnknownDevice,
+                $"No device is called '{named}'."
             );
 
             return false;
         }
 
-        DeviceSettings[] healthy = usable
-            .Where(entry => !faultedDevices.ContainsKey(entry.Id!))
-            .ToArray();
-
-        if (healthy.Length is 0)
+        asking = wanted with
         {
-            refusal = SessionStart.Refused(
-                SessionRefusal.FaultedDevice,
-                $"Every device that serves {KindOf(request)} is faulted."
-            );
-
-            return false;
-        }
-
-        candidates = [.. healthy.Select(entry => entry.Id!)];
+            Candidates = [named],
+            NamedServesTheKind = Matches(candidate.Kind, kind),
+        };
 
         return true;
     }
 
-    private SessionStart TakeTheTuner(
+    private async Task<SessionStart> TakeTheTunerAsync(
         StartSessionRequest request,
         PoolGrant grant,
+        TunerClaim claim,
         string? directory,
         DateTimeOffset now,
-        DateTimeOffset endsAt
+        DateTimeOffset endsAt,
+        CancellationToken cancellationToken
     )
     {
         string deviceId = grant.DeviceId;
         SessionId sessionId = request.SessionId;
-
-        if (!HandOver(grant))
-        {
-            pool.Leave(sessionId);
-
-            return SessionStart.Refused(
-                SessionRefusal.DeviceBusy,
-                $"The device '{deviceId}' was asked for '{sessionId}', and what was on it did not let go within {handOver}."
-            );
-        }
-
-        if (!TryTune(request, grant, out ITunerDevice? tuner, out SessionStart? tuneRefusal))
-        {
-            return tuneRefusal;
-        }
-
-        return Open(
-            request,
-            deviceId,
-            tuner,
-            directory,
-            now,
-            endsAt,
-            holds: true,
-            tuned: grant.NeedsTuning
-        );
-    }
-
-    private bool HandOver(PoolGrant grant)
-    {
-        if (!grant.Outgoing.IsUnset && !FinishedStarting(grant.Outgoing))
-        {
-            return false;
-        }
-
-        List<TunerSession> losers = [];
 
         foreach (SessionId displaced in grant.Displaced)
         {
@@ -606,149 +601,233 @@ public sealed class TunerSessionManager(
             );
 
             loser.Preempt(grant.Detail);
-            losers.Add(loser);
         }
 
-        foreach (TunerSession loser in losers)
-        {
-            loser.WaitForEnd(handOver);
-
-            if (!loser.Concluded)
-            {
-                return false;
-            }
-        }
-
-        return true;
+        return await LeadAsync(request, claim, directory, now, endsAt, cancellationToken);
     }
 
-    private bool FinishedStarting(SessionId sessionId)
+    private async Task<SessionStart> LeadAsync(
+        StartSessionRequest request,
+        TunerClaim claim,
+        string? directory,
+        DateTimeOffset now,
+        DateTimeOffset endsAt,
+        CancellationToken cancellationToken
+    )
     {
-        if (!starting.TryGetValue(sessionId, out TaskCompletionSource? start))
+        string deviceId = claim.DeviceId;
+        SessionId sessionId = request.SessionId;
+
+        if (pool.Clearance(deviceId, sessionId) is not { } clearance)
         {
-            return true;
+            return Lost(claim, sessionId);
         }
+
+        TimeSpan left = handOver - (timeProvider.GetUtcNow() - clearance.Since);
+        bool cleared;
 
         try
         {
-            start.Task.WaitAsync(handOver, timeProvider).GetAwaiter().GetResult();
-
-            return true;
+            cleared = await clearance.Cleared.WaitAsync(left > TimeSpan.Zero ? left : TimeSpan.Zero, timeProvider, cancellationToken);
         }
         catch (TimeoutException)
         {
-            return false;
-        }
-    }
-
-    private bool TryTune(
-        StartSessionRequest request,
-        PoolGrant grant,
-        [NotNullWhen(true)] out ITunerDevice? tuner,
-        [NotNullWhen(false)] out SessionStart? refusal
-    )
-    {
-        string deviceId = grant.DeviceId;
-        tuner = null;
-        refusal = null;
-
-        if (!grant.NeedsTuning)
-        {
-            if (pool.DeviceOf(deviceId) is { } held)
-            {
-                tuner = new LeasedTunerDevice(held);
-
-                return true;
-            }
-
-            pool.Leave(request.SessionId);
-
-            refusal = SessionStart.Refused(
-                SessionRefusal.DeviceUnavailable,
-                $"The device '{deviceId}' was let go before '{request.SessionId}' could take it over."
+            var why = new TunerRefusal(
+                SessionRefusal.DeviceBusy,
+                $"The device '{deviceId}' was asked for '{sessionId}', and what was on it did not let go within {handOver}."
             );
 
-            return false;
+            claim.GiveBack(why);
+
+            return SessionStart.Refused(why.Refusal, why.Detail);
         }
 
-        pool.HandOver(deviceId);
+        if (!cleared || pool.StartOpening(deviceId, sessionId) is not { } ticket)
+        {
+            return Lost(claim, sessionId);
+        }
 
-        DeviceSettings settings = (configuration.Devices ?? []).First(entry =>
-            string.Equals(entry?.Id, deviceId, StringComparison.Ordinal)
-        )!;
+        if (ticket.Starts)
+        {
+            OpenInTheBackground(ticket, request);
+        }
+
+        TunerRefusal? failed;
 
         try
         {
-            ITunerDevice opened = deviceFactory.Create(
-                settings,
-                request.Tuning,
-                request.Tune,
-                HeadHolds.For(request.Purpose)
+            failed = ticket.Starts
+                ? await ticket.Outcome.WaitAsync(cancellationToken)
+                : await ticket.Outcome.WaitAsync(OpeningLeft(ticket), timeProvider, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            failed = new TunerRefusal(
+                SessionRefusal.DeviceUnavailable,
+                $"The device '{deviceId}' did not open within {opening}."
             );
+            pool.OpenTookTooLong(ticket, failed);
+        }
 
-            if (!pool.Tuned(deviceId, request.SessionId, opened))
-            {
-                refusal = SessionStart.Refused(
-                    SessionRefusal.DeviceBusy,
-                    $"The device '{deviceId}' was taken from '{request.SessionId}' while it was being tuned."
-                );
+        if (failed is not null)
+        {
+            claim.Leave();
 
-                return false;
-            }
+            return SessionStart.Refused(failed.Refusal, failed.Detail);
+        }
 
-            tuner = new LeasedTunerDevice(opened);
+        if (pool.DeviceOf(deviceId) is not { } held)
+        {
+            claim.Leave();
 
-            return true;
+            return SessionStart.Refused(
+                SessionRefusal.DeviceUnavailable,
+                $"The device '{deviceId}' was let go before '{sessionId}' could take it over."
+            );
+        }
+
+        return await OpenAsync(
+            request,
+            claim,
+            deviceId,
+            new LeasedTunerDevice(held),
+            directory,
+            now,
+            endsAt,
+            holds: true,
+            tuned: ticket.Tunes
+        );
+    }
+
+    private TimeSpan OpeningLeft(OpenTicket ticket)
+    {
+        TimeSpan left = opening - (timeProvider.GetUtcNow() - ticket.Since);
+
+        return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+    }
+
+    private SessionStart Lost(TunerClaim claim, SessionId sessionId)
+    {
+        TunerRefusal? told = pool.RefusalOf(sessionId);
+
+        claim.Leave();
+
+        return told is { } refusal
+            ? SessionStart.Refused(refusal.Refusal, refusal.Detail)
+            : SessionStart.Refused(
+                SessionRefusal.DeviceBusy,
+                $"The device '{claim.DeviceId}' was taken from '{sessionId}' while it was being tuned."
+            );
+    }
+
+    private void OpenInTheBackground(OpenTicket ticket, StartSessionRequest request) =>
+        _ = Task.Factory.StartNew(
+            () => OpenFor(ticket, request),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default
+        );
+
+    private void OpenFor(OpenTicket ticket, StartSessionRequest request)
+    {
+        string deviceId = ticket.DeviceId;
+        ITunerDevice opened;
+
+        try
+        {
+            DeviceSettings settings = DeviceNamed(deviceId)
+                ?? throw new InvalidOperationException($"No device is called '{deviceId}'.");
+
+            opened = deviceFactory.Create(settings, request.Tuning, request.Tune, HeadHolds.For(request.Purpose));
         }
         catch (Exception error)
         {
-            pool.TuningFailed(deviceId, request.SessionId, error);
+            Report(() => pool.OpenFailed(
+                ticket,
+                RefusalForTheOpen(deviceId, request, error),
+                error,
+                () => NoteTheFailedOpen(deviceId, request, error)
+            ), deviceId);
 
-            if (
-                error is DvbDeviceException
-                {
-                    Failure: TuningFailure.NoLock or TuningFailure.LockedWithoutData
-                } failed
-            )
-            {
-                RecordTuneFailure(deviceId, TuningKey.Of(request), failed, request.Purpose);
-            }
+            return;
+        }
 
-            refusal = error switch
-            {
-                DvbDeviceException { Failure: TuningFailure.NoLock } => SessionStart.Refused(
-                    SessionRefusal.NoLock,
-                    $"The device '{deviceId}' opened but the frontend did not lock on {TuningKey.Of(request)}: {error.Message}"
-                ),
-                DvbDeviceException { Failure: TuningFailure.LockedWithoutData } =>
-                    SessionStart.Refused(
-                        SessionRefusal.NoData,
-                        $"The device '{deviceId}' locked on {TuningKey.Of(request)} but delivered nothing: {error.Message}"
-                    ),
-                _ => SessionStart.Refused(
-                    SessionRefusal.DeviceUnavailable,
-                    $"The device '{deviceId}' could not be opened: {error.Message}"
-                ),
-            };
+        Report(() => pool.Opened(ticket, opened), deviceId);
+    }
 
-            return false;
+    private void Report(Action toTheTable, string deviceId)
+    {
+        try
+        {
+            toTheTable();
+        }
+        catch (Exception failed)
+        {
+            logger.LogError(failed, "What happened to the open of {DeviceId} was written down, and a step after it failed.", deviceId);
         }
     }
 
-    private SessionStart RideAlong(
+    private void NoteTheFailedOpen(string deviceId, StartSessionRequest request, Exception error)
+    {
+        if (error is not DvbDeviceException { Failure: TuningFailure.NoLock or TuningFailure.LockedWithoutData } failed)
+        {
+            return;
+        }
+
+        try
+        {
+            RecordTuneFailure(deviceId, TuningKey.Of(request), failed, request.Purpose);
+        }
+        catch (Exception unexpected)
+        {
+            logger.LogError(unexpected, "The failed tune of {DeviceId} could not be written down.", deviceId);
+        }
+    }
+
+    private static TunerRefusal RefusalForTheOpen(string deviceId, StartSessionRequest request, Exception error) =>
+        error switch
+        {
+            DvbDeviceException { Failure: TuningFailure.NoLock } => new TunerRefusal(
+                SessionRefusal.NoLock,
+                $"The device '{deviceId}' opened but the frontend did not lock on {TuningKey.Of(request)}: {error.Message}"
+            ),
+            DvbDeviceException { Failure: TuningFailure.LockedWithoutData } => new TunerRefusal(
+                SessionRefusal.NoData,
+                $"The device '{deviceId}' locked on {TuningKey.Of(request)} but delivered nothing: {error.Message}"
+            ),
+            _ => new TunerRefusal(
+                SessionRefusal.DeviceUnavailable,
+                $"The device '{deviceId}' could not be opened: {error.Message}"
+            ),
+        };
+
+    private async Task<SessionStart> RideAlongAsync(
         StartSessionRequest request,
         PoolGrant grant,
+        TunerClaim claim,
         string? directory,
         DateTimeOffset now,
-        DateTimeOffset endsAt
+        DateTimeOffset endsAt,
+        CancellationToken cancellationToken
     )
     {
-        if (
-            !pool.AwaitReady(grant.DeviceId, handOver)
-            || !sessions.TryGetValue(grant.Holder, out TunerSession? host)
-        )
+        TunerReadiness readiness = await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken);
+
+        if (readiness.Leads)
         {
-            pool.Leave(request.SessionId);
+            return await LeadAsync(request, claim, directory, now, endsAt, cancellationToken);
+        }
+
+        if (readiness is { Ready: false, Refusal: { } undone })
+        {
+            claim.Leave();
+
+            return SessionStart.Refused(undone.Refusal, undone.Detail);
+        }
+
+        if (!readiness.Ready || !sessions.TryGetValue(grant.Holder, out TunerSession? host))
+        {
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -758,7 +837,7 @@ public sealed class TunerSessionManager(
 
         if (host.EndsAt <= now)
         {
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -768,7 +847,7 @@ public sealed class TunerSessionManager(
 
         if (!host.Broadcaster.TrySubscribe(SeatFor(request.Purpose), out SessionSubscription? seat))
         {
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceBusy,
@@ -776,8 +855,9 @@ public sealed class TunerSessionManager(
             );
         }
 
-        return Open(
+        return await OpenAsync(
             request,
+            claim,
             grant.DeviceId,
             new PiggybackTunerDevice(host, seat),
             directory,
@@ -790,20 +870,33 @@ public sealed class TunerSessionManager(
         );
     }
 
-    private SessionStart TakeTheSeat(
+    private async Task<SessionStart> TakeTheSeatAsync(
         StartSessionRequest request,
         PoolGrant grant,
+        TunerClaim claim,
         string? directory,
         DateTimeOffset now,
-        DateTimeOffset endsAt
+        DateTimeOffset endsAt,
+        CancellationToken cancellationToken
     )
     {
-        if (
-            !pool.AwaitReady(grant.DeviceId, handOver)
-            || !sessions.TryGetValue(grant.Outgoing, out TunerSession? outgoing)
-        )
+        TunerReadiness readiness = await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken);
+
+        if (readiness.Leads)
         {
-            pool.Leave(request.SessionId);
+            return await LeadAsync(request, claim, directory, now, endsAt, cancellationToken);
+        }
+
+        if (readiness is { Ready: false, Refusal: { } undone })
+        {
+            claim.Leave();
+
+            return SessionStart.Refused(undone.Refusal, undone.Detail);
+        }
+
+        if (!readiness.Ready || !sessions.TryGetValue(grant.Outgoing, out TunerSession? outgoing))
+        {
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -813,7 +906,7 @@ public sealed class TunerSessionManager(
 
         if (outgoing.EndsAt <= now)
         {
-            pool.Leave(request.SessionId);
+            claim.Leave();
 
             return SessionStart.Refused(
                 SessionRefusal.DeviceUnavailable,
@@ -821,13 +914,21 @@ public sealed class TunerSessionManager(
             );
         }
 
-        if (!TryTune(request, grant, out ITunerDevice? tuner, out SessionStart? refusal))
+        if (pool.DeviceOf(grant.DeviceId) is not { } held)
         {
-            return refusal;
+            claim.Leave();
+
+            return SessionStart.Refused(
+                SessionRefusal.DeviceUnavailable,
+                $"The device '{grant.DeviceId}' was let go before '{request.SessionId}' could take it over."
+            );
         }
 
-        return Open(
+        ITunerDevice tuner = new LeasedTunerDevice(held);
+
+        return await OpenAsync(
             request,
+            claim,
             grant.DeviceId,
             tuner,
             directory,
@@ -844,14 +945,14 @@ public sealed class TunerSessionManager(
             ? SubscriberKind.Recording
             : SubscriberKind.Piggyback;
 
-    private bool Demote(TunerSession outgoing, TunerSession taking)
+    private async Task<bool> DemoteAsync(TunerSession outgoing, TunerSession taking)
     {
         if (
             !taking.Broadcaster.TrySubscribe(
                 SubscriberKind.Piggyback,
                 out SessionSubscription? seat
             )
-            || !outgoing.ReadFromInstead(
+            || !await outgoing.ReadFromInsteadAsync(
                 new PiggybackTunerDevice(taking, seat),
                 taking,
                 seat,
@@ -874,8 +975,9 @@ public sealed class TunerSessionManager(
         return true;
     }
 
-    private SessionStart Open(
+    private async Task<SessionStart> OpenAsync(
         StartSessionRequest request,
+        TunerClaim claim,
         string deviceId,
         ITunerDevice tunerDevice,
         string? directory,
@@ -895,7 +997,7 @@ public sealed class TunerSessionManager(
         {
             if (!writing.TryAdd(recordingId, sessionId))
             {
-                pool.Leave(sessionId);
+                claim.Leave();
                 tunerDevice.Dispose();
 
                 return SessionStart.Refused(
@@ -912,6 +1014,7 @@ public sealed class TunerSessionManager(
         {
             SessionStart? refusal = TryOpenRecording(
                 directory,
+                claim,
                 sessionId,
                 request.OutputRoot!,
                 request.RecordingId!,
@@ -927,33 +1030,71 @@ public sealed class TunerSessionManager(
             }
         }
 
-        var session = new TunerSession(
-            sessionId,
-            request.Purpose,
-            deviceId,
-            tunerDevice,
-            now,
-            endsAt,
-            timeProvider,
-            writer,
-            logger: logger,
-            outputRoot: request.OutputRoot,
-            recordingId: request.RecordingId,
-            diagnostics: diagnostics,
-            watch: Watch(request.Purpose),
-            tune: request.Tune,
-            ridesOn: ridesOn,
-            seat: seat,
-            demuxBufferBytes: configuration.Tuner?.DemuxBufferBytes
-                ?? TunerSettings.DefaultDemuxBufferBytes,
-            takesTheSeatFromAnother: demoting is not null
-        );
+        TunerSession session;
+
+        try
+        {
+            session = new TunerSession(
+                sessionId,
+                request.Purpose,
+                deviceId,
+                tunerDevice,
+                now,
+                endsAt,
+                timeProvider,
+                writer,
+                logger: logger,
+                outputRoot: request.OutputRoot,
+                recordingId: request.RecordingId,
+                diagnostics: diagnostics,
+                watch: Watch(request.Purpose),
+                tune: request.Tune,
+                ridesOn: ridesOn,
+                seat: seat,
+                demuxBufferBytes: configuration.Tuner?.DemuxBufferBytes
+                    ?? TunerSettings.DefaultDemuxBufferBytes,
+                takesTheSeatFromAnother: demoting is not null
+            );
+        }
+        catch
+        {
+            tunerDevice.Dispose();
+            writer?.Dispose();
+            LetGoOfTheRecording(claimed, sessionId);
+
+            throw;
+        }
+
+        try
+        {
+            return await LaunchAsync(request, claim, session, claimed, deviceId, holds, tuned, demoting);
+        }
+        catch
+        {
+            Forsake(session, claimed);
+
+            throw;
+        }
+    }
+
+    private async Task<SessionStart> LaunchAsync(
+        StartSessionRequest request,
+        TunerClaim claim,
+        TunerSession session,
+        string? claimed,
+        string deviceId,
+        bool holds,
+        bool tuned,
+        TunerSession? demoting
+    )
+    {
+        SessionId sessionId = request.SessionId;
 
         lock (drainGate)
         {
             if (draining)
             {
-                pool.Leave(sessionId);
+                claim.Leave();
                 LetGoOfTheRecording(claimed, sessionId);
                 session.Dispose();
 
@@ -965,7 +1106,7 @@ public sealed class TunerSessionManager(
 
             if (!sessions.TryAdd(sessionId, session))
             {
-                pool.Leave(sessionId);
+                claim.Leave();
                 LetGoOfTheRecording(claimed, sessionId);
                 session.Dispose();
 
@@ -978,6 +1119,16 @@ public sealed class TunerSessionManager(
             tunings[sessionId] = TuningKey.Of(request);
         }
 
+        if (!pool.Confirm(deviceId, sessionId))
+        {
+            Abandon(session, claimed, claim);
+
+            return SessionStart.Refused(
+                SessionRefusal.DeviceBusy,
+                $"The device '{deviceId}' was taken from '{sessionId}' before it could start."
+            );
+        }
+
         session.Ending += PassTheTunerOn;
         session.Ended += Forget;
 
@@ -987,19 +1138,34 @@ public sealed class TunerSessionManager(
         }
         catch (Exception error)
         {
-            Abandon(session, claimed);
+            bool stoppedBeforeItStarted = session.StopReason is SessionStopReason.Preempted or SessionStopReason.Requested;
 
-            return SessionStart.Refused(
-                SessionRefusal.DeviceUnavailable,
-                $"The session '{sessionId}' could not be started: {error.Message}"
-            );
+            Abandon(session, claimed, claim);
+
+            if (stoppedBeforeItStarted && draining)
+            {
+                return SessionStart.Refused(
+                    SessionRefusal.Draining,
+                    "The driver is shutting down, so no session can start."
+                );
+            }
+
+            return !stoppedBeforeItStarted
+                ? SessionStart.Refused(
+                    SessionRefusal.DeviceUnavailable,
+                    $"The session '{sessionId}' could not be started: {error.Message}"
+                )
+                : SessionStart.Refused(
+                    SessionRefusal.DeviceBusy,
+                    $"The device '{deviceId}' was taken from '{sessionId}' before it could start."
+                );
         }
 
         if (demoting is { } outgoing)
         {
-            if (!Demote(outgoing, session))
+            if (!await DemoteAsync(outgoing, session))
             {
-                Abandon(session, claimed);
+                Abandon(session, claimed, claim);
 
                 return SessionStart.Refused(
                     SessionRefusal.DeviceBusy,
@@ -1021,11 +1187,18 @@ public sealed class TunerSessionManager(
         }
 
         Announce();
+        claim.PassTo(session);
 
         return SessionStart.Started(session);
     }
 
-    private void Abandon(TunerSession session, string? claimed)
+    private void Abandon(TunerSession session, string? claimed, TunerClaim claim)
+    {
+        Forsake(session, claimed);
+        claim.Leave();
+    }
+
+    private void Forsake(TunerSession session, string? claimed)
     {
         sessions.TryRemove(
             new KeyValuePair<SessionId, TunerSession>(session.SessionId, session)
@@ -1033,7 +1206,6 @@ public sealed class TunerSessionManager(
         tunings.TryRemove(session.SessionId, out _);
         session.Ending -= PassTheTunerOn;
         session.Ended -= Forget;
-        pool.Leave(session.SessionId);
         LetGoOfTheRecording(claimed, session.SessionId);
         session.Dispose();
     }
@@ -1075,6 +1247,7 @@ public sealed class TunerSessionManager(
 
     private SessionStart? TryOpenRecording(
         string directory,
+        TunerClaim claim,
         SessionId sessionId,
         string outputRoot,
         string recordingId,
@@ -1091,7 +1264,7 @@ public sealed class TunerSessionManager(
         }
         catch (Exception error)
         {
-            pool.Leave(sessionId);
+            claim.Leave();
 
             logger.LogError(
                 error,
@@ -1397,7 +1570,7 @@ public sealed class TunerSessionManager(
             $"The device failed while serving '{session.SessionId}': "
             + (session.FailureCause?.Message ?? "no cause was recorded.");
 
-        if (FaultUntilItOpens(deviceId, new DeviceFault(fault, null, DeviceFaultKind.Failed)) is not { } plan)
+        if (FaultUntilItOpens(deviceId, new TunerFault(fault, null, DeviceFaultKind.Failed)) is not { } plan)
         {
             logger.LogError(
                 "The device {DeviceId} failed while serving {SessionId} and {NotTriedAgain}",
@@ -1430,13 +1603,10 @@ public sealed class TunerSessionManager(
         );
     }
 
-    private RecheckPlan? FaultUntilItOpens(string deviceId, DeviceFault fault)
+    private RecheckPlan? FaultUntilItOpens(string deviceId, TunerFault fault)
     {
-        faultedDevices[deviceId] = fault;
+        pool.Fault(deviceId, fault);
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
-
-        pool.Discard(deviceId);
-        LetGo(deviceId);
 
         events?.Signal(DriverEvents.TunerHealthChanged);
         events?.Signal(DriverEvents.Tuners);
@@ -1450,12 +1620,15 @@ public sealed class TunerSessionManager(
 
         if (plan is { Relapsed: true } && fault.Kind.Kind is TunerFaultKind.DeviceFailed)
         {
-            faultedDevices[deviceId] = fault with
-            {
-                Detail = fault.Detail
-                    + $" It had been handed back out less than {RelapseMinutes} minutes earlier, so it waits longer than last time before it is tried again.",
-                Kind = DeviceFaultKind.FailedAgain,
-            };
+            pool.Fault(
+                deviceId,
+                fault with
+                {
+                    Detail = fault.Detail
+                        + $" It had been handed back out less than {RelapseMinutes} minutes earlier, so it waits longer than last time before it is tried again.",
+                    Kind = DeviceFaultKind.FailedAgain,
+                }
+            );
         }
 
         return plan;
@@ -1470,7 +1643,7 @@ public sealed class TunerSessionManager(
             tuneFailures.Remove(deviceId);
         }
 
-        faultedDevices.TryRemove(deviceId, out _);
+        pool.Restore(deviceId);
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
 
         logger.LogInformation(
@@ -1552,7 +1725,7 @@ public sealed class TunerSessionManager(
             + $" anything in between; the last failure was: {cause.Message}";
         RecheckPlan? plan = FaultUntilItOpens(
             deviceId,
-            new DeviceFault(fault, TuningFailureTitles.Of(cause.Failure), DeviceFaultKind.RepeatedTuneFailure)
+            new TunerFault(fault, TuningFailureTitles.Of(cause.Failure), DeviceFaultKind.RepeatedTuneFailure)
         );
 
         if (plan is null)
@@ -1592,7 +1765,7 @@ public sealed class TunerSessionManager(
             forgiven = tuneFailures.Remove(deviceId);
         }
 
-        if (forgiven && !faultedDevices.ContainsKey(deviceId))
+        if (forgiven && pool.FaultOf(deviceId) is null)
         {
             healthChangedAt[deviceId] = timeProvider.GetUtcNow();
             events?.Signal(DriverEvents.TunerHealthChanged);
@@ -1617,7 +1790,7 @@ public sealed class TunerSessionManager(
 
         Fault(
             contradiction.DeviceId,
-            new DeviceFault(
+            new TunerFault(
                 contradiction.Detail,
                 null,
                 DeviceFaultKind.Disagreeing(contradiction.Declared, contradiction.Receives)
@@ -1625,11 +1798,10 @@ public sealed class TunerSessionManager(
         );
     }
 
-    private void Fault(string deviceId, DeviceFault fault)
+    private void Fault(string deviceId, TunerFault fault)
     {
-        LetGo(deviceId);
         recheck?.Forget(deviceId);
-        faultedDevices[deviceId] = fault;
+        pool.Fault(deviceId, fault);
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
 
         events?.Signal(DriverEvents.TunerHealthChanged);
@@ -1638,40 +1810,51 @@ public sealed class TunerSessionManager(
 
     public bool IsClaimed(string deviceId) => pool.IsHeld(deviceId);
 
-    private void LetGo(string deviceId)
+    public IReadOnlyList<string> OccupiedDevices() => pool.Occupied();
+
+    public IReadOnlyList<TunerAllocationView> Allocations() => pool.Snapshot();
+
+    public void Looked(DeviceSettings device, bool present)
     {
-        if (DeviceNamed(deviceId) is { } device)
+        if (device.Id is { } deviceId)
         {
-            deviceCheck?.LetGo(device);
+            pool.Looked(deviceId, present);
+        }
+    }
+
+    private static bool? Look(DriverConfiguration configuration, Func<DeviceSettings, bool?>? presence, string deviceId) =>
+        presence is not null
+        && (configuration.Devices ?? []).FirstOrDefault(candidate => candidate?.Id == deviceId) is { } device
+            ? presence(device)
+            : null;
+
+    private static void LetGo(DriverConfiguration configuration, ITunerDeviceCheck? check, string deviceId)
+    {
+        if (check is null)
+        {
+            return;
+        }
+
+        if ((configuration.Devices ?? []).FirstOrDefault(candidate => candidate?.Id == deviceId) is { } device)
+        {
+            check.LetGo(device);
         }
     }
 
     public bool IsEnabled(DeviceSettings device) =>
-        device.Id is { } deviceId && toggledDevices.TryGetValue(deviceId, out bool enabled)
-            ? enabled
-            : device.Enabled;
+        device.Id is { } deviceId && pool.IsEnabled(deviceId) is { } enabled ? enabled : device.Enabled;
 
-    public bool IsToggled(DeviceSettings device) =>
-        device.Id is { } deviceId
-        && toggledDevices.TryGetValue(deviceId, out bool enabled)
-        && enabled != device.Enabled;
+    public bool IsToggled(DeviceSettings device) => IsEnabled(device) != device.Enabled;
 
     public bool Turn(string deviceId, bool disabled)
     {
-        DeviceSettings? device = DeviceNamed(deviceId);
-
-        if (device is null)
+        if (DeviceNamed(deviceId) is null)
         {
             return false;
         }
 
-        toggledDevices[deviceId] = !disabled;
+        pool.Turn(deviceId, !disabled);
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
-
-        if (disabled)
-        {
-            deviceCheck?.LetGo(device);
-        }
 
         events?.Signal(DriverEvents.TunerHealthChanged);
         events?.Signal(DriverEvents.Tuners);
@@ -1684,23 +1867,14 @@ public sealed class TunerSessionManager(
 
     public bool IsFaulted(string deviceId, [NotNullWhen(true)] out string? detail)
     {
-        if (faultedDevices.TryGetValue(deviceId, out DeviceFault? fault))
-        {
-            detail = fault.Detail;
+        detail = pool.FaultOf(deviceId)?.Detail;
 
-            return true;
-        }
-
-        detail = null;
-
-        return false;
+        return detail is not null;
     }
 
-    public string? FaultTitleOf(string deviceId) =>
-        faultedDevices.TryGetValue(deviceId, out DeviceFault? fault) ? fault.Title : null;
+    public string? FaultTitleOf(string deviceId) => pool.FaultOf(deviceId)?.Title;
 
-    public DeviceFaultKind? FaultKindOf(string deviceId) =>
-        faultedDevices.TryGetValue(deviceId, out DeviceFault? fault) ? fault.Kind : null;
+    public DeviceFaultKind? FaultKindOf(string deviceId) => pool.FaultOf(deviceId)?.Kind;
 
     private static TunerKind KindOf(StartSessionRequest request) =>
         request.Tune?.Kind ?? request.Tuning.Kind;
@@ -1712,6 +1886,4 @@ public sealed class TunerSessionManager(
             (DeviceKind.Satellite, TunerKind.Satellite) => true,
             _ => false,
         };
-
-    private sealed record DeviceFault(string Detail, string? Title, DeviceFaultKind Kind);
 }
