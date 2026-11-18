@@ -24,16 +24,18 @@ public sealed class Dt295ReceptionProbe : IReceptionProbe
         Dt295Bridge bridge,
         DvbChannel channel,
         ILogger? logger,
-        Action<Dt295Bridge>? keep
+        Action<Dt295Bridge>? keep,
+        CancellationToken cancellationToken = default
     )
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Dt295TunerDevice.Tune(bridge, channel);
 
             return new Dt295ReceptionProbe(bridge, keep, logger);
         }
-        catch (DvbDeviceException failed) when (failed.Failure is TuningFailure.NoLock)
+        catch (Exception stopped) when (stopped is OperationCanceledException || stopped is DvbDeviceException { Failure: TuningFailure.NoLock })
         {
             Dt295TunerDevice.LetGo(bridge, keep, faulted: false, logger);
 

@@ -24,27 +24,43 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
         long hertz,
         DevicePacing pacing,
         ILogger? logger = null,
-        CechZd1Standby? standby = null
+        CechZd1Standby? standby = null,
+        CancellationToken cancellationToken = default
     )
     {
+        cancellationToken.ThrowIfCancellationRequested();
         CechZd1TunerDevice.Recognise(host, path);
 
         CechZd1Standby.KeptTuner? kept = standby?.Take(path);
         CechZd1Standby? keptIn = kept is null ? null : standby;
 
-        if (kept is not null && Woken(kept, hertz, keptIn, logger) is { } woken)
+        if (kept is not null && Woken(kept, hertz, keptIn, logger, cancellationToken) is { } woken)
         {
             return woken;
         }
 
-        return Tuned(Started(host, path, pacing), hertz, keptIn);
+        CechZd1Standby.KeptTuner started = Started(
+            host,
+            path,
+            pacing,
+            keptIn is null ? cancellationToken : CancellationToken.None
+        );
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            CechZd1TunerDevice.Rest(started, keptIn);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        return Tuned(started, hertz, keptIn);
     }
 
     private static CechZd1ReceptionProbe? Woken(
         CechZd1Standby.KeptTuner kept,
         long hertz,
         CechZd1Standby? keptIn,
-        ILogger? logger
+        ILogger? logger,
+        CancellationToken cancellationToken
     )
     {
         try
@@ -63,6 +79,12 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
             );
         }
 
+        if (cancellationToken.IsCancellationRequested)
+        {
+            CechZd1TunerDevice.Rest(kept, keptIn);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
         CechZd1TunerDevice.Quietly(kept.Frontend.Sleep);
         CechZd1TunerDevice.Quietly(() => kept.Frontend.Demodulator.LedGreen());
         kept.Usb.Dispose();
@@ -70,14 +92,21 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
         return null;
     }
 
-    private static CechZd1Standby.KeptTuner Started(IUsbHost host, string path, DevicePacing pacing)
+    private static CechZd1Standby.KeptTuner Started(
+        IUsbHost host,
+        string path,
+        DevicePacing pacing,
+        CancellationToken stopWhileStillClosed
+    )
     {
         IUsbConnection usb = host.Open(path, CechZd1TunerDevice.Interface);
 
         try
         {
+            stopWhileStillClosed.ThrowIfCancellationRequested();
             var memory = new BridgeMemory(usb);
             BridgeStartup.Start(memory, pacing);
+            stopWhileStillClosed.ThrowIfCancellationRequested();
             var i2c = new BridgeI2c(memory);
             var frontend = new CechZd1Frontend(new Dib8000Bus(i2c), new Dib0090Bus(i2c), pacing, path);
             frontend.Initialise();

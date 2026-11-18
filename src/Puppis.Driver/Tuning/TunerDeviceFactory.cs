@@ -146,8 +146,11 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             _ => throw BackendNeverEstablished(),
         };
 
-    public IReceptionProbe Tune(DeviceSettings device, TuneParams tune, CancellationToken cancellationToken) =>
-        backend switch
+    public IReceptionProbe Tune(DeviceSettings device, TuneParams tune, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return backend switch
         {
             TunerBackend.Fake => new SyntheticReceptionProbe(tune.ToLegacyRequest().PhysicalChannel),
             TunerBackend.Dvb => DvbReceptionProbe.Open(
@@ -159,17 +162,18 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                 settings,
                 cancellationToken
             ),
-            TunerBackend.Usb => ProbeUsb(device, DvbTuneRequest.Resolve(tune, tune.ToLegacyRequest())),
+            TunerBackend.Usb => ProbeUsb(device, DvbTuneRequest.Resolve(tune, tune.ToLegacyRequest()), cancellationToken),
             _ => throw BackendNeverEstablished(),
         };
+    }
 
-    private IReceptionProbe ProbeUsb(DeviceSettings device, DvbChannel channel)
+    private IReceptionProbe ProbeUsb(DeviceSettings device, DvbChannel channel, CancellationToken cancellationToken)
     {
         string path = UsbPathOf(device);
 
         if (usbHost.Value.ModelAt(path) == Dt295TunerDevice.Model)
         {
-            return ProbeDt295(device, path, channel);
+            return ProbeDt295(device, path, channel, cancellationToken);
         }
 
         if (channel is not TerrestrialChannel terrestrial)
@@ -185,11 +189,12 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             DvbFrequency.TerrestrialHertz(terrestrial.PhysicalChannel),
             pacing,
             logger,
-            StandbyFor(device, path)
+            StandbyFor(device, path),
+            cancellationToken
         );
     }
 
-    private Dt295ReceptionProbe ProbeDt295(DeviceSettings device, string path, DvbChannel channel)
+    private Dt295ReceptionProbe ProbeDt295(DeviceSettings device, string path, DvbChannel channel, CancellationToken cancellationToken)
     {
         RequireTheDeclaredKind(device, channel);
         string deviceId = device.Id ?? path;
@@ -204,7 +209,13 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             bridge = taken ?? OpenAfresh(deviceId, path);
         }
 
-        return Dt295ReceptionProbe.Tune(bridge, channel, logger, kept ? rested => keeper.Keep(deviceId, rested) : null);
+        return Dt295ReceptionProbe.Tune(
+            bridge,
+            channel,
+            logger,
+            kept ? rested => keeper.Keep(deviceId, rested) : null,
+            cancellationToken
+        );
     }
 
     public void Check(DeviceSettings device)

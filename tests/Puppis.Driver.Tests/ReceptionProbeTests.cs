@@ -320,6 +320,191 @@ public sealed class ReceptionProbeTests
     }
 
     [Fact]
+    public void NothingIsOpenedForAMeasurementThatWasAlreadyToldToStop()
+    {
+        using var stopped = new CancellationTokenSource();
+        stopped.Cancel();
+        using var synthetic = new TunerDeviceFactory(Configuration(TunerBackend.Fake, UsbTuner), TimeProvider.System);
+        (TunerDeviceFactory dvb, ScriptedDvbSystemCalls calls) = Dvb();
+        (TunerDeviceFactory dt295, FakeDt295 fake) = Dt295();
+        (TunerDeviceFactory cechZd1, FakeBridge bridge, _) = CechZd1();
+
+        Assert.Throws<OperationCanceledException>(() => synthetic.Tune(UsbTuner, Channel, stopped.Token));
+        Assert.Throws<OperationCanceledException>(() => dvb.Tune(DvbTuner, Channel, stopped.Token));
+        Assert.Throws<OperationCanceledException>(() => dt295.Tune(UsbTuner, Channel, stopped.Token));
+        Assert.Throws<OperationCanceledException>(() => cechZd1.Tune(UsbTuner, Channel, stopped.Token));
+
+        Assert.Empty(calls.Opened);
+        Assert.Equal(0, fake.Requests);
+        Assert.Empty(bridge.Requests);
+    }
+
+    [Fact]
+    public void AKeptTunerIsStillKeptWhenItsMeasurementWasToldToStopBeforeItBegan()
+    {
+        using var stopped = new CancellationTokenSource();
+        stopped.Cancel();
+        (TunerDeviceFactory dt295, FakeDt295 fake) = Dt295();
+        (TunerDeviceFactory cechZd1, FakeBridge bridge, _) = CechZd1();
+        UseOnce(dt295);
+        UseOnce(cechZd1);
+        long requests = fake.Requests;
+        int written = bridge.Writes.Count;
+
+        Assert.Throws<OperationCanceledException>(() => dt295.Tune(UsbTuner, Channel, stopped.Token));
+        Assert.Throws<OperationCanceledException>(() => cechZd1.Tune(UsbTuner, Channel, stopped.Token));
+
+        Assert.True(dt295.IsKeptOpen(UsbTuner));
+        Assert.True(cechZd1.IsKeptOpen(UsbTuner));
+        Assert.Equal(requests, fake.Requests);
+        Assert.Equal(written, bridge.Writes.Count);
+    }
+
+    [Fact]
+    public void ADt295ToldToStopWhileItOpensIsNotTunedAndIsClosedAgain()
+    {
+        (TunerDeviceFactory reference, FakeDt295 tuned) = Dt295();
+        reference.Tune(UsbTuner, Channel, CancellationToken.None).Dispose();
+        (TunerDeviceFactory factory, FakeDt295 fake) = Dt295();
+        using var stopping = new CancellationTokenSource();
+        fake.BeforeWrite = _ => stopping.Cancel();
+
+        Assert.Throws<OperationCanceledException>(() => factory.Tune(UsbTuner, Channel, stopping.Token));
+
+        Assert.True(fake.Disposed);
+        Assert.False(factory.IsKeptOpen(UsbTuner));
+        Assert.Equal(CopyProgram.HookAtPowerOn, [fake.Word(CopyProgram.HookAt), fake.Word(CopyProgram.HookAt + 4)]);
+        Assert.NotEqual(tuned.TerrestrialTuner[0x10], fake.TerrestrialTuner[0x10]);
+    }
+
+    [Fact]
+    public void AKeptDt295ToldToStopWhileItIsTakenUpIsNotTunedAndIsKeptAgain()
+    {
+        (TunerDeviceFactory factory, FakeDt295 fake) = Dt295();
+        UseOnce(factory);
+        byte tunedTo = fake.TerrestrialTuner[0x10];
+        using var stopping = new CancellationTokenSource();
+        fake.FailingRead = _ =>
+        {
+            stopping.Cancel();
+
+            return false;
+        };
+
+        Assert.Throws<OperationCanceledException>(() => factory.Tune(UsbTuner, Channel, stopping.Token));
+
+        Assert.False(fake.Disposed);
+        Assert.True(factory.IsKeptOpen(UsbTuner));
+        Assert.Equal(tunedTo, fake.TerrestrialTuner[0x10]);
+    }
+
+    [Fact]
+    public void AKeptCechZd1ToldToStopAfterItDidNotLockIsNotStartedAfreshAndIsKeptAsleepAgain()
+    {
+        (TunerDeviceFactory factory, FakeBridge bridge, FakeChip demodulator) = CechZd1();
+        UseOnce(factory);
+        int bridgeStarts = bridge.WritesAt(0xF1010C).Count;
+        using var stopping = new CancellationTokenSource();
+        demodulator.Answers[1284] = () =>
+        {
+            stopping.Cancel();
+
+            return 0x0001;
+        };
+
+        Assert.Throws<OperationCanceledException>(() => factory.Tune(UsbTuner, Channel, stopping.Token));
+
+        Assert.Equal(bridgeStarts, bridge.WritesAt(0xF1010C).Count);
+        Assert.False(bridge.Disposed);
+        Assert.True(factory.IsKeptOpen(UsbTuner));
+        Assert.Equal(0, demodulator.Last(1286));
+    }
+
+    [Fact]
+    public void AKeptCechZd1ToldToStopWhileItIsStartedAfreshIsNotTunedAgainAndIsKeptAsleepAgain()
+    {
+        (TunerDeviceFactory factory, FakeBridge bridge, FakeChip demodulator) = CechZd1();
+        UseOnce(factory);
+        int bridgeStarts = bridge.WritesAt(0xF1010C).Count;
+        using var stopping = new CancellationTokenSource();
+        int searches = 0;
+        demodulator.Answers[1284] = () =>
+        {
+            searches++;
+
+            return 0x0001;
+        };
+        demodulator.Answers[896] = () =>
+        {
+            stopping.Cancel();
+
+            return Dib8000.ChipId;
+        };
+
+        Assert.Throws<OperationCanceledException>(() => factory.Tune(UsbTuner, Channel, stopping.Token));
+        int searchesOfTheWake = searches;
+        demodulator.Answers.Remove(896);
+        demodulator.Answer(896, Dib8000.ChipId);
+
+        Assert.Equal(bridgeStarts + 1, bridge.WritesAt(0xF1010C).Count);
+        Assert.True(factory.IsKeptOpen(UsbTuner));
+        Assert.True(searchesOfTheWake > 0);
+        Assert.Equal(searchesOfTheWake, searches);
+    }
+
+    [Fact]
+    public void AClosedCechZd1ToldToStopWhileItsBridgeStartsIsClosedBeforeItsChipsAreSetUp()
+    {
+        (FakeChip demodulator, FakeChip tuner) = UsbTestSupport.LockingChips();
+        FakeBridge bridge = UsbTestSupport.BridgeWith(demodulator, tuner);
+        var clock = new ManualTimeProvider(UsbTestSupport.Start);
+        using var stopping = new CancellationTokenSource();
+        var pacing = new DevicePacing(
+            clock,
+            span =>
+            {
+                clock.Advance(span);
+                stopping.Cancel();
+            }
+        );
+        TunerDeviceFactory factory = TunerDeviceFactory.Using(Configuration(TunerBackend.Usb, UsbTuner), new FakeUsbHost(bridge), pacing);
+
+        Assert.Throws<OperationCanceledException>(() => factory.Tune(UsbTuner, Channel, stopping.Token));
+
+        Assert.NotEmpty(bridge.Writes);
+        Assert.Empty(demodulator.ReadFrom);
+        Assert.Empty(demodulator.Written);
+        Assert.True(bridge.Disposed);
+        Assert.False(factory.IsKeptOpen(UsbTuner));
+    }
+
+    [Fact]
+    public void AClosedCechZd1ToldToStopWhileItsChipsAreSetUpIsNotTunedAndIsClosedAgain()
+    {
+        (TunerDeviceFactory factory, FakeBridge bridge, FakeChip demodulator) = CechZd1();
+        using var stopping = new CancellationTokenSource();
+        int searches = 0;
+        demodulator.Answers[1284] = () =>
+        {
+            searches++;
+
+            return 0x0002;
+        };
+        demodulator.Answers[896] = () =>
+        {
+            stopping.Cancel();
+
+            return Dib8000.ChipId;
+        };
+
+        Assert.Throws<OperationCanceledException>(() => factory.Tune(UsbTuner, Channel, stopping.Token));
+
+        Assert.Equal(0, searches);
+        Assert.True(bridge.Disposed);
+        Assert.False(factory.IsKeptOpen(UsbTuner));
+    }
+
+    [Fact]
     public void AProbeIsClosedOnlyOnce()
     {
         (TunerDeviceFactory dt295, FakeDt295 fake) = Dt295();
