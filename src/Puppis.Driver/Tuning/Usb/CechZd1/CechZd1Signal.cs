@@ -25,6 +25,13 @@ public static class CechZd1Signal
         (0, 0),
     ];
 
+    public static SignalQuality QualityOf(SignalRegisters registers) =>
+        new(
+            new LockWindow(StatusOf(registers.StatusBefore), StatusOf(registers.StatusAfter)),
+            CarrierToNoiseFrom(registers),
+            new PostViterbiErrors(SignalReading.NotImplementedByThisTuner, [])
+        );
+
     public static bool LockedWithData(ushort status) =>
         (status & Synchronised) is not 0 && (status & LayerData) is not 0;
 
