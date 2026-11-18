@@ -21,10 +21,26 @@ public sealed class ReceptionStoreTests : IDisposable
 
     private string Saved => Path.Combine(root, ReceptionStore.FileName);
 
+    private readonly List<string> written = [];
+
     private (ReceptionBook Book, ReceptionStore Store) Open(string? directory)
     {
         var book = new ReceptionBook();
-        var store = new ReceptionStore(book, directory, clock, log);
+        var store = new ReceptionStore(
+            book,
+            directory,
+            clock,
+            log,
+            write: (to, contents) =>
+            {
+                AtomicFile.Replace(to, contents);
+
+                lock (written)
+                {
+                    written.Add(contents);
+                }
+            }
+        );
 
         store.Load(Configured);
 
@@ -145,13 +161,98 @@ public sealed class ReceptionStoreTests : IDisposable
         Use(book, "south");
 
         Assert.False(File.Exists(Saved));
+        Assert.Empty(written);
 
         clock.Advance(ReceptionStore.DefaultSaveDelay);
+
+        Assert.Single(written);
+
+        clock.Advance(ReceptionStore.DefaultSaveDelay);
+
+        Assert.Single(written);
 
         (ReceptionBook restarted, _) = Open(root);
 
         Assert.Equal(2, restarted.StandingOf("north", Here).Kept);
         Assert.Equal(1, restarted.StandingOf("south", Here).Kept);
+    }
+
+    [Fact]
+    public async Task StoppingWaitsForASaveInFlightAndThenSavesWhatChangedMeanwhile()
+    {
+        var book = new ReceptionBook();
+        using var saving = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        List<string> saved = [];
+        using var store = new ReceptionStore(
+            book,
+            root,
+            clock,
+            log,
+            write: (_, contents) =>
+            {
+                saving.Set();
+                release.Wait(TimeSpan.FromSeconds(30));
+
+                lock (saved)
+                {
+                    saved.Add(contents);
+                }
+            }
+        );
+        Use(book, "north", 21.5);
+        Task timed = Task.Run(() => clock.Advance(ReceptionStore.DefaultSaveDelay));
+        await Task.Run(() => Assert.True(saving.Wait(TimeSpan.FromSeconds(30))));
+        Use(book, "south", 33.25);
+
+        Task stopping = Task.Run(() => store.StopAsync(CancellationToken.None));
+        await Task.Delay(100);
+
+        Assert.False(stopping.IsCompleted);
+        Assert.Empty(saved);
+
+        release.Set();
+        await stopping.WaitAsync(TimeSpan.FromSeconds(30));
+        await timed.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(2, saved.Count);
+        Assert.DoesNotContain("33.25", saved[0], StringComparison.Ordinal);
+        Assert.Contains("33.25", saved[1], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StoppingWhileASaveIsInFlightWritesNothingMoreWhenNothingChanged()
+    {
+        var book = new ReceptionBook();
+        using var saving = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        int writes = 0;
+        using var store = new ReceptionStore(
+            book,
+            root,
+            clock,
+            log,
+            write: (_, _) =>
+            {
+                saving.Set();
+                release.Wait(TimeSpan.FromSeconds(30));
+                Interlocked.Increment(ref writes);
+            }
+        );
+        Use(book, "north");
+        Task timed = Task.Run(() => clock.Advance(ReceptionStore.DefaultSaveDelay));
+        await Task.Run(() => Assert.True(saving.Wait(TimeSpan.FromSeconds(30))));
+
+        Task stopping = Task.Run(() => store.StopAsync(CancellationToken.None));
+        await Task.Delay(100);
+
+        Assert.False(stopping.IsCompleted);
+
+        release.Set();
+        await stopping.WaitAsync(TimeSpan.FromSeconds(30));
+        await timed.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, writes);
     }
 
     [Fact]

@@ -18,6 +18,7 @@ public sealed class ReceptionStore : IHostedService, IDisposable
     private readonly ILogger logger;
     private readonly TimeSpan saveDelay;
     private readonly ITimer timer;
+    private readonly Action<string, string> write;
     private readonly Lock gate = new();
     private readonly Lock saving = new();
     private bool unsaved;
@@ -32,9 +33,11 @@ public sealed class ReceptionStore : IHostedService, IDisposable
         string? directory,
         TimeProvider clock,
         ILogger logger,
-        TimeSpan? saveDelay = null
+        TimeSpan? saveDelay = null,
+        Action<string, string>? write = null
     )
     {
+        this.write = write ?? ((to, contents) => AtomicFile.Replace(to, contents));
         this.book = book;
         this.logger = logger;
         this.saveDelay = saveDelay ?? DefaultSaveDelay;
@@ -101,21 +104,29 @@ public sealed class ReceptionStore : IHostedService, IDisposable
 
     public void Flush()
     {
+        lock (saving)
+        {
+            if (TakeWhatIsUnsaved() is { } to)
+            {
+                Save(to);
+            }
+        }
+    }
+
+    private string? TakeWhatIsUnsaved()
+    {
         lock (gate)
         {
             scheduled = false;
 
-            if (!unsaved || path is null)
+            if (!unsaved)
             {
-                return;
+                return null;
             }
 
             unsaved = false;
-        }
 
-        lock (saving)
-        {
-            Save(path);
+            return path;
         }
     }
 
@@ -125,7 +136,7 @@ public sealed class ReceptionStore : IHostedService, IDisposable
 
         try
         {
-            AtomicFile.Replace(to, json);
+            write(to, json);
             unwritable = false;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
