@@ -16,7 +16,10 @@ public sealed class IdleReceptionMeasurer(
     IReceptionProbeFactory probes,
     TimeProvider clock,
     ILogger<IdleReceptionMeasurer> logger,
-    TimeSpan? betweenReadings = null
+    TimeSpan? betweenReadings = null,
+    TimeSpan? restBeforeMeasuring = null,
+    TimeSpan? betweenMeasurements = null,
+    TimeSpan? looksEvery = null
 ) : IHostedService, IDisposable
 {
     public const int Readings = 5;
@@ -31,6 +34,9 @@ public sealed class IdleReceptionMeasurer(
 
     private readonly bool enabled = configuration.Tuner?.MeasureWhileIdle ?? TunerSettings.DefaultMeasureWhileIdle;
     private readonly TimeSpan readingGap = betweenReadings ?? BetweenReadings;
+    private readonly TimeSpan rest = restBeforeMeasuring ?? RestBeforeMeasuring;
+    private readonly TimeSpan gap = betweenMeasurements ?? BetweenMeasurements;
+    private readonly TimeSpan looking = looksEvery ?? LooksEvery;
     private readonly Lock gate = new();
     private ITimer? timer;
     private Task running = Task.CompletedTask;
@@ -52,7 +58,7 @@ public sealed class IdleReceptionMeasurer(
             return Task.CompletedTask;
         }
 
-        timer = clock.CreateTimer(_ => Look(), null, LooksEvery, LooksEvery);
+        timer = clock.CreateTimer(_ => Look(), null, looking, looking);
 
         return Task.CompletedTask;
     }
@@ -111,7 +117,7 @@ public sealed class IdleReceptionMeasurer(
     {
         lock (gate)
         {
-            return enabled && !stopping && (lastEndedAt is not { } ended || now - ended >= BetweenMeasurements);
+            return enabled && !stopping && (lastEndedAt is not { } ended || now - ended >= gap);
         }
     }
 
@@ -119,7 +125,7 @@ public sealed class IdleReceptionMeasurer(
     {
         IReadOnlyList<TuningKey> known = book.Known();
 
-        foreach (RestingTuner resting in manager.RestingTuners().Where(tuner => now - tuner.Since >= RestBeforeMeasuring))
+        foreach (RestingTuner resting in manager.RestingTuners().Where(tuner => now - tuner.Since >= rest))
         {
             if (DeviceNamed(resting.DeviceId) is not { } device)
             {

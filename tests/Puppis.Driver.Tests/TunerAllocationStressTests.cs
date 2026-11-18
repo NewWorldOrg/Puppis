@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Puppis.Contracts;
 using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
+using Puppis.Driver.Reception;
 using Puppis.Driver.Recording;
 using Puppis.Driver.Sessions;
 using Puppis.Driver.Tuning;
@@ -32,6 +33,10 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
     private static readonly string[] Tuners = ["t0", "t1", "t2", "t3"];
 
     private static readonly int[] Channels = [20, 21, 22];
+
+    private static readonly int[] ChannelsToMeasure = [.. Enumerable.Range(13, 40)];
+
+    private const string OnlyBeingMeasured = "only being measured";
 
     private static readonly SessionPurpose[] Purposes =
     [
@@ -69,14 +74,24 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
     [Theory]
     [MemberData(nameof(Seeds))]
-    public async Task ManyCallersAtOnceNeverBreakWhoHoldsWhichTuner(int seed)
+    public Task ManyCallersAtOnceNeverBreakWhoHoldsWhichTuner(int seed) => PlayAsync(seed, sessionsAreShort: false);
+
+    [Theory]
+    [MemberData(nameof(Seeds))]
+    public Task IdleTunersAreMeasuredBetweenRequestsWithoutBreakingWhoHoldsWhichTuner(int seed) =>
+        PlayAsync(seed, sessionsAreShort: true);
+
+    private async Task PlayAsync(int seed, bool sessionsAreShort)
     {
-        using var run = new Run(seed);
+        using var run = new Run(seed, sessionsAreShort);
 
         try
         {
             await run.PlayAsync();
-            output.WriteLine($"seed {seed}: {run.LeftMidOpen} requests left while their tuner was being opened");
+            output.WriteLine(
+                $"seed {seed}: {run.LeftMidOpen} requests left while their tuner was being opened, "
+                + $"{run.MeasurementsInterrupted} measurements were interrupted and {run.MeasurementsFinished} ran to their end"
+            );
         }
         catch (Exception failure) when (failure is not SeededFailure)
         {
@@ -90,11 +105,14 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
     private sealed class Run : IDisposable
     {
         private readonly int seed;
+        private readonly bool sessionsAreShort;
         private readonly AcceleratedClock clock = new(300);
         private readonly DevicesUnderTest devices;
         private readonly RefusalLog log = new();
         private readonly DriverConfiguration configuration;
         private readonly TunerSessionManager manager;
+        private readonly ReceptionBook book = new();
+        private readonly IdleReceptionMeasurer measurer;
         private readonly ConcurrentDictionary<SessionId, int> channelOf = new();
         private readonly ConcurrentQueue<string> violations = new();
         private readonly ConcurrentDictionary<string, bool> plugged = new(StringComparer.Ordinal);
@@ -104,9 +122,14 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
         public int LeftMidOpen => Volatile.Read(ref leftMidOpen);
 
-        public Run(int seed)
+        public long MeasurementsInterrupted => measurer.Interrupted;
+
+        public long MeasurementsFinished => measurer.Finished;
+
+        public Run(int seed, bool sessionsAreShort)
         {
             this.seed = seed;
+            this.sessionsAreShort = sessionsAreShort;
             devices = new DevicesUnderTest(seed, violations);
             configuration = new DriverConfiguration(
                 "/run/carina/driver.sock",
@@ -124,13 +147,33 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                 tunerGrace: TimeSpan.FromSeconds(5),
                 handOverLimit: TimeSpan.FromSeconds(30),
                 deviceCheck: devices,
-                presence: device => plugged.GetValueOrDefault(device.Id!, true)
+                presence: device => plugged.GetValueOrDefault(device.Id!, true),
+                reception: book
             );
+            measurer = new IdleReceptionMeasurer(
+                configuration,
+                manager,
+                book,
+                devices,
+                clock,
+                new MeasurerLog(),
+                betweenReadings: TimeSpan.FromMilliseconds(1),
+                restBeforeMeasuring: TimeSpan.FromMilliseconds(30),
+                betweenMeasurements: TimeSpan.FromMilliseconds(30),
+                looksEvery: TimeSpan.FromMilliseconds(300)
+            );
+
+            foreach (int channel in ChannelsToMeasure)
+            {
+                book.Know(new TuningKey(TunerKind.Terrestrial, channel, 0));
+            }
         }
 
         public async Task PlayAsync()
         {
             await manager.StartAsync(CancellationToken.None);
+            await measurer.StartAsync(CancellationToken.None);
+            await TheFirstMeasurementAsync();
             await LeaveMidOpenAsync();
 
             Task[] workers = [.. Enumerable.Range(0, Workers).Select(worker => Task.Run(() => WorkAsync(worker)))];
@@ -153,11 +196,27 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             Check("once every session had stopped");
             await AgreesWithTheDevicesAsync("once every session had stopped");
 
+            await measurer.StopAsync(CancellationToken.None).WaitAsync(Forever);
             await manager.DrainAsync(CancellationToken.None).WaitAsync(Forever);
 
             if (devices.StillOpen() is { Count: > 0 } open)
             {
                 violations.Enqueue($"devices still open after the manager was disposed: {string.Join(", ", open)}");
+            }
+
+            if (devices.ProbesStillOpen() is { Count: > 0 } probing)
+            {
+                violations.Enqueue($"tuners still being measured after the measuring was stopped: {string.Join(", ", probing)}");
+            }
+
+            foreach (string refused in log.RefusedWhileMeasured.Take(3))
+            {
+                violations.Enqueue($"a request was refused while a tuner was only being measured: {refused}");
+            }
+
+            if (MeasurementsInterrupted + MeasurementsFinished is 0)
+            {
+                violations.Enqueue("no tuner was measured while the requests ran");
             }
 
             if (!log.Refusals.IsEmpty)
@@ -176,13 +235,23 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             }
         }
 
+        private async Task TheFirstMeasurementAsync()
+        {
+            DateTime giveUp = DateTime.UtcNow + Forever;
+
+            while (MeasurementsFinished + MeasurementsInterrupted is 0 && DateTime.UtcNow < giveUp)
+            {
+                await Task.Delay(1);
+            }
+        }
+
         private async Task WorkAsync(int worker)
         {
             var random = new Random(HashCode.Combine(seed, worker));
 
             for (int step = 0; step < StepsPerWorker; step++)
             {
-                int roll = random.Next(100);
+                int roll = StopsMoreOften(random, random.Next(100));
 
                 if (roll < 37)
                 {
@@ -230,6 +299,9 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                 await Task.Delay(random.Next(0, 3));
             }
         }
+
+        private int StopsMoreOften(Random random, int roll) =>
+            sessionsAreShort && roll < 45 && random.Next(5) < 3 ? 50 : roll;
 
         private async Task BeginAsync(Random random, int worker, SessionPurpose purpose, int channel)
         {
@@ -397,6 +469,8 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                     "it still has someone on it or a device open",
                 TunerAllocationState.Ready when tuner.Sinks.Count > 0 || !tuner.DeviceOpen =>
                     "it has someone on it or no device open",
+                TunerAllocationState.Measuring when tuner.Sinks.Count > 0 || tuner.Outgoing.Count > 0 || tuner.DeviceOpen || tuner.PreviousDeviceOpen || !tuner.Measuring =>
+                    "it has someone on it, a device open or no measurement under way",
                 TunerAllocationState.Tuning when tuner.Sinks.Count is 0 && !tuner.OpeningInFlight =>
                     "nobody is on it and nothing is being opened",
                 TunerAllocationState.Tuning or TunerAllocationState.InUse when tuner.Sinks.Count > 0 && !tuner.Sinks.Contains(tuner.Holder) =>
@@ -432,6 +506,10 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                 .Select(tuner => (Tuner: tuner, Expected: (tuner.DeviceOpen ? 1 : 0) + (tuner.PreviousDeviceOpen ? 1 : 0), Open: devices.OpenOn(tuner.DeviceId)))
                 .Where(seen => seen.Expected != seen.Open)
                 .Select(seen => $"{seen.Tuner.DeviceId} is {seen.Tuner.State} with {seen.Expected} devices in the table and {seen.Open} open"),
+            .. manager
+                .Allocations()
+                .Where(tuner => !tuner.Measuring && devices.ProbesOn(tuner.DeviceId) > 0)
+                .Select(tuner => $"{tuner.DeviceId} is {tuner.State} with no measurement in the table and one under way on the device"),
         ];
 
         private static T Pick<T>(Random random, IReadOnlyList<T> from) => from[random.Next(from.Count)];
@@ -440,10 +518,11 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
     }
 
     private sealed class DevicesUnderTest(int seed, ConcurrentQueue<string> violations)
-        : ITunerDeviceFactory, ITunerDeviceCheck
+        : ITunerDeviceFactory, ITunerDeviceCheck, IReceptionProbeFactory
     {
         private readonly Lock gate = new();
         private readonly Dictionary<string, int> open = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> probing = new(StringComparer.Ordinal);
         private readonly Dictionary<string, int> opening = new(StringComparer.Ordinal);
         private readonly List<Device> created = [];
         private readonly ThreadLocal<Random> random = new(() => new Random(HashCode.Combine(seed, Environment.CurrentManagedThreadId)));
@@ -517,11 +596,103 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             }
         }
 
+        public IReceptionProbe Tune(DeviceSettings device, TuneParams tune, CancellationToken cancellationToken)
+        {
+            string deviceId = device.Id!;
+
+            BeginOpening(deviceId, "measured");
+
+            try
+            {
+                for (int waited = random.Value!.Next(0, 6); waited > 0 && !cancellationToken.IsCancellationRequested; waited--)
+                {
+                    Thread.Sleep(1);
+                }
+
+                if (random.Value!.Next(15) is 0)
+                {
+                    throw new DvbDeviceException($"{deviceId} did not lock while it was measured", TuningFailure.NoLock);
+                }
+
+                if (random.Value!.Next(150) is 0)
+                {
+                    throw new IOException($"{deviceId} stopped answering while it was measured.");
+                }
+            }
+            catch
+            {
+                EndOpening(deviceId, null);
+
+                throw;
+            }
+
+            lock (gate)
+            {
+                opening[deviceId] = opening.GetValueOrDefault(deviceId) - 1;
+                probing[deviceId] = probing.GetValueOrDefault(deviceId) + 1;
+            }
+
+            return new Probe(this, deviceId);
+        }
+
+        public int ProbesOn(string deviceId)
+        {
+            lock (gate)
+            {
+                return probing.GetValueOrDefault(deviceId);
+            }
+        }
+
+        public IReadOnlyList<string> ProbesStillOpen()
+        {
+            lock (gate)
+            {
+                return [.. probing.Where(tuner => tuner.Value > 0).Select(tuner => tuner.Key)];
+            }
+        }
+
+        private void ProbeClosed(string deviceId)
+        {
+            lock (gate)
+            {
+                probing[deviceId] = probing.GetValueOrDefault(deviceId) - 1;
+            }
+        }
+
+        private sealed class Probe(DevicesUnderTest owner, string deviceId) : IReceptionProbe
+        {
+            private static readonly FakeTunerDevice Signal = new(20);
+
+            private int closed;
+
+            public SignalQuality Measure()
+            {
+                if (Volatile.Read(ref closed) is 1)
+                {
+                    owner.Report($"{deviceId} was read for a measurement after it was closed");
+                }
+
+                return Signal.Measure();
+            }
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref closed, 1) is 1)
+                {
+                    owner.Report($"the measurement of {deviceId} was closed twice");
+
+                    return;
+                }
+
+                owner.ProbeClosed(deviceId);
+            }
+        }
+
         private void BeginOpening(string deviceId, string how)
         {
             lock (gate)
             {
-                int handles = open.GetValueOrDefault(deviceId);
+                int handles = open.GetValueOrDefault(deviceId) + probing.GetValueOrDefault(deviceId);
                 int others = opening.GetValueOrDefault(deviceId);
 
                 if (handles > 0 || others > 0)
@@ -667,9 +838,28 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             span == Timeout.InfiniteTimeSpan || span <= TimeSpan.Zero ? span : span / factor;
     }
 
+    private sealed class MeasurerLog : ILogger<IdleReceptionMeasurer>
+    {
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => false;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter
+        )
+        { }
+    }
+
     private sealed class RefusalLog : ILogger<TunerSessionManager>
     {
         public ConcurrentQueue<string> Refusals { get; } = new();
+
+        public ConcurrentQueue<string> RefusedWhileMeasured { get; } = new();
 
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
@@ -689,6 +879,11 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             if (message.Contains("cannot take", StringComparison.Ordinal))
             {
                 Refusals.Enqueue(message);
+            }
+
+            if (message.Contains(OnlyBeingMeasured, StringComparison.Ordinal))
+            {
+                RefusedWhileMeasured.Enqueue(message);
             }
         }
     }

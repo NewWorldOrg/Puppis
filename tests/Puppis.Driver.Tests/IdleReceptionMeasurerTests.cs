@@ -464,8 +464,38 @@ public sealed class IdleReceptionMeasurerTests
     public void MeasuringIsOnUnlessTheConfigurationSaysOtherwise()
     {
         Assert.True(new TunerSettings(TunerBackend.Fake).MeasureWhileIdle);
-        Assert.True(DriverConfigurationReader.Parse("""{"tuner":{"backend":"fake"}}""")!.Tuner!.MeasureWhileIdle);
-        Assert.False(DriverConfigurationReader.Parse("""{"tuner":{"backend":"fake","measureWhileIdle":false}}""")!.Tuner!.MeasureWhileIdle);
+        Assert.True(Read(""" "backend": "fake" """).Tuner!.MeasureWhileIdle);
+        Assert.True(Read(""" "backend": "fake", "measureWhileIdle": true """).Tuner!.MeasureWhileIdle);
+        Assert.False(Read(""" "backend": "fake", "measureWhileIdle": false """).Tuner!.MeasureWhileIdle);
+    }
+
+    [Fact]
+    public void TheSettingSurvivesTheDriverWritingItsConfigurationBack()
+    {
+        DriverConfiguration turnedOff = Read(""" "backend": "fake", "measureWhileIdle": false """);
+
+        DriverConfigurationResult back = DriverConfigurationReader.Read(DriverConfigurationWriter.Serialize(turnedOff));
+
+        Assert.True(back.TryGetConfiguration(out DriverConfiguration again, out IReadOnlyList<string> problems), string.Join(" ", problems));
+        Assert.False(again.Tuner!.MeasureWhileIdle);
+    }
+
+    private static DriverConfiguration Read(string tuner)
+    {
+        DriverConfigurationResult read = DriverConfigurationReader.Read(
+            $$"""
+            {
+              "socketPath": "/run/carina/driver.sock",
+              "outputRoots": [{ "name": "primary", "path": "/srv/recordings" }],
+              "tuner": { {{tuner}} },
+              "devices": [{ "id": "fake-terrestrial", "kind": "terrestrial" }]
+            }
+            """
+        );
+
+        Assert.True(read.TryGetConfiguration(out DriverConfiguration configuration, out IReadOnlyList<string> problems), string.Join(" ", problems));
+
+        return configuration;
     }
 
     [Fact]

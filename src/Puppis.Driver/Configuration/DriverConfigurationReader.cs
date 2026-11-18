@@ -235,6 +235,7 @@ public static class DriverConfigurationReader
         "backend",
         "signalQualitySeconds",
         "demuxBufferBytes",
+        "measureWhileIdle",
     ];
 
     private static readonly string[] KnownOutputRootKeys = ["name", "path"];
