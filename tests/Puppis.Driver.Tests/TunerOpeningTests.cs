@@ -340,6 +340,80 @@ public sealed class TunerOpeningTests : IDisposable
         factory.Open();
     }
 
+    private TunerSessionManager Stuck(GatedFactory factory, TimeSpan handOver, params string[] devices) =>
+        new(
+            Configuration(devices),
+            factory,
+            TimeProvider.System,
+            NullLogger<TunerSessionManager>.Instance,
+            handOverLimit: handOver,
+            openLimit: TimeSpan.FromMilliseconds(300)
+        );
+
+    private static async Task LeaveAnOpenStuckAsync(TunerSessionManager manager, GatedFactory factory)
+    {
+        using var leaving = new CancellationTokenSource();
+
+        Task<SessionStart> live = manager.BeginAsync(Request("live", SessionPurpose.Live), leaving.Token);
+        factory.AwaitOpening();
+        factory.OpenAtOnce = true;
+        Task<SessionStart> waiting = manager.BeginAsync(Request("rec-1", SessionPurpose.Recording));
+        await leaving.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => live.WaitAsync(Deadlock));
+
+        Assert.Equal(SessionRefusal.DeviceUnavailable, (await waiting.WaitAsync(Deadlock)).Refusal);
+    }
+
+    [Fact]
+    public async Task AnOpenPastItsLimitIsNotTakenOverWhileAnotherTunerIsFree()
+    {
+        var factory = new GatedFactory();
+        TunerSessionManager manager = Stuck(factory, Deadlock, "adapter0", "adapter1");
+
+        await LeaveAnOpenStuckAsync(manager, factory);
+
+        TunerSession served = await StartedAsync(manager.BeginAsync(Request("rec-2", SessionPurpose.Recording)));
+
+        Assert.Equal("adapter1", served.DeviceId);
+
+        factory.Open();
+        await StopAsync(served);
+    }
+
+    [Fact]
+    public async Task WithOneTunerARequestWaitsForTheStuckOpenAndIsServedOnceItHasReturned()
+    {
+        var factory = new GatedFactory();
+        TunerSessionManager manager = Stuck(factory, TimeSpan.FromMilliseconds(500), "adapter0");
+
+        await LeaveAnOpenStuckAsync(manager, factory);
+
+        SessionStart refused = await manager.BeginAsync(Request("rec-2", SessionPurpose.Recording)).WaitAsync(Deadlock);
+
+        Assert.Equal(SessionRefusal.DeviceBusy, refused.Refusal);
+
+        factory.Open();
+        await WaitUntilAsync(() => manager.Allocations()[0].State is TunerAllocationState.Free);
+
+        TunerSession served = await StartedAsync(manager.BeginAsync(Request("rec-3", SessionPurpose.Recording)));
+
+        Assert.Equal("adapter0", served.DeviceId);
+        Assert.Equal(1, factory.MostOpenAtOnce);
+
+        await StopAsync(served);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        DateTime giveUp = DateTime.UtcNow + Deadlock;
+
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < giveUp, "The tuner never settled.");
+            await Task.Delay(10);
+        }
+    }
+
     [Fact]
     public async Task AFreeTunerWithNothingUnderWayIsPreferredToOneStillClosingItsDevice()
     {
@@ -379,6 +453,40 @@ public sealed class TunerOpeningTests : IDisposable
 
         Assert.True(device.Disposed);
         Assert.Equal(TunerAllocationState.Free, pool.StateOf("adapter0"));
+    }
+
+    [Fact]
+    public void AStepThatFailsWhileATunerIsHandedOutDoesNotLoseTheGrant()
+    {
+        var pool = new TunerPool(
+            TimeProvider.System,
+            TimeSpan.FromMinutes(5),
+            [("adapter0", true)],
+            _ => throw new InvalidOperationException("the kept device would not let go")
+        );
+        string[] one = ["adapter0"];
+        PoolGrant first = pool.Acquire(new PoolRequest(SessionId.Parse("live"), SessionPurpose.Live, Here, null, one));
+        pool.Tuned(first.DeviceId, first.Holder, new ThrowingOnClose());
+        pool.Ready(first.DeviceId, first.Holder);
+        pool.Leave(first.Holder);
+
+        PoolGrant second = pool.Acquire(new PoolRequest(SessionId.Parse("next"), SessionPurpose.Live, Elsewhere, null, one));
+
+        Assert.Equal(PoolVerdict.Granted, second.Verdict);
+        Assert.Equal([SessionId.Parse("next")], pool.SinksOn("adapter0"));
+
+        pool.Leave(second.Holder);
+
+        Assert.Empty(pool.SinksOn("adapter0"));
+    }
+
+    private sealed class ThrowingOnClose : ITunerDevice
+    {
+        public long Overflows => 0;
+
+        public byte[] Read(int count, CancellationToken cancellationToken) => new byte[count];
+
+        public void Dispose() => throw new InvalidOperationException("the device would not close");
     }
 
     [Fact]
@@ -577,9 +685,10 @@ public sealed class TunerOpeningTests : IDisposable
 
             Interlocked.Increment(ref opens);
             LastHold = hold;
+            bool waits = !OpenAtOnce;
             opening.Release();
 
-            if (!OpenAtOnce)
+            if (waits)
             {
                 Assert.True(opened.Wait(Deadlock));
             }

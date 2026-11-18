@@ -27,6 +27,8 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
     private static readonly TimeSpan Unseated = TimeSpan.FromSeconds(1);
 
+    private static readonly TimeSpan StuckOpen = TimeSpan.FromMilliseconds(150);
+
     private static readonly string[] Tuners = ["t0", "t1", "t2", "t3"];
 
     private static readonly int[] Channels = [20, 21, 22];
@@ -477,7 +479,7 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                     release.Wait(Forever);
                 }
 
-                Thread.Sleep(random.Value!.Next(0, 6));
+                Thread.Sleep(random.Value!.Next(80) is 0 ? StuckOpen : TimeSpan.FromMilliseconds(random.Value!.Next(0, 6)));
 
                 if (random.Value!.Next(60) is 0)
                 {

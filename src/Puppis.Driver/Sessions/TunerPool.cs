@@ -137,6 +137,8 @@ public sealed class TunerPool(
 
         public bool CloseOnLanding { get; set; }
 
+        public bool Expired { get; set; }
+
         public TaskCompletionSource Ready { get; set; } = Unset();
 
         public TaskCompletionSource Stirred { get; set; } = Unset();
@@ -225,7 +227,7 @@ public sealed class TunerPool(
         {
             if (LookAt(deviceId) is { } present)
             {
-                Looked(deviceId, present);
+                Looked(deviceId, present, rethrow: false);
             }
         }
 
@@ -280,7 +282,7 @@ public sealed class TunerPool(
             }
         }
 
-        Run(after);
+        Run(after, rethrow: false);
 
         return grant;
     }
@@ -383,6 +385,11 @@ public sealed class TunerPool(
 
             if (occupancy.Sinks.Count is 0)
             {
+                if (occupancy.Expired)
+                {
+                    continue;
+                }
+
                 return Adopt(entry, occupancy, request);
             }
 
@@ -881,6 +888,7 @@ public sealed class TunerPool(
 
             if (ReferenceEquals(entry.Current, occupancy) && entry.State is TunerAllocationState.Tuning && occupancy.InFlight)
             {
+                occupancy.Expired = true;
                 Evict(occupancy, refusal);
                 AfterSomeoneLeft(entry, occupancy, after, closing: true);
             }
@@ -1542,7 +1550,9 @@ public sealed class TunerPool(
         LetGoOf(entry, after);
     }
 
-    public void Looked(string deviceId, bool present)
+    public void Looked(string deviceId, bool present) => Looked(deviceId, present, rethrow: true);
+
+    private void Looked(string deviceId, bool present, bool rethrow)
     {
         List<Action> after = [];
 
@@ -1556,7 +1566,7 @@ public sealed class TunerPool(
             }
         }
 
-        Run(after);
+        Run(after, rethrow);
     }
 
     private void See(Entry entry, bool present, List<Action> after)
@@ -1839,7 +1849,7 @@ public sealed class TunerPool(
         return false;
     }
 
-    private void Run(List<Action> after)
+    private void Run(List<Action> after, bool rethrow = true)
     {
         Report();
 
@@ -1858,7 +1868,10 @@ public sealed class TunerPool(
             }
         }
 
-        first?.Throw();
+        if (rethrow)
+        {
+            first?.Throw();
+        }
     }
 
     private void Report()
