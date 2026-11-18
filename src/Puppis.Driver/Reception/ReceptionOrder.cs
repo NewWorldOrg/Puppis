@@ -6,8 +6,8 @@ public static class ReceptionOrder
 
     public static IReadOnlyList<IdleCandidate> Arrange(IReadOnlyList<IdleCandidate> inConfigurationOrder) =>
         [
-            .. BestFirst(inConfigurationOrder.Where(candidate => candidate.Still)),
-            .. BestFirst(inConfigurationOrder.Where(candidate => !candidate.Still)),
+            .. BestFirst(inConfigurationOrder.Where(candidate => !candidate.MayBeHung)),
+            .. BestFirst(inConfigurationOrder.Where(candidate => candidate.MayBeHung)),
         ];
 
     private static List<IdleCandidate> BestFirst(IEnumerable<IdleCandidate> candidates)
@@ -30,9 +30,11 @@ public static class ReceptionOrder
     {
         IdleCandidate[] clearest = WithinReachOfTheBestCarrierToNoise(WithTheHighestLockRatio(candidates));
 
-        return Array.Find(clearest, candidate => candidate.Ready)
-            ?? Array.Find(clearest, candidate => !candidate.HeldForAReturn)
-            ?? clearest[0];
+        return clearest
+            .OrderBy(candidate => candidate.Still ? 0 : 1)
+            .ThenBy(candidate => candidate.Ready ? 0 : 1)
+            .ThenBy(candidate => candidate.HeldForAReturn ? 1 : 0)
+            .First();
     }
 
     private static IdleCandidate[] WithTheHighestLockRatio(List<IdleCandidate> candidates)

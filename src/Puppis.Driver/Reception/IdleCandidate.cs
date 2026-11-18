@@ -5,5 +5,6 @@ public sealed record IdleCandidate(
     bool Still,
     bool Ready,
     ReceptionStanding Standing,
-    bool HeldForAReturn = false
+    bool HeldForAReturn = false,
+    bool MayBeHung = false
 );

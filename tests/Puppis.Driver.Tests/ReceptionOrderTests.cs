@@ -26,8 +26,17 @@ public sealed class ReceptionOrderTests
             { "what is left is the order of the configuration", "a 5/5 20 free still; b 5/5 20 free still; c 5/5 20 free still", "a b c" },
             { "two ready tuners keep the order of the configuration", "a - - free still; b - - ready still; c - - ready still", "b c a" },
             { "a tuner with a poor record is used when it is the only one", "a 0/20 - free still", "a" },
-            { "a tuner with an operation in flight comes after every one without", "a 20/20 30 ready busy; b 1/20 10 free still", "b a" },
-            { "tuners with an operation in flight are ordered among themselves", "a 10/20 - free busy; b 20/20 - free busy; c 0/20 - free still", "c b a" },
+            { "a higher lock ratio comes first even with an operation in flight", "a 20/20 30 free busy; b 1/20 10 free still", "a b" },
+            { "a clearer signal comes first even with an operation in flight", "a 20/20 35.0 free busy; b 20/20 18.0 free still", "a b" },
+            { "one with nothing in flight comes first when they receive the same", "a 20/20 20.0 free busy; b 20/20 20.5 free still", "b a" },
+            { "nothing in flight counts before being kept open", "a - - ready busy; b - - free still", "b a" },
+            { "nothing in flight counts before the order of the configuration", "a 5/5 - free busy; b 5/5 - free busy; c 5/5 - free still", "c a b" },
+            { "one whose operation may be hung comes after every other however well it receives", "a 20/20 35.0 free hung; b 1/20 10.0 free still", "b a" },
+            { "one whose operation may be hung comes after a poorer one with a short operation in flight", "a 20/20 35.0 free hung; b 10/20 - free busy", "b a" },
+            { "three candidates: the hung one last and the clearer of the others first", "a 20/20 35.0 free hung; b 20/20 30.0 free busy; c 20/20 18.0 free still", "b c a" },
+            { "three candidates: the lower ratio last and nothing in flight first among the equal", "a 19/20 - free still; b 20/20 20.0 free busy; c 20/20 20.0 free still", "c b a" },
+            { "three candidates: kept open and still before busy before hung", "a 20/20 20.0 free busy; b 20/20 21.0 free hung; c 20/20 19.5 ready still", "c a b" },
+            { "those that may be hung are ordered among themselves", "a 10/20 - free hung; b 20/20 - free hung; c 0/20 - free still", "c b a" },
             { "one without a carrier to noise stays beside the best", "a 20/20 20.0 free still; b 20/20 - ready still; c 20/20 23.0 free still", "b c a" },
         };
 
@@ -60,7 +69,8 @@ public sealed class ReceptionOrderTests
             parts[4] is "still",
             parts[3] is "ready",
             Standing(parts[1], parts[2]),
-            parts[3] is "held"
+            parts[3] is "held",
+            parts[4] is "hung"
         );
     }
 
