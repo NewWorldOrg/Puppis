@@ -3,6 +3,7 @@ using System.Runtime.ExceptionServices;
 using Microsoft.Extensions.Logging;
 
 using Puppis.Contracts;
+using Puppis.Driver.Reception;
 using Puppis.Driver.Tuning;
 
 namespace Puppis.Driver.Sessions;
@@ -102,7 +103,9 @@ public sealed class TunerPool(
     IEnumerable<(string DeviceId, bool Enabled)>? declared = null,
     Action<string>? letGo = null,
     ILogger? logger = null,
-    Func<string, bool?>? look = null
+    Func<string, bool?>? look = null,
+    Func<string, TuningKey, ReceptionStanding>? reception = null,
+    Func<string, bool>? keptOpen = null
 ) : IDisposable
 {
     public static readonly TimeSpan DefaultGrace = TimeSpan.FromSeconds(5);
@@ -266,8 +269,7 @@ public sealed class TunerPool(
             grant =
                 Ineligible(request, mayLookAgain)
                 ?? RideAlong(request, after)
-                ?? TakeAFreeTuner(request)
-                ?? TakeATunerNobodyIsOn(request, after);
+                ?? TakeAnIdleTuner(request, after);
 
             if (grant is null && mayLookAgain)
             {
@@ -502,67 +504,108 @@ public sealed class TunerPool(
         );
     }
 
-    private PoolGrant? TakeAFreeTuner(PoolRequest request)
+    private PoolGrant? TakeAnIdleTuner(PoolRequest request, List<Action> after)
     {
-        foreach (Entry entry in Usable(request).OrderBy(entry => IsStill(entry) ? 0 : 1))
+        IdleCandidate[] idle =
+        [
+            .. Usable(request)
+                .Where(entry => IsIdleFor(entry, request))
+                .Select(entry => new IdleCandidate(
+                    entry.DeviceId,
+                    IsStill(entry),
+                    entry.State is not TunerAllocationState.Ready && keptOpen?.Invoke(entry.DeviceId) is true,
+                    reception?.Invoke(entry.DeviceId, request.Tuning) ?? ReceptionStanding.Unmeasured,
+                    entry.State is TunerAllocationState.Ready
+                )),
+        ];
+
+        foreach (IdleCandidate candidate in ReceptionOrder.Arrange(idle))
         {
-            if (entry.State is not TunerAllocationState.Free || HoldsBack(entry, request))
+            Entry entry = entries[candidate.DeviceId];
+            PoolGrant? grant = entry.State is TunerAllocationState.Ready
+                ? TakeATunerNobodyIsOn(entry, request, after)
+                : TakeAFreeTuner(entry, request);
+
+            if (grant is null)
             {
                 continue;
             }
 
-            if (!Move(entry, TunerAllocationEvent.Claim))
-            {
-                continue;
-            }
+            SayWhichWasChosen(candidate, idle, request, after);
 
-            entry.Current = new Occupancy(request.Tuning, request.SessionId);
-            Attach(entry, entry.Current, request);
-
-            return new PoolGrant(
-                PoolVerdict.Granted,
-                entry.DeviceId,
-                request.SessionId,
-                NeedsTuning: true,
-                [],
-                $"The tuner '{entry.DeviceId}' is free and goes to '{request.SessionId}' for {request.Tuning}.",
-                Clearing: ClearedOnce(entry.Quiet)
-            );
+            return grant;
         }
 
         return null;
     }
 
-    private PoolGrant? TakeATunerNobodyIsOn(PoolRequest request, List<Action> after)
-    {
-        foreach (Entry entry in Usable(request).OrderBy(entry => IsStill(entry) ? 0 : 1))
+    private static bool IsIdleFor(Entry entry, PoolRequest request) =>
+        entry.State switch
         {
-            if (entry.State is not TunerAllocationState.Ready || entry.Current is not { } held)
-            {
-                continue;
-            }
+            TunerAllocationState.Free => !HoldsBack(entry, request),
+            TunerAllocationState.Ready => entry.Current is not null,
+            _ => false,
+        };
 
-            if (!Move(entry, TunerAllocationEvent.Claim))
-            {
-                continue;
-            }
-
-            Drop(entry, held.Device, after);
-            entry.Current = new Occupancy(request.Tuning, request.SessionId);
-            Attach(entry, entry.Current, request);
-
-            return new PoolGrant(
-                PoolVerdict.Granted,
-                entry.DeviceId,
-                request.SessionId,
-                NeedsTuning: true,
-                [],
-                $"The tuner '{entry.DeviceId}' was being held for whoever came back to {held.Tuning}; nobody did, so '{request.SessionId}' takes it for {request.Tuning}.",
-                Clearing: ClearedOnce(entry.Quiet)
-            );
+    private void SayWhichWasChosen(IdleCandidate chosen, IdleCandidate[] among, PoolRequest request, List<Action> after)
+    {
+        if (among.Length < 2 || logger is null)
+        {
+            return;
         }
 
-        return null;
+        string candidates = string.Join("; ", among.Select(candidate => $"'{candidate.DeviceId}' {candidate.Standing}"));
+
+        after.Add(() => logger.LogInformation(
+            "The tuner {DeviceId} was chosen for {Channel} among {Count} that nobody was on: {Candidates}.",
+            chosen.DeviceId,
+            request.Tuning,
+            among.Length,
+            candidates
+        ));
+    }
+
+    private PoolGrant? TakeAFreeTuner(Entry entry, PoolRequest request)
+    {
+        if (!Move(entry, TunerAllocationEvent.Claim))
+        {
+            return null;
+        }
+
+        entry.Current = new Occupancy(request.Tuning, request.SessionId);
+        Attach(entry, entry.Current, request);
+
+        return new PoolGrant(
+            PoolVerdict.Granted,
+            entry.DeviceId,
+            request.SessionId,
+            NeedsTuning: true,
+            [],
+            $"The tuner '{entry.DeviceId}' is free and goes to '{request.SessionId}' for {request.Tuning}.",
+            Clearing: ClearedOnce(entry.Quiet)
+        );
+    }
+
+    private PoolGrant? TakeATunerNobodyIsOn(Entry entry, PoolRequest request, List<Action> after)
+    {
+        if (entry.Current is not { } held || !Move(entry, TunerAllocationEvent.Claim))
+        {
+            return null;
+        }
+
+        Drop(entry, held.Device, after);
+        entry.Current = new Occupancy(request.Tuning, request.SessionId);
+        Attach(entry, entry.Current, request);
+
+        return new PoolGrant(
+            PoolVerdict.Granted,
+            entry.DeviceId,
+            request.SessionId,
+            NeedsTuning: true,
+            [],
+            $"The tuner '{entry.DeviceId}' was being held for whoever came back to {held.Tuning}; nobody did, so '{request.SessionId}' takes it for {request.Tuning}.",
+            Clearing: ClearedOnce(entry.Quiet)
+        );
     }
 
     private PoolGrant? TakeATunerFromSomethingLessImportant(PoolRequest request, List<Action> after)
