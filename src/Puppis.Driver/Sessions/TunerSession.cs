@@ -325,7 +325,7 @@ public sealed class TunerSession : IDisposable
         }
     }
 
-    public bool ReadFromInstead(
+    public async Task<bool> ReadFromInsteadAsync(
         ITunerDevice replacement,
         TunerSession? host,
         SessionSubscription? takenSeat,
@@ -337,7 +337,7 @@ public sealed class TunerSession : IDisposable
             return false;
         }
 
-        if (Answered(asked.TakenUp, within) || !asked.TryGiveUp())
+        if (await AnsweredAsync(asked.TakenUp, within) || !asked.TryGiveUp())
         {
             return true;
         }
@@ -391,11 +391,11 @@ public sealed class TunerSession : IDisposable
         }
     }
 
-    private bool Answered(Task takenUp, TimeSpan within)
+    private async Task<bool> AnsweredAsync(Task takenUp, TimeSpan within)
     {
         try
         {
-            takenUp.WaitAsync(within, timeProvider).GetAwaiter().GetResult();
+            await takenUp.WaitAsync(within, timeProvider);
 
             return true;
         }

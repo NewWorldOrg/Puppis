@@ -274,7 +274,7 @@ public static class DriverApi
             return;
         }
 
-        SessionStart start = manager.Begin(request);
+        SessionStart start = await manager.BeginAsync(request);
 
         if (!start.TryGetSession(out TunerSession? session))
         {

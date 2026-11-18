@@ -213,10 +213,14 @@ public static class DriverHost
                 configuration,
                 provider.GetRequiredService<TunerHardwareBook>(),
                 TunerPresences.For(configuration),
-                () => manager.Sessions.Select(session => session.DeviceId),
+                manager.OccupiedDevices,
                 provider.GetRequiredService<TimeProvider>(),
                 provider.GetRequiredService<ILogger<TunerPatrol>>(),
-                provider.GetRequiredService<TunerDeviceFactory>().Looked
+                (device, present) =>
+                {
+                    manager.Looked(device, present);
+                    provider.GetRequiredService<TunerDeviceFactory>().Looked(device, present);
+                }
             );
         });
         builder.Services.AddHostedService<SocketPermissionGuard>();

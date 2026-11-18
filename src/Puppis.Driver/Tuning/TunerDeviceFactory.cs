@@ -39,7 +39,9 @@ public interface ITunerDeviceCheck
 
 public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck, IDisposable
 {
-    private readonly CechZd1Standby standby = new();
+    private readonly Dictionary<string, CechZd1Standby> standbys = new(StringComparer.Ordinal);
+    private readonly Lock standing = new();
+    private bool disposed;
     private readonly Dt295Keeper keeper = new();
     private readonly Lock opening = new();
     private readonly TunerBackend backend;
@@ -175,15 +177,23 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         UsbTunerDetector.NodeFor(usbHost.Value, device.Id, device.DevicePath)
         ?? throw DvbFailure.Refused($"devices['{device.Id}']: a usb device needs a devicePath.");
 
-    /// <summary>
-    /// Closes the PIX-DT295 kept open for <paramref name="device"/>, giving it back as it was found, when one is.
-    /// </summary>
     public void LetGo(DeviceSettings device)
     {
-        if (device.Id is { } deviceId)
+        if (device.Id is not { } deviceId)
         {
-            keeper.LetGo(deviceId);
+            return;
         }
+
+        keeper.LetGo(deviceId);
+
+        CechZd1Standby? standby;
+
+        lock (standing)
+        {
+            standbys.TryGetValue(deviceId, out standby);
+        }
+
+        standby?.Release();
     }
 
     /// <summary>
@@ -269,7 +279,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             return;
         }
 
-        CechZd1TunerDevice.OpenAndClose(usbHost.Value, path, standby);
+        CechZd1TunerDevice.OpenAndClose(usbHost.Value, path, StandbyFor(device, path));
     }
 
     private ITunerDevice OpenUsb(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold)
@@ -407,16 +417,53 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                     pacing,
                     settings.BytePatience,
                     logger,
-                    standby
+                    StandbyFor(device, path)
                 ),
             hold,
             Shared
         );
     }
 
+    private CechZd1Standby StandbyFor(DeviceSettings device, string path)
+    {
+        string deviceId = device.Id ?? path;
+
+        lock (standing)
+        {
+            if (!standbys.TryGetValue(deviceId, out CechZd1Standby? standby))
+            {
+                standby = new CechZd1Standby();
+
+                if (disposed)
+                {
+                    standby.Dispose();
+                }
+                else
+                {
+                    standbys[deviceId] = standby;
+                }
+            }
+
+            return standby;
+        }
+    }
+
     public void Dispose()
     {
-        standby.Dispose();
+        CechZd1Standby[] closing;
+
+        lock (standing)
+        {
+            disposed = true;
+            closing = [.. standbys.Values];
+            standbys.Clear();
+        }
+
+        foreach (CechZd1Standby standby in closing)
+        {
+            standby.Dispose();
+        }
+
         keeper.Dispose();
     }
 
