@@ -161,10 +161,15 @@ public sealed class TunerTransitionTests
         [(State.Tuning, On.Emptied)] = () => Then(Tuning(), table =>
         {
             table.Tune("holder");
+            table.Leave("rider");
             table.Leave("holder");
         }),
         [(State.InUse, On.Emptied)] = () => Then(InUse(), table => table.Leave("holder")),
-        [(State.Tuning, On.EmptiedClosed)] = () => Then(Tuning(), table => table.Leave("holder")),
+        [(State.Tuning, On.EmptiedClosed)] = () => Then(Tuning(), table =>
+        {
+            table.Leave("rider");
+            table.Leave("holder");
+        }),
         [(State.InUse, On.EmptiedClosed)] = () => Then(Tuning(), table =>
         {
             table.Settle("holder");
@@ -173,7 +178,14 @@ public sealed class TunerTransitionTests
         [(State.Tuning, On.EmptiedDisabled)] = () => Then(Tuning(), table =>
         {
             table.Pool.Turn(Tuner, false);
+            table.Leave("rider");
             table.Leave("holder");
+        }),
+        [(State.Tuning, On.Promoted)] = () => Then(Tuning(), table => table.Leave("holder")),
+        [(State.HandingOver, On.Promoted)] = () => Then(HandingOver(), table =>
+        {
+            table.Ask("more", SessionPurpose.Survey, There);
+            table.Leave("claimant");
         }),
         [(State.InUse, On.EmptiedDisabled)] = () => Then(InUse(), table =>
         {

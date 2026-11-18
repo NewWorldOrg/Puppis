@@ -19,6 +19,7 @@ public enum TunerAllocationEvent
     Claim,
     Ride,
     TakeSeat,
+    Promoted,
     SeatSettled,
     PassOn,
     TakeOver,
@@ -69,6 +70,9 @@ public static class TunerTransitions
         (Tuning, TunerAllocationEvent.TakeSeat, Tuning),
         (InUse, TunerAllocationEvent.TakeSeat, InUse),
         (HandingOver, TunerAllocationEvent.TakeSeat, HandingOver),
+
+        (Tuning, TunerAllocationEvent.Promoted, Tuning),
+        (HandingOver, TunerAllocationEvent.Promoted, HandingOver),
 
         (Tuning, TunerAllocationEvent.SeatSettled, Tuning),
         (InUse, TunerAllocationEvent.SeatSettled, InUse),

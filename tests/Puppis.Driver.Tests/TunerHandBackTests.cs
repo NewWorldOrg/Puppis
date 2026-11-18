@@ -267,13 +267,16 @@ public sealed class TunerHandBackTests : IDisposable
     {
         var pool = new TunerPool(TimeProvider.System, declared: [("adapter0", true)]);
         PoolGrant opening = pool.Acquire(new PoolRequest(SessionId.Parse("live"), SessionPurpose.Live, Here, null, ["adapter0"]));
+        OpenTicket ticket = pool.StartOpening(opening.DeviceId, opening.Holder)!;
 
         pool.Fault("adapter0", new TunerFault("broke", null, DeviceFaultKind.Failed));
 
         Assert.False(pool.IsQuiet("adapter0"));
 
-        var late = new FakeTunerDevice(55);
-        Assert.False(pool.Tuned(opening.DeviceId, opening.Holder, late));
+        var late = new ClosableTunerDevice();
+        pool.Opened(ticket, late);
+
+        Assert.True(late.Disposed);
         Assert.True(pool.IsQuiet("adapter0"));
     }
 
@@ -312,11 +315,11 @@ public sealed class TunerHandBackTests : IDisposable
         (TunerPool pool, _) = SeatTakenDuringAHandOver();
         Task<TunerReadiness> waiting = pool.AwaitReadyAsync("adapter0", Deadlock, SessionId.Parse("rec"));
 
-        pool.GiveBack("adapter0", SessionId.Parse("live"), "the scan did not let go");
+        pool.GiveBack("adapter0", SessionId.Parse("live"), new TunerRefusal(SessionRefusal.DeviceBusy, "the scan did not let go"));
 
         TunerReadiness heard = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(heard.Ready);
-        Assert.Equal("the scan did not let go", heard.Refusal);
+        Assert.Equal(new TunerRefusal(SessionRefusal.DeviceBusy, "the scan did not let go"), heard.Refusal);
 
         TunerAllocationView after = Assert.Single(pool.Snapshot());
         Assert.Equal(TunerAllocationState.InUse, after.State);
@@ -324,7 +327,7 @@ public sealed class TunerHandBackTests : IDisposable
     }
 
     [Fact]
-    public async Task WhenTheOneOpeningATunerGivesUpTheRecordingThatTookItsSeatStopsWaiting()
+    public async Task WhenTheOneOpeningATunerGivesUpTheRecordingThatTookItsSeatOpensItInstead()
     {
         var pool = new TunerPool(TimeProvider.System, declared: [("adapter0", true)]);
         string[] one = ["adapter0"];
@@ -336,9 +339,9 @@ public sealed class TunerHandBackTests : IDisposable
         pool.Abandon("adapter0", SessionId.Parse("live"));
 
         TunerReadiness heard = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.False(heard.Ready);
-        Assert.NotNull(heard.Refusal);
-        Assert.Equal(TunerAllocationState.Free, Assert.Single(pool.Snapshot()).State);
+        Assert.True(heard.Leads);
+        Assert.Equal(TunerAllocationState.Tuning, Assert.Single(pool.Snapshot()).State);
+        Assert.Equal([SessionId.Parse("rec")], Assert.Single(pool.Snapshot()).Sinks);
     }
 
     [Fact]
