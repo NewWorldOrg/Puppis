@@ -36,9 +36,7 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
     private static readonly int[] ChannelsToMeasure = [.. Enumerable.Range(13, 40)];
 
-    private const string OnlyBeingMeasured = "only being measured";
-
-    private const string MeasurementDidNotStop = "the measurement under way on it had not stopped";
+    private const string CausedByAMeasurement = TunerPool.MeasurementUnderWay;
 
     private static readonly SessionPurpose[] Purposes =
     [
@@ -93,12 +91,95 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             output.WriteLine(
                 $"seed {seed}: {run.LeftMidOpen} requests left while their tuner was being opened, "
                 + $"{run.MeasurementsInterrupted} measurements were interrupted and {run.MeasurementsFinished} ran to their end, "
-                + $"{run.GaveUpOnAMeasurement} requests gave up on a measurement that had not stopped in time"
+                + $"{run.Refusals.Count} requests were refused ({run.RefusalsByKind}) and {run.RefusedBecauseOfAMeasurement.Count} of them because of a measurement"
             );
         }
         catch (Exception failure) when (failure is not SeededFailure)
         {
             throw new SeededFailure(seed, failure.Message, failure);
+        }
+    }
+
+    private static IEnumerable<string> WhatAMeasurementCaused(IEnumerable<string> refusalsAndErrors) =>
+        refusalsAndErrors.Where(said => said.Contains(CausedByAMeasurement, StringComparison.Ordinal)).Distinct(StringComparer.Ordinal);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ARefusalCausedByAMeasurementIsOneTheRunWouldFailOn(bool namesTheTuner)
+    {
+        var devices = new StuckWhileMeasured();
+        var log = new RefusalLog();
+        var book = new ReceptionBook();
+        var configuration = new DriverConfiguration(
+            "/run/carina/driver.sock",
+            [new OutputRootSettings("primary", Path.GetTempPath())],
+            6,
+            new TunerSettings(TunerBackend.Fake),
+            [new DeviceSettings("t0", DeviceKind.Terrestrial)]
+        );
+        var manager = new TunerSessionManager(configuration, devices, TimeProvider.System, log, openLimit: TimeSpan.FromMilliseconds(100), reception: book);
+        var measurer = new IdleReceptionMeasurer(
+            configuration,
+            manager,
+            book,
+            devices,
+            TimeProvider.System,
+            new MeasurerLog(),
+            restBeforeMeasuring: TimeSpan.Zero
+        );
+        book.Know(new TuningKey(TunerKind.Terrestrial, 30, 0));
+        Task measuring = Task.Run(measurer.MeasureIfDue);
+        await Task.Run(() => Assert.True(devices.Measuring.Wait(Forever)));
+
+        SessionStart refused = await manager
+            .BeginAsync(
+                new StartSessionRequest
+                {
+                    SessionId = SessionId.Parse("asked"),
+                    Purpose = SessionPurpose.Live,
+                    Tuning = new TuningRequest(TunerKind.Terrestrial, 20, 50001),
+                    DeviceId = namesTheTuner ? "t0" : null,
+                }
+            )
+            .WaitAsync(Forever);
+        devices.Release.Set();
+        await measuring.WaitAsync(Forever);
+
+        Assert.NotEqual(SessionRefusal.None, refused.Refusal);
+        Assert.NotEmpty(WhatAMeasurementCaused([refused.Detail]));
+        Assert.NotEmpty(WhatAMeasurementCaused(log.Errors));
+    }
+
+    [Fact]
+    public void ARefusalThatNoMeasurementCausedIsNotOneTheRunWouldFailOn()
+    {
+        var pool = new TunerPool(TimeProvider.System, declared: [("t0", true)]);
+        pool.Acquire(new PoolRequest(SessionId.Parse("holder"), SessionPurpose.Recording, new TuningKey(TunerKind.Terrestrial, 20, 0), null, ["t0"]));
+
+        PoolGrant refused = pool.Acquire(
+            new PoolRequest(SessionId.Parse("asked"), SessionPurpose.Live, new TuningKey(TunerKind.Terrestrial, 21, 0), null, ["t0"])
+        );
+
+        Assert.Equal(PoolVerdict.NoDeviceFree, refused.Verdict);
+        Assert.Empty(WhatAMeasurementCaused([refused.Detail]));
+    }
+
+    private sealed class StuckWhileMeasured : ITunerDeviceFactory, IReceptionProbeFactory
+    {
+        public ManualResetEventSlim Measuring { get; } = new(false);
+
+        public ManualResetEventSlim Release { get; } = new(false);
+
+        public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
+            new FakeTunerDevice(tuning.PhysicalChannel);
+
+        public IReceptionProbe Tune(DeviceSettings device, TuneParams tune, CancellationToken cancellationToken)
+        {
+            Measuring.Set();
+            Release.Wait(Forever);
+
+            return new SyntheticReceptionProbe(tune.ToLegacyRequest().PhysicalChannel);
         }
     }
 
@@ -120,6 +201,7 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
         private readonly ConcurrentQueue<string> violations = new();
         private readonly ConcurrentDictionary<string, bool> plugged = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<SessionId, DateTime> unseatedSince = new();
+        private readonly ConcurrentQueue<SessionStart> refusals = new();
         private int begun;
         private int leftMidOpen;
 
@@ -129,7 +211,19 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
         public long MeasurementsFinished => measurer.Finished;
 
-        public int GaveUpOnAMeasurement => log.GaveUpOnAMeasurement.Count;
+        public IReadOnlyCollection<SessionStart> Refusals => refusals;
+
+        public string RefusalsByKind =>
+            string.Join(
+                ", ",
+                refusals
+                    .GroupBy(refusal => refusal.Refusal)
+                    .OrderBy(kind => kind.Key.ToString(), StringComparer.Ordinal)
+                    .Select(kind => $"{kind.Key} {kind.Count()}")
+            );
+
+        public IReadOnlyList<string> RefusedBecauseOfAMeasurement =>
+            [.. WhatAMeasurementCaused(refusals.Select(refusal => refusal.Detail).Concat(log.Errors))];
 
         public Run(int seed, bool sessionsAreShort)
         {
@@ -214,9 +308,9 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                 violations.Enqueue($"tuners still being measured after the measuring was stopped: {string.Join(", ", probing)}");
             }
 
-            foreach (string refused in log.RefusedWhileMeasured.Take(3))
+            foreach (string refused in RefusedBecauseOfAMeasurement.Take(3))
             {
-                violations.Enqueue($"a request was refused while a tuner was only being measured: {refused}");
+                violations.Enqueue($"a request was refused because of a measurement: {refused}");
             }
 
             if (MeasurementsInterrupted + MeasurementsFinished is 0)
@@ -339,7 +433,7 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
             try
             {
-                await starting.WaitAsync(Forever);
+                Remember(await starting.WaitAsync(Forever));
             }
             catch (OperationCanceledException) when (leaving.IsCancellationRequested)
             {
@@ -353,6 +447,14 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             catch (TimeoutException)
             {
                 violations.Enqueue($"the start of {sessionId} waited for longer than {Forever}");
+            }
+        }
+
+        private void Remember(SessionStart start)
+        {
+            if (start.Refusal is not SessionRefusal.None)
+            {
+                refusals.Enqueue(start);
             }
         }
 
@@ -869,9 +971,7 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
     {
         public ConcurrentQueue<string> Refusals { get; } = new();
 
-        public ConcurrentQueue<string> RefusedWhileMeasured { get; } = new();
-
-        public ConcurrentQueue<string> GaveUpOnAMeasurement { get; } = new();
+        public ConcurrentQueue<string> Errors { get; } = new();
 
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
@@ -893,14 +993,9 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                 Refusals.Enqueue(message);
             }
 
-            if (message.Contains(OnlyBeingMeasured, StringComparison.Ordinal))
+            if (logLevel >= LogLevel.Error)
             {
-                RefusedWhileMeasured.Enqueue(message);
-            }
-
-            if (message.Contains(MeasurementDidNotStop, StringComparison.Ordinal))
-            {
-                GaveUpOnAMeasurement.Enqueue(message);
+                Errors.Enqueue(message);
             }
         }
     }
