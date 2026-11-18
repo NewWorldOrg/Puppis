@@ -586,15 +586,23 @@ public sealed class TunerPool(
                 && entry.State is TunerAllocationState.Tuning
                 && entry.Current is { } occupancy
                 && occupancy.Has(tuner)
-                && Move(entry, TunerAllocationEvent.TuneFailed)
+                && Move(entry, entry.Enabled ? TunerAllocationEvent.TuneFailed : TunerAllocationEvent.TuneFailedDisabled)
             )
             {
                 Evict(occupancy);
                 Drop(entry, occupancy.Device, after);
                 entry.Current = null;
-                entry.HeldBack = cause;
-                entry.HeldBackUntil = timeProvider.GetUtcNow() + linger;
-                LetLinger();
+
+                if (entry.Enabled)
+                {
+                    entry.HeldBack = cause;
+                    entry.HeldBackUntil = timeProvider.GetUtcNow() + linger;
+                    LetLinger();
+                }
+                else
+                {
+                    LetGoOf(entry, after);
+                }
             }
             else
             {
@@ -646,6 +654,17 @@ public sealed class TunerPool(
 
     private static TaskCompletionSource Unset() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public bool Confirm(string deviceId, SessionId sessionId)
+    {
+        lock (gate)
+        {
+            return entries.TryGetValue(deviceId, out Entry? entry)
+                && entry.State is TunerAllocationState.Tuning or TunerAllocationState.InUse
+                && entry.Current is { } occupancy
+                && occupancy.Has(sessionId);
+        }
+    }
 
     public ITunerDevice? DeviceOf(string deviceId)
     {
@@ -962,8 +981,11 @@ public sealed class TunerPool(
         lock (gate)
         {
             Entry entry = EntryOf(deviceId);
+            TunerAllocationEvent faulted = entry.IsOccupied && !entry.Enabled
+                ? TunerAllocationEvent.FaultedDisabled
+                : TunerAllocationEvent.Faulted;
 
-            if (Move(entry, TunerAllocationEvent.Faulted))
+            if (Move(entry, faulted))
             {
                 entry.Fault = fault;
                 Clear(entry, after);

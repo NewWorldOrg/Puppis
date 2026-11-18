@@ -182,6 +182,11 @@ public sealed class TunerTransitionTests
         }),
         [(State.Tuning, On.TuneFailed)] = () => Then(Tuning(), table =>
             table.Pool.TuningFailed(Tuner, SessionId.Parse("holder"), new IOException("no lock"))),
+        [(State.Tuning, On.TuneFailedDisabled)] = () => Then(Tuning(), table =>
+        {
+            table.Pool.Turn(Tuner, false);
+            table.Pool.TuningFailed(Tuner, SessionId.Parse("holder"), new IOException("no lock"));
+        }),
         [(State.HandingOver, On.PreviousGone)] = () => Then(HandingOver(), table => table.Leave("holder")),
         [(State.HandingOver, On.GaveBack)] = () => Then(HandingOver(), table =>
             Assert.True(table.Pool.GiveBack(Tuner, SessionId.Parse("claimant")))),
@@ -220,8 +225,17 @@ public sealed class TunerTransitionTests
             table.Pool.Turn(Tuner, false);
             table.Pool.Restore(Tuner);
         }),
+        [(State.Tuning, On.FaultedDisabled)] = () => Then(Tuning(), TurnOffThenFault),
+        [(State.InUse, On.FaultedDisabled)] = () => Then(InUse(), TurnOffThenFault),
+        [(State.HandingOver, On.FaultedDisabled)] = () => Then(HandingOver(), TurnOffThenFault),
         [(State.Disabled, On.Faulted)] = () => Then(Disabled(), table => table.Pool.Fault(Tuner, Broken)),
     };
+
+    private static void TurnOffThenFault(Table table)
+    {
+        table.Pool.Turn(Tuner, false);
+        table.Pool.Fault(Tuner, Broken);
+    }
 
     private static void Toggle(Table table)
     {

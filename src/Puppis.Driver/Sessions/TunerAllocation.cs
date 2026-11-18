@@ -29,6 +29,7 @@ public enum TunerAllocationEvent
     EmptiedClosed,
     EmptiedDisabled,
     TuneFailed,
+    TuneFailedDisabled,
     PreviousGone,
     GaveBack,
     GaveBackTuning,
@@ -40,6 +41,7 @@ public enum TunerAllocationEvent
     EnabledAbsent,
     EnabledFaulted,
     Faulted,
+    FaultedDisabled,
     Restored,
     RestoredAbsent,
 }
@@ -94,6 +96,7 @@ public static class TunerTransitions
         (InUse, TunerAllocationEvent.EmptiedDisabled, Disabled),
 
         (Tuning, TunerAllocationEvent.TuneFailed, Free),
+        (Tuning, TunerAllocationEvent.TuneFailedDisabled, Disabled),
 
         (HandingOver, TunerAllocationEvent.PreviousGone, Tuning),
         (HandingOver, TunerAllocationEvent.GaveBack, InUse),
@@ -128,6 +131,9 @@ public static class TunerTransitions
         (HandingOver, TunerAllocationEvent.Faulted, Faulted),
         (Faulted, TunerAllocationEvent.Faulted, Faulted),
         (Disabled, TunerAllocationEvent.Faulted, Disabled),
+        (Tuning, TunerAllocationEvent.FaultedDisabled, Disabled),
+        (InUse, TunerAllocationEvent.FaultedDisabled, Disabled),
+        (HandingOver, TunerAllocationEvent.FaultedDisabled, Disabled),
 
         (Faulted, TunerAllocationEvent.Restored, Free),
         (Faulted, TunerAllocationEvent.RestoredAbsent, Absent),

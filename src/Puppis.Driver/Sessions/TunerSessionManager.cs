@@ -906,6 +906,16 @@ public sealed class TunerSessionManager(
             tunings[sessionId] = TuningKey.Of(request);
         }
 
+        if (!pool.Confirm(deviceId, sessionId))
+        {
+            Abandon(session, claimed);
+
+            return SessionStart.Refused(
+                SessionRefusal.DeviceBusy,
+                $"The device '{deviceId}' was taken from '{sessionId}' before it could start."
+            );
+        }
+
         session.Ending += PassTheTunerOn;
         session.Ended += Forget;
 

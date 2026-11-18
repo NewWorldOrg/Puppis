@@ -421,7 +421,7 @@ public sealed class TunerSession : IDisposable
     {
         lock (gate)
         {
-            if (state is SessionState.Active)
+            if (state is SessionState.Active or SessionState.Requested)
             {
                 state = SessionState.Stopping;
                 stopReason = reason;
