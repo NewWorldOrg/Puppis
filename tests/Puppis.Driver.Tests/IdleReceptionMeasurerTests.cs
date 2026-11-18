@@ -5,6 +5,7 @@ using Puppis.Driver.Configuration;
 using Puppis.Driver.Ipc;
 using Puppis.Driver.Reception;
 using Puppis.Driver.Sessions;
+using Puppis.Driver.Tuning;
 
 namespace Puppis.Driver.Tests;
 
@@ -372,7 +373,7 @@ public sealed class IdleReceptionMeasurerTests
     public void ADeviceThatFailsWhileItsSignalIsReadIsFaultedLikeAnyDeviceThatFailsInUse()
     {
         configuration = Configured(true, ("north", DeviceKind.Terrestrial));
-        hardware.BreaksWhileRead.Add("north");
+        hardware.BreaksAtRead["north"] = 2;
         Know(Here);
         TunerSessionManager manager = Manager();
         IdleReceptionMeasurer measurer = Measurer();
@@ -385,11 +386,96 @@ public sealed class IdleReceptionMeasurerTests
         Assert.Equal(TunerFaultKind.DeviceFailed, manager.FaultKindOf("north")?.Kind);
         Assert.Equal(ReceptionStanding.Unmeasured, book.StandingOf("north", On(Here)));
         Assert.Empty(hardware.Overlaps);
-        Assert.Equal("probe closed north", hardware.Happened[^1]);
+        Assert.Equal(["probe opened north 31", "probe closed north", "let go north"], hardware.Happened);
 
         clock.Advance(Gap);
 
         Assert.Null(measurer.MeasureIfDue());
+    }
+
+    [Fact]
+    public void AStatisticsReadThatFailsPartWayIsLeftOutAndTheTunerIsNotFaulted()
+    {
+        configuration = Configured(true, ("north", DeviceKind.Terrestrial));
+        hardware.Signals[("north", 31)] = [20, 22, 99, 24, 26];
+        hardware.Unreadable.Add(("north", 2));
+        Know(Here);
+        TunerSessionManager manager = Manager();
+        IdleReceptionMeasurer measurer = Measurer();
+        clock.Advance(Rested);
+
+        Assert.Equal(new IdleMeasurement("north", Here, IdleMeasurementEnd.Kept, 23), measurer.MeasureIfDue());
+
+        Assert.False(manager.IsFaulted("north", out _));
+        Assert.Equal(TunerAllocationState.Free, Table("north").State);
+        Assert.Equal(["probe opened north 31", "probe closed north"], hardware.Happened);
+    }
+
+    [Fact]
+    public void ATunerWhoseStatisticsCannotBeReadAtAllIsKeptAsLockedWithNoCarrierToNoise()
+    {
+        configuration = Configured(true, ("north", DeviceKind.Terrestrial));
+        hardware.Unreadable.UnionWith(Enumerable.Range(0, IdleReceptionMeasurer.Readings).Select(read => ("north", read)));
+        Know(Here);
+        TunerSessionManager manager = Manager();
+        IdleReceptionMeasurer measurer = Measurer();
+        clock.Advance(Rested);
+
+        Assert.Equal(new IdleMeasurement("north", Here, IdleMeasurementEnd.Kept), measurer.MeasureIfDue());
+
+        Assert.Equal(new ReceptionStanding(1, 1, null, clock.GetUtcNow()), book.StandingOf("north", On(Here)));
+        Assert.False(manager.IsFaulted("north", out _));
+    }
+
+    [Fact]
+    public async Task AFailureFoundJustAsARequestTakesTheTunerIsNotHeldAgainstTheRequest()
+    {
+        configuration = Configured(true, ("north", DeviceKind.Terrestrial));
+        hardware.BreaksAtRead["north"] = 1;
+        Know(Here);
+        TunerSessionManager manager = Manager();
+        IdleReceptionMeasurer measurer = Measurer();
+        clock.Advance(Rested);
+        Task<SessionStart>? asked = null;
+        hardware.WhileReading = (_, read) => asked ??= read is 1 ? manager.BeginAsync(Live("viewer", There)) : null;
+
+        Assert.Equal(new IdleMeasurement("north", Here, IdleMeasurementEnd.Interrupted), measurer.MeasureIfDue());
+
+        TunerSession session = await StartedAsync(asked!);
+
+        Assert.Equal("north", session.DeviceId);
+        Assert.False(manager.IsFaulted("north", out _));
+        Assert.Empty(hardware.Overlaps);
+
+        await StopAsync(session);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ATunerTakenOutOfServiceWhileItIsMeasuredIsLetGoOfOnceAndOnlyAfterTheMeasurementHasLanded(bool faulted)
+    {
+        configuration = Configured(true, ("north", DeviceKind.Terrestrial));
+        Know(Here);
+        TunerSessionManager manager = Manager();
+        IdleReceptionMeasurer measurer = Measurer();
+        clock.Advance(Rested);
+        hardware.WhileTuning = _ =>
+        {
+            if (faulted)
+            {
+                manager.Fault(new TunerContradiction("north", DeviceKind.Terrestrial, [DeviceKind.Satellite]));
+            }
+            else
+            {
+                manager.Turn("north", disabled: true);
+            }
+        };
+
+        Assert.Equal(IdleMeasurementEnd.Interrupted, measurer.MeasureIfDue()?.End);
+
+        Assert.Equal(["probe opened north 31", "probe closed north", "let go north"], hardware.Happened);
+        Assert.Empty(hardware.Overlaps);
     }
 
     [Theory]
@@ -565,7 +651,7 @@ public sealed class IdleReceptionMeasurerTests
     }
 
     [Fact]
-    public async Task StoppingWaitsForTheMeasurementUnderWay()
+    public async Task StoppingWaitsForTheMeasurementUnderWayToLand()
     {
         configuration = Configured(true, ("north", DeviceKind.Terrestrial));
         Know(Here);
@@ -580,16 +666,73 @@ public sealed class IdleReceptionMeasurerTests
         };
         await measurer.StartAsync(CancellationToken.None);
         timers.Advance(Rested);
-        Assert.True(opening.Wait(Deadlock));
+        await Task.Run(() => Assert.True(opening.Wait(Deadlock)));
 
         Task stopping = measurer.StopAsync(CancellationToken.None);
+        await Task.Delay(50);
 
         Assert.False(stopping.IsCompleted);
+        Assert.True(hardware.LastStopping.IsCancellationRequested);
 
         release.Set();
         await stopping.WaitAsync(Deadlock);
 
         Assert.Equal("probe closed north", hardware.Happened[^1]);
+        Assert.Equal(1, measurer.Interrupted);
+        Assert.Equal(ReceptionStanding.Unmeasured, book.StandingOf("north", On(Here)));
+    }
+
+    [Fact]
+    public async Task StoppingTellsTheMeasurementUnderWayToStop()
+    {
+        configuration = Configured(true, ("north", DeviceKind.Terrestrial));
+        Know(Here);
+        var timers = new SteppedTimeProvider(Start);
+        using IdleReceptionMeasurer measurer = Measurer(timers);
+        using var reading = new ManualResetEventSlim(false);
+        int reads = 0;
+        hardware.WhileReading = (_, _) =>
+        {
+            reads++;
+            reading.Set();
+            hardware.LastStopping.WaitHandle.WaitOne(Deadlock);
+        };
+        await measurer.StartAsync(CancellationToken.None);
+        timers.Advance(Rested);
+        await Task.Run(() => Assert.True(reading.Wait(Deadlock)));
+
+        await measurer.StopAsync(CancellationToken.None).WaitAsync(Deadlock);
+
+        Assert.Equal(1, reads);
+        Assert.Equal(1, measurer.Interrupted);
+        Assert.Equal(TunerAllocationState.Free, Table("north").State);
+    }
+
+    [Fact]
+    public async Task NoThreadIsStartedForALookThatFindsNothingDue()
+    {
+        configuration = Configured(true, ("north", DeviceKind.Terrestrial));
+        var timers = new SteppedTimeProvider(Start);
+        using IdleReceptionMeasurer measurer = Measurer(timers);
+        await measurer.StartAsync(CancellationToken.None);
+
+        for (int look = 0; look < 20; look++)
+        {
+            timers.Advance(Rested);
+        }
+
+        Assert.Equal(0, measurer.StartedByItself);
+
+        Know(Here);
+        timers.Advance(Rested);
+        await WaitUntilAsync(() => measurer.Finished is 1);
+
+        for (int look = 0; look < 20; look++)
+        {
+            timers.Advance(Rested);
+        }
+
+        Assert.Equal(1, measurer.StartedByItself);
     }
 
     [Fact]

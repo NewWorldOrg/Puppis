@@ -19,7 +19,13 @@ public sealed class MeasuredHardware : ITunerDeviceFactory, IReceptionProbeFacto
 
     public HashSet<string> Broken { get; } = [];
 
-    public HashSet<string> BreaksWhileRead { get; } = [];
+    public Dictionary<string, int> BreaksAtRead { get; } = [];
+
+    public HashSet<(string DeviceId, int Read)> Unreadable { get; } = [];
+
+    public CancellationToken LastStopping { get; private set; }
+
+    public Action<string>? WhileClosing { get; set; }
 
     public HashSet<string> Refusing { get; } = [];
 
@@ -62,6 +68,7 @@ public sealed class MeasuredHardware : ITunerDeviceFactory, IReceptionProbeFacto
         string deviceId = device.Id!;
         int channel = tune.ToLegacyRequest().PhysicalChannel;
 
+        LastStopping = cancellationToken;
         BeforeOpening?.Invoke(deviceId);
         cancellationToken.ThrowIfCancellationRequested();
         Take(deviceId, $"probe opened {deviceId} {channel}");
@@ -121,6 +128,21 @@ public sealed class MeasuredHardware : ITunerDeviceFactory, IReceptionProbeFacto
         return new Device(this, deviceId, tuning.PhysicalChannel);
     }
 
+    public void LetGo(DeviceSettings device)
+    {
+        string deviceId = device.Id!;
+
+        lock (gate)
+        {
+            if (busy.GetValueOrDefault(deviceId) > 0)
+            {
+                overlaps.Add($"let go of {deviceId} while {busy[deviceId]} operations held it");
+            }
+
+            happened.Add($"let go {deviceId}");
+        }
+    }
+
     public void Check(DeviceSettings device)
     {
         if (Broken.Contains(device.Id!))
@@ -165,9 +187,14 @@ public sealed class MeasuredHardware : ITunerDeviceFactory, IReceptionProbeFacto
 
             hardware.WhileReading?.Invoke(deviceId, read);
 
-            if (hardware.BreaksWhileRead.Contains(deviceId))
+            if (hardware.BreaksAtRead.TryGetValue(deviceId, out int breaksAt) && read >= breaksAt)
             {
-                throw DvbFailure.AtDevice(deviceId, "reading the signal", Errno.NoSuchDevice, "Nothing can be read from it.");
+                throw new IOException($"{deviceId} stopped answering while its signal was read.");
+            }
+
+            if (hardware.Unreadable.Contains((deviceId, read)))
+            {
+                throw DvbFailure.AtDevice(deviceId, "reading the signal statistics", Errno.NoSuchDevice, "No quality is reported.");
             }
 
             double decibels = signal[Math.Min(read, signal.Length - 1)];
@@ -205,6 +232,7 @@ public sealed class MeasuredHardware : ITunerDeviceFactory, IReceptionProbeFacto
         {
             if (Interlocked.Exchange(ref closed, 1) is 0)
             {
+                hardware.WhileClosing?.Invoke(deviceId);
                 hardware.Release(deviceId, $"closed {deviceId}");
             }
         }

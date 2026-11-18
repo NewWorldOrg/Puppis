@@ -39,6 +39,7 @@ public sealed class IdleReceptionMeasurer(
     private readonly TimeSpan looking = looksEvery ?? LooksEvery;
     private readonly Lock gate = new();
     private readonly Dictionary<string, DateTimeOffset> couldNotBeOpened = new(StringComparer.Ordinal);
+    private readonly CancellationTokenSource stopRequested = new();
     private ITimer? timer;
     private Task running = Task.CompletedTask;
     private DateTimeOffset? lastEndedAt;
@@ -46,10 +47,13 @@ public sealed class IdleReceptionMeasurer(
     private bool stopping;
     private long interrupted;
     private long finished;
+    private long startedByItself;
 
     public long Interrupted => Interlocked.Read(ref interrupted);
 
     public long Finished => Interlocked.Read(ref finished);
+
+    public long StartedByItself => Interlocked.Read(ref startedByItself);
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -67,6 +71,23 @@ public sealed class IdleReceptionMeasurer(
 
     private void Look()
     {
+        try
+        {
+            StartMeasuringIfSomethingIsDue(clock.GetUtcNow());
+        }
+        catch (Exception failed)
+        {
+            logger.LogError(failed, "Looking for an idle tuner to measure failed; the next look tries again.");
+        }
+    }
+
+    private void StartMeasuringIfSomethingIsDue(DateTimeOffset now)
+    {
+        if (!MayTakeTheTurn(now) || !Due(now).Any())
+        {
+            return;
+        }
+
         lock (gate)
         {
             if (stopping || !running.IsCompleted)
@@ -74,6 +95,7 @@ public sealed class IdleReceptionMeasurer(
                 return;
             }
 
+            Interlocked.Increment(ref startedByItself);
             running = Task.Factory.StartNew(
                 MeasureQuietly,
                 CancellationToken.None,
@@ -117,11 +139,19 @@ public sealed class IdleReceptionMeasurer(
         }
     }
 
+    private bool MayTakeTheTurn(DateTimeOffset now)
+    {
+        lock (gate)
+        {
+            return enabled && !stopping && !measuring && (lastEndedAt is not { } ended || now - ended >= gap);
+        }
+    }
+
     private bool TakeTheTurn(DateTimeOffset now)
     {
         lock (gate)
         {
-            if (!enabled || stopping || measuring || (lastEndedAt is { } ended && now - ended < gap))
+            if (!MayTakeTheTurn(now))
             {
                 return false;
             }
@@ -188,16 +218,23 @@ public sealed class IdleReceptionMeasurer(
 
     private IdleMeasurement Measure(DeviceSettings device, TuningKey channel, TuneParams tune, MeasuringTicket ticket)
     {
-        Reading reading;
-        bool undisturbed;
+        using CancellationTokenSource stoppingEitherWay = CancellationTokenSource.CreateLinkedTokenSource(
+            ticket.Stopping,
+            stopRequested.Token
+        );
+        Reading reading = Reading.Interrupted;
+        bool undisturbed = false;
 
         try
         {
-            reading = Read(device, tune, ticket.Stopping);
+            reading = Read(device, tune, stoppingEitherWay.Token);
         }
         finally
         {
-            undisturbed = manager.EndMeasuring(ticket);
+            undisturbed = manager.EndMeasuring(
+                ticket,
+                reading.End is IdleMeasurementEnd.DeviceFailed ? reading.Cause : null
+            );
 
             lock (gate)
             {
@@ -254,20 +291,15 @@ public sealed class IdleReceptionMeasurer(
 
     private Reading ReadTheSignal(IReceptionProbe probe, CancellationToken stopping)
     {
-        List<double> read = [];
-        bool locked = false;
+        List<SignalQuality> read = [];
 
         for (int reading = 0; reading < Readings; reading++)
         {
             stopping.ThrowIfCancellationRequested();
 
-            SignalQuality quality = probe.Measure();
-
-            locked |= quality.HasLock;
-
-            if (quality.HasLock && quality.CarrierToNoise.TryGetDecibels(out double decibels))
+            if (Measured(probe) is { } quality)
             {
-                read.Add(decibels);
+                read.Add(quality);
             }
 
             if (reading < Readings - 1 && stopping.WaitHandle.WaitOne(readingGap))
@@ -276,7 +308,32 @@ public sealed class IdleReceptionMeasurer(
             }
         }
 
-        return new Reading(IdleMeasurementEnd.Kept, locked, locked ? Median.Of(read) : null);
+        bool locked = read.Count is 0 || read.Exists(quality => quality.HasLock);
+
+        return new Reading(IdleMeasurementEnd.Kept, locked, locked ? Median.Of(CarrierToNoiseOf(read)) : null);
+    }
+
+    private static SignalQuality? Measured(IReceptionProbe probe)
+    {
+        try
+        {
+            return probe.Measure();
+        }
+        catch (DvbDeviceException)
+        {
+            return null;
+        }
+    }
+
+    private static IEnumerable<double> CarrierToNoiseOf(List<SignalQuality> read)
+    {
+        foreach (SignalQuality quality in read.Where(quality => quality.HasLock))
+        {
+            if (quality.CarrierToNoise.TryGetDecibels(out double decibels))
+            {
+                yield return decibels;
+            }
+        }
     }
 
     private IdleMeasurement Conclude(string deviceId, TuningKey channel, Reading reading)
@@ -314,10 +371,6 @@ public sealed class IdleReceptionMeasurer(
                     reading.Cause?.Message
                 );
                 manager.LookAgainAt(deviceId);
-
-                break;
-            case IdleMeasurementEnd.DeviceFailed:
-                manager.FaultAfterMeasuring(deviceId, reading.Cause!);
 
                 break;
         }
@@ -358,6 +411,8 @@ public sealed class IdleReceptionMeasurer(
             last = running;
         }
 
+        await stopRequested.CancelAsync();
+
         try
         {
             await last.WaitAsync(cancellationToken);
@@ -368,5 +423,9 @@ public sealed class IdleReceptionMeasurer(
         }
     }
 
-    public void Dispose() => timer?.Dispose();
+    public void Dispose()
+    {
+        timer?.Dispose();
+        stopRequested.Dispose();
+    }
 }
