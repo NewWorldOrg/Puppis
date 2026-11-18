@@ -38,6 +38,10 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
     private const string CausedByAMeasurement = TunerPool.MeasurementUnderWay;
 
+    private const int ClockSpeed = 300;
+
+    private static readonly TimeSpan OnlyAStuckMeasurementTakesThisLong = TimeSpan.FromSeconds(20);
+
     private static readonly SessionPurpose[] Purposes =
     [
         SessionPurpose.Recording,
@@ -190,7 +194,7 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
     {
         private readonly int seed;
         private readonly bool sessionsAreShort;
-        private readonly AcceleratedClock clock = new(300);
+        private readonly AcceleratedClock clock = new(ClockSpeed);
         private readonly DevicesUnderTest devices;
         private readonly RefusalLog log = new();
         private readonly DriverConfiguration configuration;
@@ -247,7 +251,8 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
                 handOverLimit: TimeSpan.FromSeconds(30),
                 deviceCheck: devices,
                 presence: device => plugged.GetValueOrDefault(device.Id!, true),
-                reception: book
+                reception: book,
+                measurementStopLimit: OnlyAStuckMeasurementTakesThisLong * ClockSpeed
             );
             measurer = new IdleReceptionMeasurer(
                 configuration,
