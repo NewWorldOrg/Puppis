@@ -505,6 +505,55 @@ public sealed class ReceptionProbeTests
     }
 
     [Fact]
+    public void ACechZd1ThatFailsWhileItIsTunedIsPutToSleepBeforeItIsClosed()
+    {
+        (TunerDeviceFactory factory, FakeBridge bridge, FakeChip demodulator) = CechZd1();
+        demodulator.Answers[1284] = () => throw DvbFailure.AtDevice(UsbPath, "reading the search", Errno.NoSuchDevice, "Nothing was received.");
+
+        DvbDeviceException failed = Assert.Throws<DvbDeviceException>(
+            () => factory.Tune(UsbTuner, Channel, CancellationToken.None)
+        );
+
+        Assert.Equal(TuningFailure.DeviceUnusable, failed.Failure);
+        Assert.True(bridge.Disposed);
+        Assert.False(factory.IsKeptOpen(UsbTuner));
+        Assert.Equal(0, demodulator.Last(1286));
+        Assert.Equal(0x0002, demodulator.Last(1029) & 0x0002);
+    }
+
+    [Fact]
+    public void AKeptCechZd1ThatFailsWhileItIsTunedAfreshIsPutToSleepAndClosedRatherThanKept()
+    {
+        (TunerDeviceFactory factory, FakeBridge bridge, FakeChip demodulator) = CechZd1();
+        UseOnce(factory);
+        int searches = 0;
+        demodulator.Answers[1284] = () =>
+            searches++ is 0 ? (ushort)0x0001 : throw DvbFailure.AtDevice(UsbPath, "reading the search", Errno.NoSuchDevice, "Nothing was received.");
+
+        Assert.Throws<DvbDeviceException>(() => factory.Tune(UsbTuner, Channel, CancellationToken.None));
+
+        Assert.True(bridge.Disposed);
+        Assert.False(factory.IsKeptOpen(UsbTuner));
+        Assert.Equal(0, demodulator.Last(1286));
+    }
+
+    [Fact]
+    public void ACechZd1WhoseChipsFailToSetUpAfterTheBridgeStartedIsPutToSleepBeforeItIsClosed()
+    {
+        (TunerDeviceFactory factory, FakeBridge bridge, FakeChip demodulator) = CechZd1();
+        demodulator.Answers[565] = () => throw DvbFailure.AtDevice(UsbPath, "setting the demodulator up", Errno.NoSuchDevice, "It no longer answers.");
+
+        DvbDeviceException failed = Assert.Throws<DvbDeviceException>(
+            () => factory.Tune(UsbTuner, Channel, CancellationToken.None)
+        );
+
+        Assert.Equal(TuningFailure.DeviceUnusable, failed.Failure);
+        Assert.True(bridge.Disposed);
+        Assert.False(factory.IsKeptOpen(UsbTuner));
+        Assert.Equal(0x0002, demodulator.Last(1029) & 0x0002);
+    }
+
+    [Fact]
     public void AProbeIsClosedOnlyOnce()
     {
         (TunerDeviceFactory dt295, FakeDt295 fake) = Dt295();

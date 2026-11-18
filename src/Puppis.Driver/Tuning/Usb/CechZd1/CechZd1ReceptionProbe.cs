@@ -85,11 +85,20 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
             cancellationToken.ThrowIfCancellationRequested();
         }
 
-        CechZd1TunerDevice.Quietly(kept.Frontend.Sleep);
-        CechZd1TunerDevice.Quietly(() => kept.Frontend.Demodulator.LedGreen());
-        kept.Usb.Dispose();
+        Close(kept.Frontend, kept.Usb);
 
         return null;
+    }
+
+    private static void Close(CechZd1Frontend? frontend, IUsbConnection usb)
+    {
+        if (frontend is not null)
+        {
+            CechZd1TunerDevice.Quietly(frontend.Sleep);
+            CechZd1TunerDevice.Quietly(() => frontend.Demodulator.LedGreen());
+        }
+
+        usb.Dispose();
     }
 
     private static CechZd1Standby.KeptTuner Started(
@@ -100,6 +109,7 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
     )
     {
         IUsbConnection usb = host.Open(path, CechZd1TunerDevice.Interface);
+        CechZd1Frontend? frontend = null;
 
         try
         {
@@ -108,14 +118,14 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
             BridgeStartup.Start(memory, pacing);
             stopWhileStillClosed.ThrowIfCancellationRequested();
             var i2c = new BridgeI2c(memory);
-            var frontend = new CechZd1Frontend(new Dib8000Bus(i2c), new Dib0090Bus(i2c), pacing, path);
+            frontend = new CechZd1Frontend(new Dib8000Bus(i2c), new Dib0090Bus(i2c), pacing, path);
             frontend.Initialise();
 
             return new CechZd1Standby.KeptTuner(path, usb, memory, frontend, new TransportCapture(memory));
         }
         catch
         {
-            usb.Dispose();
+            Close(frontend, usb);
 
             throw;
         }
@@ -131,7 +141,7 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
         }
         catch
         {
-            started.Usb.Dispose();
+            Close(started.Frontend, started.Usb);
 
             throw;
         }
