@@ -14,6 +14,7 @@ using Puppis.Driver.Descrambling;
 using Puppis.Driver.Diagnostics;
 using Puppis.Driver.Events;
 using Puppis.Driver.Ipc;
+using Puppis.Driver.Reception;
 using Puppis.Driver.Recording;
 using Puppis.Driver.Sessions;
 using Puppis.Driver.Tuning;
@@ -72,7 +73,8 @@ public static class DriverHost
         DriverConfiguration configuration,
         Action<IServiceCollection>? reshapeServices = null,
         string? configurationPath = null,
-        DriverStopRequest? stopRequest = null
+        DriverStopRequest? stopRequest = null,
+        string? stateDirectory = null
     )
     {
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder(args);
@@ -183,6 +185,23 @@ public static class DriverHost
             provider.GetRequiredService<TimeProvider>(),
             provider.GetRequiredService<DriverEventHub>()
         ));
+        builder.Services.AddSingleton(provider =>
+        {
+            var store = new ReceptionStore(
+                new ReceptionBook(),
+                stateDirectory,
+                provider.GetRequiredService<TimeProvider>(),
+                provider.GetRequiredService<ILogger<ReceptionStore>>()
+            );
+
+            store.Load([.. (configuration.Devices ?? []).Select(device => device?.Id).OfType<string>()]);
+
+            return store;
+        });
+        builder.Services.AddSingleton(provider => provider.GetRequiredService<ReceptionStore>().Book);
+        builder.Services.AddSingleton<IReceptionProbeFactory>(provider =>
+            provider.GetRequiredService<TunerDeviceFactory>()
+        );
         builder.Services.AddSingleton(provider => new TunerSessionManager(
             provider.GetRequiredService<DriverConfiguration>(),
             provider.GetRequiredService<ITunerDeviceFactory>(),
@@ -192,7 +211,16 @@ public static class DriverHost
             diagnostics: provider.GetRequiredService<DiagnosticsStore>(),
             recordingWriters: provider.GetRequiredService<IRecordingWriterFactory>(),
             deviceCheck: provider.GetRequiredService<ITunerDeviceCheck>(),
-            presence: device => provider.GetRequiredService<TunerPatrol>().LookAt(device)
+            presence: device => provider.GetRequiredService<TunerPatrol>().LookAt(device),
+            reception: provider.GetRequiredService<ReceptionBook>()
+        ));
+        builder.Services.AddSingleton(provider => new IdleReceptionMeasurer(
+            provider.GetRequiredService<DriverConfiguration>(),
+            provider.GetRequiredService<TunerSessionManager>(),
+            provider.GetRequiredService<ReceptionBook>(),
+            provider.GetRequiredService<IReceptionProbeFactory>(),
+            provider.GetRequiredService<TimeProvider>(),
+            provider.GetRequiredService<ILogger<IdleReceptionMeasurer>>()
         ));
 
         builder.Services.AddSingleton<RecordingEraser>();
@@ -202,9 +230,11 @@ public static class DriverHost
         builder.Services.AddHostedService(provider =>
             provider.GetRequiredService<DriverLifecycle>()
         );
+        builder.Services.AddHostedService(provider => provider.GetRequiredService<ReceptionStore>());
         builder.Services.AddHostedService(provider =>
             provider.GetRequiredService<TunerSessionManager>()
         );
+        builder.Services.AddHostedService(provider => provider.GetRequiredService<IdleReceptionMeasurer>());
         builder.Services.AddHostedService<TunerLedgerReconciler>();
         builder.Services.AddSingleton(provider =>
         {

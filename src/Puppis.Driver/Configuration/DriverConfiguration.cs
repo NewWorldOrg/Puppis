@@ -28,12 +28,15 @@ public enum DeviceKind
 public sealed record TunerSettings(
     TunerBackend Backend,
     int SignalQualitySeconds = TunerSettings.DefaultSignalQualitySeconds,
-    int DemuxBufferBytes = TunerSettings.DefaultDemuxBufferBytes
+    int DemuxBufferBytes = TunerSettings.DefaultDemuxBufferBytes,
+    bool MeasureWhileIdle = TunerSettings.DefaultMeasureWhileIdle
 )
 {
     public const int DefaultSignalQualitySeconds = 10;
 
     public const int DefaultDemuxBufferBytes = 16 * 1024 * 1024;
+
+    public const bool DefaultMeasureWhileIdle = true;
 
     [JsonIgnore]
     public TimeSpan SignalQualityInterval => TimeSpan.FromSeconds(SignalQualitySeconds);

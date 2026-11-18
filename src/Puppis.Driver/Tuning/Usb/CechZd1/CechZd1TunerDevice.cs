@@ -226,7 +226,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
     /// <summary>
     /// Puts the frontend to sleep and keeps it for the next session, or closes the device when it will not sleep.
     /// </summary>
-    private static void Rest(CechZd1Standby.KeptTuner kept, CechZd1Standby? standby)
+    internal static void Rest(CechZd1Standby.KeptTuner kept, CechZd1Standby? standby)
     {
         bool asleep = Quietly(() => kept.Frontend.Demodulator.LedGreen()) & Quietly(kept.Frontend.Sleep);
 
@@ -250,11 +250,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
             registers = frontend.ReadSignal();
         }
 
-        return new SignalQuality(
-            new LockWindow(CechZd1Signal.StatusOf(registers.StatusBefore), CechZd1Signal.StatusOf(registers.StatusAfter)),
-            CechZd1Signal.CarrierToNoiseFrom(registers),
-            new PostViterbiErrors(SignalReading.NotImplementedByThisTuner, [])
-        );
+        return CechZd1Signal.QualityOf(registers);
     }
 
     public byte[] Read(int count, CancellationToken cancellationToken)
@@ -385,7 +381,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         );
     }
 
-    private static bool Quietly(Action action)
+    internal static bool Quietly(Action action)
     {
         try
         {

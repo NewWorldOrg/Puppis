@@ -38,6 +38,15 @@ public sealed class TunerTransitionTests
 
         public void Leave(string sessionId) => Pool.Leave(SessionId.Parse(sessionId));
 
+        public MeasuringTicket Measure()
+        {
+            MeasuringTicket? ticket = Pool.BeginMeasuring(Tuner, There);
+
+            Assert.NotNull(ticket);
+
+            return ticket;
+        }
+
         public State Now => Pool.StateOf(Tuner);
     }
 
@@ -110,6 +119,14 @@ public sealed class TunerTransitionTests
         return table;
     }
 
+    private static Table Measuring()
+    {
+        Table table = new();
+        table.Measure();
+
+        return table;
+    }
+
     private static Table From(State state) =>
         state switch
         {
@@ -120,6 +137,7 @@ public sealed class TunerTransitionTests
             State.HandingOver => HandingOver(),
             State.Absent => Absent(),
             State.Disabled => Disabled(),
+            State.Measuring => Measuring(),
             _ => Faulted(),
         };
 
@@ -127,6 +145,9 @@ public sealed class TunerTransitionTests
     {
         [(State.Free, On.Claim)] = () => Then(Free(), table => table.Ask("new", SessionPurpose.Live, Here)),
         [(State.Ready, On.Claim)] = () => Then(Ready(), table => table.Ask("new", SessionPurpose.Live, There)),
+        [(State.Measuring, On.Claim)] = () => Then(Measuring(), table => table.Ask("new", SessionPurpose.Logo, Here)),
+        [(State.Free, On.MeasureBegan)] = () => Then(Free(), table => table.Measure()),
+        [(State.Measuring, On.MeasureEnded)] = () => Then(Free(), table => Assert.True(table.Pool.EndMeasuring(table.Measure()))),
         [(State.Tuning, On.Ride)] = () => Then(Tuning(), table => table.Ask("more", SessionPurpose.Survey, Here)),
         [(State.InUse, On.Ride)] = () => Then(InUse(), table => table.Ask("more", SessionPurpose.Survey, Here)),
         [(State.HandingOver, On.Ride)] = () => Then(HandingOver(), table => table.Ask("more", SessionPurpose.Survey, There)),

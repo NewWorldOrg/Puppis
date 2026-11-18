@@ -9,6 +9,7 @@ using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
 using Puppis.Driver.Diagnostics;
 using Puppis.Driver.Events;
+using Puppis.Driver.Reception;
 using Puppis.Driver.Recording;
 using Puppis.Driver.Tuning;
 using Puppis.Driver.Tuning.Dvb;
@@ -30,12 +31,16 @@ public sealed class TunerSessionManager(
     TimeSpan? progressInterval = null,
     ITunerDeviceCheck? deviceCheck = null,
     Func<DeviceSettings, bool?>? presence = null,
-    TimeSpan? openLimit = null
+    TimeSpan? openLimit = null,
+    ReceptionBook? reception = null,
+    TimeSpan? measurementStopLimit = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
 
     public const int DifferentChannelsThatFaultTheDevice = 2;
+
+    public const int LockReadingsThatCountAsNow = 2;
 
     public static readonly TimeSpan DefaultHardStopLimit = TimeSpan.FromSeconds(30);
 
@@ -54,7 +59,9 @@ public sealed class TunerSessionManager(
         [.. (configuration.Devices ?? []).Where(device => device?.Id is not null).Select(device => (device.Id!, device.Enabled))],
         deviceId => LetGo(configuration, deviceCheck, deviceId),
         logger,
-        deviceId => Look(configuration, presence, deviceId)
+        deviceId => Look(configuration, presence, deviceId),
+        StandingIn(reception),
+        deviceId => IsKeptOpen(configuration, deviceCheck, deviceId)
     );
     private readonly ConcurrentDictionary<string, DateTimeOffset> healthChangedAt = new(
         StringComparer.Ordinal
@@ -71,6 +78,7 @@ public sealed class TunerSessionManager(
     private readonly TimeSpan letGo = letGoLimit ?? LetGoLimit;
     private readonly TimeSpan handOver = handOverLimit ?? HandOverLimit;
     private readonly TimeSpan opening = openLimit ?? OpenLimit;
+    private readonly TimeSpan measurementStop = measurementStopLimit ?? openLimit ?? OpenLimit;
     private readonly IRecordingWriterFactory writerFactory =
         recordingWriters ?? new RecordingWriterFactory();
     private FaultedTunerRecheck? rechecking;
@@ -383,7 +391,50 @@ public sealed class TunerSessionManager(
         }
 
         var claim = new TunerClaim(pool, grant.DeviceId, request.SessionId);
+        SessionStart start = await ServeAsync(request, grant, claim, directory, now, cancellationToken);
 
+        if (claim.GaveUpOn is not { } stuck)
+        {
+            return start;
+        }
+
+        PoolGrant another = request.DeviceId is null
+            ? pool.Acquire(asking with { LeftOut = [claim.DeviceId] })
+            : PoolGrant.Refused(PoolVerdict.DeviceBusy, start.Detail);
+
+        if (!another.IsGranted)
+        {
+            SayWhatHeldTheRequestUp(stuck, claim.DeviceId, request.SessionId);
+
+            return Refusal(request, another);
+        }
+
+        logger.LogInformation(
+            "Session {SessionId} gave up waiting for the device {DeviceId} and goes to {Another} instead.",
+            request.SessionId.Value,
+            claim.DeviceId,
+            another.DeviceId
+        );
+
+        return await ServeAsync(
+            request,
+            another,
+            new TunerClaim(pool, another.DeviceId, request.SessionId),
+            directory,
+            now,
+            cancellationToken
+        );
+    }
+
+    private async Task<SessionStart> ServeAsync(
+        StartSessionRequest request,
+        PoolGrant grant,
+        TunerClaim claim,
+        string? directory,
+        DateTimeOffset now,
+        CancellationToken cancellationToken
+    )
+    {
         try
         {
             DateTimeOffset endsAt = EndOf(request, now);
@@ -416,6 +467,18 @@ public sealed class TunerSessionManager(
         }
 
         public string DeviceId => deviceId;
+
+        public TunerClearance? GaveUpOn { get; private set; }
+
+        public void GiveUpOn(TunerClearance clearance, TunerRefusal why)
+        {
+            GiveBack(why);
+
+            if (clearance.Awaits is not ClearanceKind.AHandOver)
+            {
+                GaveUpOn = clearance;
+            }
+        }
 
         public void GiveBack(TunerRefusal why)
         {
@@ -623,7 +686,9 @@ public sealed class TunerSessionManager(
             return Lost(claim, sessionId);
         }
 
-        TimeSpan left = handOver - (timeProvider.GetUtcNow() - clearance.Since);
+        TimeSpan limit = LimitOf(clearance);
+        TimeSpan left = limit - (timeProvider.GetUtcNow() - clearance.Since);
+        long waitingSince = timeProvider.GetTimestamp();
         bool cleared;
 
         try
@@ -634,13 +699,17 @@ public sealed class TunerSessionManager(
         {
             var why = new TunerRefusal(
                 SessionRefusal.DeviceBusy,
-                $"The device '{deviceId}' was asked for '{sessionId}', and what was on it did not let go within {handOver}."
+                clearance.Awaits is ClearanceKind.AMeasurement
+                    ? $"The device '{deviceId}' was asked for '{sessionId}', and {TunerPool.MeasurementUnderWay} on it did not stop within {limit}."
+                    : $"The device '{deviceId}' was asked for '{sessionId}', and what was on it did not let go within {limit}."
             );
 
-            claim.GiveBack(why);
+            claim.GiveUpOn(clearance, why);
 
             return SessionStart.Refused(why.Refusal, why.Detail);
         }
+
+        SayAMeasurementWasStopped(clearance, deviceId, sessionId, timeProvider.GetElapsedTime(waitingSince));
 
         if (!cleared || pool.StartOpening(deviceId, sessionId) is not { } ticket)
         {
@@ -697,6 +766,40 @@ public sealed class TunerSessionManager(
             holds: true,
             tuned: ticket.Tunes
         );
+    }
+
+    private TimeSpan LimitOf(TunerClearance clearance) =>
+        clearance.Awaits is ClearanceKind.AMeasurement ? measurementStop : handOver;
+
+    private TimeSpan PatienceOfARiderOn(string deviceId) =>
+        pool.IsStoppingAMeasurement(deviceId) ? handOver + measurementStop : handOver;
+
+    private void SayAMeasurementWasStopped(TunerClearance clearance, string deviceId, SessionId sessionId, TimeSpan waited)
+    {
+        if (clearance.Awaits is ClearanceKind.AMeasurement)
+        {
+            logger.LogInformation(
+                "The measurement of {DeviceId} on {Channel} was stopped for session {SessionId}, which then waited {Milliseconds:0} ms for the device.",
+                deviceId,
+                clearance.Measured,
+                sessionId.Value,
+                waited.TotalMilliseconds
+            );
+        }
+    }
+
+    private void SayWhatHeldTheRequestUp(TunerClearance stuck, string deviceId, SessionId sessionId)
+    {
+        if (stuck.Awaits is ClearanceKind.AMeasurement)
+        {
+            logger.LogError(
+                "Session {SessionId} was refused because {MeasurementUnderWay} on the device {DeviceId} had not stopped after {Limit}, and no other tuner could be had.",
+                sessionId.Value,
+                TunerPool.MeasurementUnderWay,
+                deviceId,
+                measurementStop
+            );
+        }
     }
 
     private TimeSpan OpeningLeft(OpenTicket ticket)
@@ -776,6 +879,7 @@ public sealed class TunerSessionManager(
 
         try
         {
+            NoteTheReception(deviceId, TuningKey.Of(request), locked: false, null);
             RecordTuneFailure(deviceId, TuningKey.Of(request), failed, request.Purpose);
         }
         catch (Exception unexpected)
@@ -811,7 +915,12 @@ public sealed class TunerSessionManager(
         CancellationToken cancellationToken
     )
     {
-        TunerReadiness readiness = await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken);
+        TunerReadiness readiness = await pool.AwaitReadyAsync(
+            grant.DeviceId,
+            PatienceOfARiderOn(grant.DeviceId),
+            request.SessionId,
+            cancellationToken
+        );
 
         if (readiness.Leads)
         {
@@ -880,7 +989,12 @@ public sealed class TunerSessionManager(
         CancellationToken cancellationToken
     )
     {
-        TunerReadiness readiness = await pool.AwaitReadyAsync(grant.DeviceId, handOver, request.SessionId, cancellationToken);
+        TunerReadiness readiness = await pool.AwaitReadyAsync(
+            grant.DeviceId,
+            PatienceOfARiderOn(grant.DeviceId),
+            request.SessionId,
+            cancellationToken
+        );
 
         if (readiness.Leads)
         {
@@ -1186,6 +1300,7 @@ public sealed class TunerSessionManager(
             events?.Signal(DriverEvents.SessionTuned);
         }
 
+        reception?.Know(TuningKey.Of(request));
         Announce();
         claim.PassTo(session);
 
@@ -1542,6 +1657,8 @@ public sealed class TunerSessionManager(
     {
         if (tunings.TryRemove(session.SessionId, out TuningKey? tuning))
         {
+            NoteTheReceptionOf(session, tuning);
+
             if (session.State is SessionState.Stopped)
             {
                 ForgiveTuneFailures(session.DeviceId);
@@ -1562,6 +1679,49 @@ public sealed class TunerSessionManager(
             FaultAfterFailing(session);
         }
     }
+
+    private void NoteTheReceptionOf(TunerSession session, TuningKey tuning)
+    {
+        if (session.RidesOn is not null || session.StopReason is SessionStopReason.DeviceFailed)
+        {
+            return;
+        }
+
+        bool locked = session.HasHeldTheLock
+            || session.FailureCause is not DvbDeviceException { Failure: TuningFailure.NoLock or TuningFailure.LockedWithoutData };
+
+        NoteTheReception(session.DeviceId, tuning, locked, locked ? Median.Of(session.CarrierToNoiseReadings) : null);
+    }
+
+    private void NoteTheReception(string deviceId, TuningKey tuning, bool locked, double? carrierToNoise)
+    {
+        ReceptionChannel channel = ReceptionChannel.Of(tuning);
+
+        reception?.Note(
+            deviceId,
+            channel,
+            new ReceptionResult(timeProvider.GetUtcNow(), locked, carrierToNoise),
+            () => IsReceivedOnAnotherTuner(channel, deviceId)
+        );
+    }
+
+    public bool IsReceivedOnAnotherTuner(ReceptionChannel channel, string deviceId)
+    {
+        DateTimeOffset now = timeProvider.GetUtcNow();
+
+        return sessions.Values.Any(other =>
+            other.DeviceId != deviceId
+            && other.RidesOn is null
+            && other.State is SessionState.Active
+            && HeldTheLockLately(other, now)
+            && tunings.TryGetValue(other.SessionId, out TuningKey? receiving)
+            && ReceptionChannel.Of(receiving) == channel
+        );
+    }
+
+    private bool HeldTheLockLately(TunerSession session, DateTimeOffset now) =>
+        session.Quality is { HasLock: true } reading
+        && now - reading.LockReadAt <= Interval(session.Purpose) * LockReadingsThatCountAsNow;
 
     private void FaultAfterFailing(TunerSession session)
     {
@@ -1606,6 +1766,12 @@ public sealed class TunerSessionManager(
     private RecheckPlan? FaultUntilItOpens(string deviceId, TunerFault fault)
     {
         pool.Fault(deviceId, fault);
+
+        return TryAgainOnceFaulted(deviceId, fault);
+    }
+
+    private RecheckPlan? TryAgainOnceFaulted(string deviceId, TunerFault fault)
+    {
         healthChangedAt[deviceId] = timeProvider.GetUtcNow();
 
         events?.Signal(DriverEvents.TunerHealthChanged);
@@ -1808,6 +1974,52 @@ public sealed class TunerSessionManager(
         events?.Signal(DriverEvents.Tuners);
     }
 
+    public IReadOnlyList<RestingTuner> RestingTuners() => draining ? [] : pool.Resting();
+
+    public MeasuringTicket? BeginMeasuring(string deviceId, TuningKey tuning) =>
+        draining ? null : pool.BeginMeasuring(deviceId, tuning);
+
+    public bool EndMeasuring(MeasuringTicket ticket, Exception? deviceFailure = null)
+    {
+        if (deviceFailure is null)
+        {
+            return pool.EndMeasuring(ticket);
+        }
+
+        var fault = new TunerFault(
+            $"The device failed while how well it receives was being measured: {deviceFailure.Message}",
+            null,
+            DeviceFaultKind.Failed
+        );
+
+        if (!pool.EndMeasuring(ticket, fault))
+        {
+            return false;
+        }
+
+        RecheckPlan? plan = TryAgainOnceFaulted(ticket.DeviceId, fault);
+
+        logger.LogWarning(
+            "The device {DeviceId} failed while how well it receives was being measured, so it is not handed out until it opens again; {NextTry}",
+            ticket.DeviceId,
+            plan is null ? NotTriedAgain() : $"it is tried again at {plan.NextTryAt:O}."
+        );
+
+        return true;
+    }
+
+    public void LookAgainAt(string deviceId)
+    {
+        try
+        {
+            Look(configuration, presence, deviceId);
+        }
+        catch (Exception failed)
+        {
+            logger.LogWarning(failed, "Whether the tuner {DeviceId} is still plugged in could not be looked at.", deviceId);
+        }
+    }
+
     public bool IsClaimed(string deviceId) => pool.IsHeld(deviceId);
 
     public IReadOnlyList<string> OccupiedDevices() => pool.Occupied();
@@ -1822,11 +2034,19 @@ public sealed class TunerSessionManager(
         }
     }
 
+    private static Func<string, TuningKey, ReceptionStanding>? StandingIn(ReceptionBook? book) =>
+        book is null ? null : (deviceId, tuning) => book.StandingOf(deviceId, ReceptionChannel.Of(tuning));
+
     private static bool? Look(DriverConfiguration configuration, Func<DeviceSettings, bool?>? presence, string deviceId) =>
         presence is not null
         && (configuration.Devices ?? []).FirstOrDefault(candidate => candidate?.Id == deviceId) is { } device
             ? presence(device)
             : null;
+
+    private static bool IsKeptOpen(DriverConfiguration configuration, ITunerDeviceCheck? check, string deviceId) =>
+        check is not null
+        && (configuration.Devices ?? []).FirstOrDefault(candidate => candidate?.Id == deviceId) is { } device
+        && check.IsKeptOpen(device);
 
     private static void LetGo(DriverConfiguration configuration, ITunerDeviceCheck? check, string deviceId)
     {

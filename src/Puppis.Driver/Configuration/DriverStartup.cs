@@ -12,6 +12,8 @@ public static class DriverStartup
         FormerConfigurationPathVariable,
     ];
 
+    public const string StateDirectoryVariable = "PUPPIS_DRIVER_STATE";
+
     public const int ConfigurationExitCode = 78;
 
     public const int StoppedEarlyExitCode = 70;
@@ -30,6 +32,11 @@ public static class DriverStartup
 
         return null;
     }
+
+    public static string? StateDirectory(Func<string, string?>? environment = null) =>
+        (environment ?? Environment.GetEnvironmentVariable)(StateDirectoryVariable) is { Length: > 0 } named
+            ? named
+            : null;
 
     public static int Report(
         DriverConfigurationResult result,

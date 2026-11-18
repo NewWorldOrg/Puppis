@@ -118,7 +118,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
     /// Hands the bridge on at rest or closes it, whatever goes wrong on the way: a bridge is never left neither kept
     /// nor closed.
     /// </summary>
-    private static void LetGo(Dt295Bridge bridge, Action<Dt295Bridge>? keep, bool faulted, ILogger? logger)
+    internal static void LetGo(Dt295Bridge bridge, Action<Dt295Bridge>? keep, bool faulted, ILogger? logger)
     {
         try
         {
@@ -146,7 +146,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    private static void Tune(Dt295Bridge bridge, DvbChannel channel)
+    internal static void Tune(Dt295Bridge bridge, DvbChannel channel)
     {
         Dt295Frontend frontend = bridge.Frontend;
         bool locked = channel switch
@@ -178,15 +178,10 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(closed, this);
-            bool before;
-            CarrierToNoise ratio;
-            bool after;
 
             try
             {
-                before = bridge.Frontend.Locked();
-                ratio = bridge.Frontend.CarrierToNoise(before);
-                after = bridge.Frontend.Locked();
+                return QualityOf(bridge.Frontend);
             }
             catch (DvbDeviceException)
             {
@@ -194,13 +189,20 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
                 throw;
             }
-
-            return new SignalQuality(
-                new LockWindow(Dt295Signal.StatusOf(before), Dt295Signal.StatusOf(after)),
-                ratio,
-                new PostViterbiErrors(SignalReading.NotImplementedByThisTuner, [])
-            );
         }
+    }
+
+    internal static SignalQuality QualityOf(Dt295Frontend frontend)
+    {
+        bool before = frontend.Locked();
+        CarrierToNoise ratio = frontend.CarrierToNoise(before);
+        bool after = frontend.Locked();
+
+        return new SignalQuality(
+            new LockWindow(Dt295Signal.StatusOf(before), Dt295Signal.StatusOf(after)),
+            ratio,
+            new PostViterbiErrors(SignalReading.NotImplementedByThisTuner, [])
+        );
     }
 
     public byte[] Read(int count, CancellationToken cancellationToken)

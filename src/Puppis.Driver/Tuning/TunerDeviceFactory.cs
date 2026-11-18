@@ -35,9 +35,11 @@ public interface ITunerDeviceCheck
     /// Closes whatever is kept open for <paramref name="device"/> between its sessions, when anything is.
     /// </summary>
     void LetGo(DeviceSettings device) { }
+
+    bool IsKeptOpen(DeviceSettings device) => false;
 }
 
-public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck, IDisposable
+public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck, IReceptionProbeFactory, IDisposable
 {
     private readonly Dictionary<string, CechZd1Standby> standbys = new(StringComparer.Ordinal);
     private readonly Lock standing = new();
@@ -144,6 +146,78 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             _ => throw BackendNeverEstablished(),
         };
 
+    public IReceptionProbe Tune(DeviceSettings device, TuneParams tune, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        return backend switch
+        {
+            TunerBackend.Fake => new SyntheticReceptionProbe(tune.ToLegacyRequest().PhysicalChannel),
+            TunerBackend.Dvb => DvbReceptionProbe.Open(
+                systemCalls.Value,
+                time,
+                PathsOf(device),
+                DvbTuneRequest.Resolve(tune, tune.ToLegacyRequest()),
+                LnbPower.For(device.Kind, device.LnbPower),
+                settings,
+                cancellationToken
+            ),
+            TunerBackend.Usb => ProbeUsb(device, DvbTuneRequest.Resolve(tune, tune.ToLegacyRequest()), cancellationToken),
+            _ => throw BackendNeverEstablished(),
+        };
+    }
+
+    private IReceptionProbe ProbeUsb(DeviceSettings device, DvbChannel channel, CancellationToken cancellationToken)
+    {
+        string path = UsbPathOf(device);
+
+        if (usbHost.Value.ModelAt(path) == Dt295TunerDevice.Model)
+        {
+            return ProbeDt295(device, path, channel, cancellationToken);
+        }
+
+        if (channel is not TerrestrialChannel terrestrial)
+        {
+            throw DvbFailure.Refused(
+                $"devices['{device.Id}']: the usb tuner receives terrestrial broadcasting only, and a satellite channel was to be measured on it."
+            );
+        }
+
+        return CechZd1ReceptionProbe.Open(
+            usbHost.Value,
+            path,
+            DvbFrequency.TerrestrialHertz(terrestrial.PhysicalChannel),
+            pacing,
+            logger,
+            StandbyFor(device, path),
+            cancellationToken
+        );
+    }
+
+    private Dt295ReceptionProbe ProbeDt295(DeviceSettings device, string path, DvbChannel channel, CancellationToken cancellationToken)
+    {
+        RequireTheDeclaredKind(device, channel);
+        string deviceId = device.Id ?? path;
+        Dt295Bridge bridge;
+        bool kept;
+
+        lock (opening)
+        {
+            Dt295Bridge? taken = keeper.Take(deviceId, path);
+
+            kept = taken is not null;
+            bridge = taken ?? OpenAfresh(deviceId, path);
+        }
+
+        return Dt295ReceptionProbe.Tune(
+            bridge,
+            channel,
+            logger,
+            kept ? rested => keeper.Keep(deviceId, rested) : null,
+            cancellationToken
+        );
+    }
+
     public void Check(DeviceSettings device)
     {
         switch (backend)
@@ -176,6 +250,20 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     private string UsbPathOf(DeviceSettings device) =>
         UsbTunerDetector.NodeFor(usbHost.Value, device.Id, device.DevicePath)
         ?? throw DvbFailure.Refused($"devices['{device.Id}']: a usb device needs a devicePath.");
+
+    public bool IsKeptOpen(DeviceSettings device)
+    {
+        if (device.Id is not { } deviceId)
+        {
+            return false;
+        }
+
+        lock (standing)
+        {
+            return keeper.Holds(deviceId)
+                || (standbys.TryGetValue(deviceId, out CechZd1Standby? standby) && standby.HoldsATuner);
+        }
+    }
 
     public void LetGo(DeviceSettings device)
     {

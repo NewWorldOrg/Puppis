@@ -32,6 +32,18 @@ public sealed record TuningKey(TunerKind Kind, int PhysicalChannel, int Transpor
             _ => new TuningKey(TunerKind.Unspecified, 0, WholeStream),
         };
 
+    public TuneParams? AsTune() =>
+        Kind switch
+        {
+            TunerKind.Terrestrial when BroadcastStandards.IsTerrestrialChannel(PhysicalChannel) =>
+                TuneParams.Terrestrial(PhysicalChannel),
+            TunerKind.Satellite when BroadcastStandards.IsCs110Channel(PhysicalChannel) =>
+                TuneParams.Cs110(PhysicalChannel),
+            TunerKind.Satellite when BroadcastStandards.IsBsChannel(PhysicalChannel) && TransportStreamId is not WholeStream =>
+                TuneParams.Bs(PhysicalChannel, TransportStreamId),
+            _ => null,
+        };
+
     public override string ToString() =>
         TransportStreamId is WholeStream
             ? $"{TunerKindConverter.WireName(Kind)} channel {PhysicalChannel}"

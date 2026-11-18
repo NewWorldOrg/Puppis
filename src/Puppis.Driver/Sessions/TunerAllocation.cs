@@ -12,6 +12,7 @@ public enum TunerAllocationState
     Tuning,
     InUse,
     HandingOver,
+    Measuring,
 }
 
 public enum TunerAllocationEvent
@@ -45,6 +46,8 @@ public enum TunerAllocationEvent
     FaultedDisabled,
     Restored,
     RestoredAbsent,
+    MeasureBegan,
+    MeasureEnded,
 }
 
 public static class TunerTransitions
@@ -57,11 +60,16 @@ public static class TunerTransitions
     private const TunerAllocationState Tuning = TunerAllocationState.Tuning;
     private const TunerAllocationState InUse = TunerAllocationState.InUse;
     private const TunerAllocationState HandingOver = TunerAllocationState.HandingOver;
+    private const TunerAllocationState Measuring = TunerAllocationState.Measuring;
 
     public static IReadOnlyList<(TunerAllocationState From, TunerAllocationEvent On, TunerAllocationState To)> All { get; } =
     [
         (Free, TunerAllocationEvent.Claim, Tuning),
         (Ready, TunerAllocationEvent.Claim, Tuning),
+        (Measuring, TunerAllocationEvent.Claim, Tuning),
+
+        (Free, TunerAllocationEvent.MeasureBegan, Measuring),
+        (Measuring, TunerAllocationEvent.MeasureEnded, Free),
 
         (Tuning, TunerAllocationEvent.Ride, Tuning),
         (InUse, TunerAllocationEvent.Ride, InUse),
@@ -116,6 +124,7 @@ public static class TunerTransitions
         (Ready, TunerAllocationEvent.Disabled, Disabled),
         (Absent, TunerAllocationEvent.Disabled, Disabled),
         (Faulted, TunerAllocationEvent.Disabled, Disabled),
+        (Measuring, TunerAllocationEvent.Disabled, Disabled),
         (Tuning, TunerAllocationEvent.Disabled, Tuning),
         (InUse, TunerAllocationEvent.Disabled, InUse),
         (HandingOver, TunerAllocationEvent.Disabled, HandingOver),
@@ -130,6 +139,7 @@ public static class TunerTransitions
         (Free, TunerAllocationEvent.Faulted, Faulted),
         (Ready, TunerAllocationEvent.Faulted, Faulted),
         (Absent, TunerAllocationEvent.Faulted, Faulted),
+        (Measuring, TunerAllocationEvent.Faulted, Faulted),
         (Tuning, TunerAllocationEvent.Faulted, Faulted),
         (InUse, TunerAllocationEvent.Faulted, Faulted),
         (HandingOver, TunerAllocationEvent.Faulted, Faulted),
