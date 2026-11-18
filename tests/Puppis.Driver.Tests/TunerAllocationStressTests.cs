@@ -349,6 +349,7 @@ public sealed class TunerAllocationStressTests
     {
         private readonly Lock gate = new();
         private readonly Dictionary<string, int> open = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> opening = new(StringComparer.Ordinal);
         private readonly List<Device> created = [];
         private readonly ThreadLocal<Random> random = new(() => new Random(HashCode.Combine(seed, Environment.CurrentManagedThreadId)));
 
@@ -356,32 +357,75 @@ public sealed class TunerAllocationStressTests
         {
             string deviceId = device.Id!;
 
-            Thread.Sleep(random.Value!.Next(0, 6));
+            BeginOpening(deviceId, "opened");
 
-            if (random.Value!.Next(60) is 0)
+            try
             {
-                throw new DvbDeviceException($"{deviceId} did not lock", TuningFailure.NoLock);
+                Thread.Sleep(random.Value!.Next(0, 6));
+
+                if (random.Value!.Next(60) is 0)
+                {
+                    throw new DvbDeviceException($"{deviceId} did not lock", TuningFailure.NoLock);
+                }
+            }
+            catch
+            {
+                EndOpening(deviceId, null);
+
+                throw;
             }
 
             var opened = new Device(this, deviceId, tuning.PhysicalChannel);
-
-            lock (gate)
-            {
-                int already = open.GetValueOrDefault(deviceId);
-
-                if (already > 0)
-                {
-                    violations.Enqueue($"{deviceId} was opened while {already} of it was still open");
-                }
-
-                open[deviceId] = already + 1;
-                created.Add(opened);
-            }
+            EndOpening(deviceId, opened);
 
             return opened;
         }
 
-        public void Check(DeviceSettings device) => Thread.Sleep(random.Value!.Next(0, 3));
+        public void Check(DeviceSettings device)
+        {
+            string deviceId = device.Id!;
+
+            BeginOpening(deviceId, "checked");
+
+            try
+            {
+                Thread.Sleep(random.Value!.Next(0, 3));
+            }
+            finally
+            {
+                EndOpening(deviceId, null);
+            }
+        }
+
+        private void BeginOpening(string deviceId, string how)
+        {
+            lock (gate)
+            {
+                int handles = open.GetValueOrDefault(deviceId);
+                int others = opening.GetValueOrDefault(deviceId);
+
+                if (handles > 0 || others > 0)
+                {
+                    violations.Enqueue($"{deviceId} was {how} while {handles} of it was open and {others} other opens were under way");
+                }
+
+                opening[deviceId] = others + 1;
+            }
+        }
+
+        private void EndOpening(string deviceId, Device? opened)
+        {
+            lock (gate)
+            {
+                opening[deviceId] = opening.GetValueOrDefault(deviceId) - 1;
+
+                if (opened is not null)
+                {
+                    open[deviceId] = open.GetValueOrDefault(deviceId) + 1;
+                    created.Add(opened);
+                }
+            }
+        }
 
         public void FailOne(Random pick)
         {
