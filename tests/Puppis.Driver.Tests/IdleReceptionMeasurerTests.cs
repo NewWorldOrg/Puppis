@@ -552,7 +552,6 @@ public sealed class IdleReceptionMeasurerTests
         using IdleReceptionMeasurer measurer = Measurer(timers);
 
         await measurer.StartAsync(CancellationToken.None);
-        timers.Advance(IdleReceptionMeasurer.LooksEvery);
         timers.Advance(Rested);
         await WaitUntilAsync(() => measurer.Finished is 1);
 

@@ -710,7 +710,7 @@ public sealed class TunerSessionManager(
         if (clearance.AMeasurementIsStopping)
         {
             logger.LogError(
-                "Session {SessionId} was refused the device {DeviceId} while it was only being measured: the measurement did not stop within {Limit}.",
+                "Session {SessionId} was refused the device {DeviceId} because the measurement under way on it had not stopped after {Limit}.",
                 sessionId.Value,
                 deviceId,
                 limit

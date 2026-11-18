@@ -38,6 +38,8 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
     private const string OnlyBeingMeasured = "only being measured";
 
+    private const string MeasurementDidNotStop = "the measurement under way on it had not stopped";
+
     private static readonly SessionPurpose[] Purposes =
     [
         SessionPurpose.Recording,
@@ -90,7 +92,8 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             await run.PlayAsync();
             output.WriteLine(
                 $"seed {seed}: {run.LeftMidOpen} requests left while their tuner was being opened, "
-                + $"{run.MeasurementsInterrupted} measurements were interrupted and {run.MeasurementsFinished} ran to their end"
+                + $"{run.MeasurementsInterrupted} measurements were interrupted and {run.MeasurementsFinished} ran to their end, "
+                + $"{run.GaveUpOnAMeasurement} requests gave up on a measurement that had not stopped in time"
             );
         }
         catch (Exception failure) when (failure is not SeededFailure)
@@ -125,6 +128,8 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
         public long MeasurementsInterrupted => measurer.Interrupted;
 
         public long MeasurementsFinished => measurer.Finished;
+
+        public int GaveUpOnAMeasurement => log.GaveUpOnAMeasurement.Count;
 
         public Run(int seed, bool sessionsAreShort)
         {
@@ -866,6 +871,8 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
 
         public ConcurrentQueue<string> RefusedWhileMeasured { get; } = new();
 
+        public ConcurrentQueue<string> GaveUpOnAMeasurement { get; } = new();
+
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull => null;
 
@@ -889,6 +896,11 @@ public sealed class TunerAllocationStressTests(ITestOutputHelper output)
             if (message.Contains(OnlyBeingMeasured, StringComparison.Ordinal))
             {
                 RefusedWhileMeasured.Enqueue(message);
+            }
+
+            if (message.Contains(MeasurementDidNotStop, StringComparison.Ordinal))
+            {
+                GaveUpOnAMeasurement.Enqueue(message);
             }
         }
     }

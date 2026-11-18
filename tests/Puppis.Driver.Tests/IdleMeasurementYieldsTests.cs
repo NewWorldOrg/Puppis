@@ -240,7 +240,8 @@ public sealed class IdleMeasurementYieldsTests
         SessionStart refused = await asked!.WaitAsync(Deadlock);
 
         Assert.Equal(SessionRefusal.DeviceBusy, refused.Refusal);
-        Assert.Contains(log.Lines, line => line.Contains("only being measured", StringComparison.Ordinal));
+        Assert.Contains(log.Lines, line => line.Contains("the measurement under way on it had not stopped", StringComparison.Ordinal));
+        Assert.DoesNotContain(log.Lines, line => line.Contains("only being measured", StringComparison.Ordinal));
         Assert.Equal(["probe opened north 31"], hardware.Happened);
 
         release.Set();
