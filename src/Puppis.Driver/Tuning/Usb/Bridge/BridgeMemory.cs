@@ -23,16 +23,17 @@ public sealed class BridgeMemory(IUsbConnection usb)
 
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(1);
 
-    private readonly Lock gate = new();
+    private readonly TurnTakingConnection turns = usb as TurnTakingConnection ?? new TurnTakingConnection(usb);
+    private long requests;
 
     /// <summary>
     /// Whether the bridge takes full 32 bit addresses and writes of more than one word.
     /// </summary>
     public bool Widened { get; private set; }
 
-    public string Path => usb.Path;
+    public string Path => turns.Path;
 
-    public long Requests { get; private set; }
+    public long Requests => Interlocked.Read(ref requests);
 
     public static UsbSetup SetupFor(byte requestType, uint address) =>
         new(
@@ -43,6 +44,8 @@ public sealed class BridgeMemory(IUsbConnection usb)
         );
 
     public void MarkWidened() => Widened = true;
+
+    public HeldTurn TakeTurn() => turns.TakeTurn();
 
     public uint Read(uint address) => ReadWords(address, 1)[0];
 
@@ -57,18 +60,13 @@ public sealed class BridgeMemory(IUsbConnection usb)
             uint at = address + (uint)(done * WordBytes);
             Reachable(at, taking);
             Span<byte> asked = bytes.AsSpan(0, taking * WordBytes);
-            int arrived;
-
-            lock (gate)
-            {
-                Requests++;
-                arrived = usb.ControlIn(SetupFor(ReadRequestType, at), asked, Patience);
-            }
+            Interlocked.Increment(ref requests);
+            int arrived = turns.ControlIn(SetupFor(ReadRequestType, at), asked, Patience);
 
             if (arrived != asked.Length)
             {
                 throw DvbFailure.Refused(
-                    $"{usb.Path}: the bridge answered {arrived} of the {asked.Length} bytes asked for at 0x{at:X}."
+                    $"{turns.Path}: the bridge answered {arrived} of the {asked.Length} bytes asked for at 0x{at:X}."
                 );
             }
 
@@ -99,11 +97,8 @@ public sealed class BridgeMemory(IUsbConnection usb)
                 BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(word * WordBytes), words[done + word]);
             }
 
-            lock (gate)
-            {
-                Requests++;
-                usb.ControlOut(SetupFor(WriteRequestType, at), bytes.AsSpan(0, taking * WordBytes), Patience);
-            }
+            Interlocked.Increment(ref requests);
+            turns.ControlOut(SetupFor(WriteRequestType, at), bytes.AsSpan(0, taking * WordBytes), Patience);
         }
     }
 
@@ -120,11 +115,8 @@ public sealed class BridgeMemory(IUsbConnection usb)
             BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(word * WordBytes), words[word]);
         }
 
-        lock (gate)
-        {
-            Requests++;
-            usb.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
-        }
+        Interlocked.Increment(ref requests);
+        turns.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
     }
 
     /// <summary>
@@ -134,18 +126,13 @@ public sealed class BridgeMemory(IUsbConnection usb)
     {
         Reachable(address, 1);
         Span<byte> bytes = stackalloc byte[2];
-        int arrived;
-
-        lock (gate)
-        {
-            Requests++;
-            arrived = usb.ControlIn(SetupFor(ReadRequestType, address), bytes, Patience);
-        }
+        Interlocked.Increment(ref requests);
+        int arrived = turns.ControlIn(SetupFor(ReadRequestType, address), bytes, Patience);
 
         return arrived is 2
             ? BinaryPrimitives.ReadUInt16BigEndian(bytes)
             : throw DvbFailure.Refused(
-                $"{usb.Path}: the bridge answered {arrived} of the 2 bytes asked for at 0x{address:X}."
+                $"{turns.Path}: the bridge answered {arrived} of the 2 bytes asked for at 0x{address:X}."
             );
     }
 
@@ -157,12 +144,8 @@ public sealed class BridgeMemory(IUsbConnection usb)
         Reachable(address, 1);
         Span<byte> bytes = stackalloc byte[2];
         BinaryPrimitives.WriteUInt16BigEndian(bytes, value);
-
-        lock (gate)
-        {
-            Requests++;
-            usb.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
-        }
+        Interlocked.Increment(ref requests);
+        turns.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
     }
 
     public ushort ReadHalf(uint address) => (ushort)(Read(address) >> 16);
@@ -172,20 +155,16 @@ public sealed class BridgeMemory(IUsbConnection usb)
     /// </summary>
     public void WriteHalf(uint address, ushort value)
     {
-        lock (gate)
-        {
-            uint word = Read(address);
-            Write(address, ((uint)value << 16) | (word & 0xFFFF));
-        }
+        using HeldTurn turn = turns.TakeTurn();
+        uint word = Read(address);
+        Write(address, ((uint)value << 16) | (word & 0xFFFF));
     }
 
     public void Modify(uint address, uint clear, uint set)
     {
-        lock (gate)
-        {
-            uint word = Read(address);
-            Write(address, (word & ~clear) | set);
-        }
+        using HeldTurn turn = turns.TakeTurn();
+        uint word = Read(address);
+        Write(address, (word & ~clear) | set);
     }
 
     private void Reachable(uint address, int words)
