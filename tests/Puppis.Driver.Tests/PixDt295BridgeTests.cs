@@ -12,7 +12,7 @@ public sealed class BridgeWindowTests
     {
         FakeDt295 device = FakeDt295.Locking();
         device.Word(0x01902028, 0x13D1C0);
-        var window = new BridgeWindow(new BridgeMemory(device));
+        var window = new BridgeWindow(new BridgeMemory(new TurnTakingConnection(device)));
 
         uint found = window.Read(0x01902028);
 
@@ -26,7 +26,7 @@ public sealed class BridgeWindowTests
     public void AWriteGoesThroughTheWriteWindow()
     {
         FakeDt295 device = FakeDt295.Locking();
-        var window = new BridgeWindow(new BridgeMemory(device));
+        var window = new BridgeWindow(new BridgeMemory(new TurnTakingConnection(device)));
 
         window.WriteAndCheck(0x01901044, 0x00BC0000);
 
@@ -40,7 +40,7 @@ public sealed class BridgeWindowTests
     {
         FakeDt295 device = FakeDt295.Locking();
         device.Word(BridgeWindow.ReadWindow, 0x01600000);
-        var window = new BridgeWindow(new BridgeMemory(device));
+        var window = new BridgeWindow(new BridgeMemory(new TurnTakingConnection(device)));
 
         DvbDeviceException refused = Assert.Throws<DvbDeviceException>(() => window.Read(0x01902028));
 
@@ -52,7 +52,7 @@ public sealed class BridgeWindowTests
     [Fact]
     public void AReadThatWouldCrossOutOfItsRegionIsRefused()
     {
-        var window = new BridgeWindow(new BridgeMemory(FakeDt295.Locking()));
+        var window = new BridgeWindow(new BridgeMemory(new TurnTakingConnection(FakeDt295.Locking())));
 
         Assert.Throws<ArgumentOutOfRangeException>(() => window.ReadWords(0x0191FFF8, 4));
     }
@@ -66,7 +66,9 @@ public sealed class Dt295StartupTests
         FakeDt295 device = FakeDt295.Locking();
         device.Word(0xF02008, 0x00010000);
 
-        DvbDeviceException refused = Assert.Throws<DvbDeviceException>(() => Dt295Startup.RequirePowerOnState(new BridgeMemory(device)));
+        var memory = new BridgeMemory(new TurnTakingConnection(device));
+
+        DvbDeviceException refused = Assert.Throws<DvbDeviceException>(() => Dt295Startup.RequirePowerOnState(memory));
 
         Assert.Contains("plug it back in", refused.Message, StringComparison.Ordinal);
         Assert.Empty(device.Writes);
@@ -77,7 +79,7 @@ public sealed class Dt295StartupTests
     {
         FakeDt295 device = FakeDt295.Locking();
         string known = device.HandlerHash();
-        var memory = new BridgeMemory(device);
+        var memory = new BridgeMemory(new TurnTakingConnection(device));
         Dt295Startup.RequireTheKnownHandler(memory, known);
 
         device.Word(CopyProgram.HookAt, CopyProgram.Hook[0]);
@@ -96,7 +98,7 @@ public sealed class Dt295StartupTests
         var pacing = new DevicePacing(TimeProvider.System, span => seen.Add($"wait {span.TotalMilliseconds:0}"));
         var memory = new RecordingConnection(device, seen);
 
-        Dt295Startup.ResetTheDemodulator(new BridgeMemory(memory), pacing);
+        Dt295Startup.ResetTheDemodulator(new BridgeMemory(new TurnTakingConnection(memory)), pacing);
 
         Assert.Equal(["F10014 0002", "F10018 0000", "wait 20", "F10018 0002", "wait 5"], seen);
     }
@@ -106,7 +108,7 @@ public sealed class Dt295StartupTests
     {
         FakeDt295 device = FakeDt295.Locking();
         device.Word(0xF1011C, 0xFFFF0000);
-        var memory = new BridgeMemory(device);
+        var memory = new BridgeMemory(new TurnTakingConnection(device));
 
         Dt295Startup.StartClocks(memory);
         Dt295Startup.StartI2cMaster(memory);

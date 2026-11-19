@@ -9,7 +9,6 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
 {
     private readonly CechZd1Standby.KeptTuner tuner;
     private readonly CechZd1Standby? keptIn;
-    private readonly Lock gate = new();
     private bool closed;
 
     private CechZd1ReceptionProbe(CechZd1Standby.KeptTuner tuner, CechZd1Standby? keptIn)
@@ -90,7 +89,7 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
         return null;
     }
 
-    private static void Close(CechZd1Frontend? frontend, IUsbConnection usb)
+    private static void Close(CechZd1Frontend? frontend, TurnTakingConnection usb)
     {
         if (frontend is not null)
         {
@@ -108,7 +107,7 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
         CancellationToken stopWhileStillClosed
     )
     {
-        IUsbConnection usb = host.Open(path, CechZd1TunerDevice.Interface);
+        var usb = new TurnTakingConnection(host.Open(path, CechZd1TunerDevice.Interface));
         CechZd1Frontend? frontend = null;
 
         try
@@ -160,25 +159,22 @@ public sealed class CechZd1ReceptionProbe : IReceptionProbe
 
     public SignalQuality Measure()
     {
-        lock (gate)
-        {
-            ObjectDisposedException.ThrowIf(closed, this);
+        using HeldTurn turn = tuner.Usb.TakeTurn();
+        ObjectDisposedException.ThrowIf(closed, this);
 
-            return CechZd1Signal.QualityOf(tuner.Frontend.ReadSignal());
-        }
+        return CechZd1Signal.QualityOf(tuner.Frontend.ReadSignal());
     }
 
     public void Dispose()
     {
-        lock (gate)
-        {
-            if (closed)
-            {
-                return;
-            }
+        using HeldTurn turn = tuner.Usb.TakeTurn();
 
-            closed = true;
-            CechZd1TunerDevice.Rest(tuner, keptIn);
+        if (closed)
+        {
+            return;
         }
+
+        closed = true;
+        CechZd1TunerDevice.Rest(tuner, keptIn);
     }
 }

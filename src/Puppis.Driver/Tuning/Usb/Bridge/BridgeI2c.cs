@@ -28,51 +28,47 @@ public sealed class BridgeI2c(BridgeMemory memory)
 
     public const int MostPolls = 2000;
 
-    private readonly Lock gate = new();
-
     public void Write(byte address, ReadOnlySpan<byte> bytes)
     {
-        lock (gate)
-        {
-            try
-            {
-                Begin(address, bytes);
-                End();
-            }
-            catch
-            {
-                Release();
+        using HeldTurn turn = memory.TakeTurn();
 
-                throw;
-            }
+        try
+        {
+            Begin(address, bytes);
+            End();
+        }
+        catch
+        {
+            Release();
+
+            throw;
         }
     }
 
     public void WriteThenRead(byte address, ReadOnlySpan<byte> bytes, Span<byte> into)
     {
-        lock (gate)
+        using HeldTurn turn = memory.TakeTurn();
+
+        try
         {
-            try
+            Begin(address, bytes);
+            Send((uint)(address | 1), SendAfterRepeatedStart, address, "its address for reading");
+
+            for (int index = 0; index < into.Length; index++)
             {
-                Begin(address, bytes);
-                Send((uint)(address | 1), SendAfterRepeatedStart, address, "its address for reading");
-
-                for (int index = 0; index < into.Length; index++)
-                {
-                    bool last = index == into.Length - 1;
-                    memory.Write(Control, last ? SendAfterStart : ReceiveAndAcknowledge);
-                    WaitForTheByte(address);
-                    into[index] = (byte)memory.Read(Data);
-                }
-
-                End();
+                bool last = index == into.Length - 1;
+                memory.Write(Control, last ? SendAfterStart : ReceiveAndAcknowledge);
+                WaitForTheByte(address);
+                into[index] = (byte)memory.Read(Data);
             }
-            catch
-            {
-                Release();
 
-                throw;
-            }
+            End();
+        }
+        catch
+        {
+            Release();
+
+            throw;
         }
     }
 

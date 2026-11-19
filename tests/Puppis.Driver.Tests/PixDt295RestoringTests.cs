@@ -105,7 +105,7 @@ public sealed class Dt295RestoringTests
     public void AWindowWordThatCannotBeReadBackIsPutBack()
     {
         FakeDt295 fake = FakeDt295.Locking();
-        var window = new BridgeWindow(new BridgeMemory(fake));
+        var window = new BridgeWindow(new BridgeMemory(new TurnTakingConnection(fake)));
         int reads = 0;
         fake.FailingRead = reached => reached == BridgeWindow.ReadWindow && ++reads is 2;
 

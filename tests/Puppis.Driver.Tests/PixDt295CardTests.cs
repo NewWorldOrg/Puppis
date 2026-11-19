@@ -160,7 +160,7 @@ public sealed class Dt295CardSlotTests
         List<string> seen = [];
         var clock = new SteppedClock(UsbTestSupport.Start);
         var pacing = new DevicePacing(clock, span => { seen.Add($"wait {span.TotalMilliseconds:0}"); clock.Advance(span); });
-        var uart = new CardUart(new BridgeMemory(new RecordingConnection(device, seen)), pacing);
+        var uart = new CardUart(new BridgeMemory(new TurnTakingConnection(new RecordingConnection(device, seen))), pacing);
 
         return (new Dt295CardSlot(uart), device, seen);
     }

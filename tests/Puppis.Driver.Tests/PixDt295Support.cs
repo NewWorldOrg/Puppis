@@ -65,7 +65,7 @@ internal static class PixDt295Support
         );
     }
 
-    public static Dt295Chips Chips(FakeDt295 device) => new(new BridgeI2c(new BridgeMemory(device)));
+    public static Dt295Chips Chips(FakeDt295 device) => new(new BridgeI2c(new BridgeMemory(new TurnTakingConnection(device))));
 
     /// <summary>
     /// The spec's way of writing the chip steps, one per line, made into what the device's log shows: a wait, a write
