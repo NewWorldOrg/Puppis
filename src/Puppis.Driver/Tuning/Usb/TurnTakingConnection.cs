@@ -59,25 +59,34 @@ public sealed class TurnTakingConnection(IUsbConnection usb) : IUsbConnection
     /// </summary>
     public T Together<T>(Func<T> requests)
     {
+        using HeldTurn turn = TakeTurn();
+
+        return requests();
+    }
+
+    public HeldTurn TakeTurn()
+    {
+        if (Holds())
+        {
+            return default;
+        }
+
         Wait();
+        Volatile.Write(ref holder, Thread.CurrentThread);
 
-        try
-        {
-            holder = Thread.CurrentThread;
-
-            return requests();
-        }
-        finally
-        {
-            holder = null;
-            Pass();
-        }
+        return new HeldTurn(this);
     }
 
     public IUsbBulkReader ReadBulk(byte endpoint, int transferBytes, int transfersInFlight) =>
         usb.ReadBulk(endpoint, transferBytes, transfersInFlight);
 
     public void Dispose() => usb.Dispose();
+
+    internal void GiveBack()
+    {
+        Volatile.Write(ref holder, null);
+        Pass();
+    }
 
     private bool Holds() => ReferenceEquals(Volatile.Read(ref holder), Thread.CurrentThread);
 
