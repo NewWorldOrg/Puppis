@@ -3,10 +3,6 @@ using System.Text;
 
 namespace Puppis.Driver.CardLending;
 
-/// <summary>
-/// The key a lending driver and its borrowers share. Neither side ever sends it; each proves it holds the key by what
-/// it derives from it and the two nonces of a lease.
-/// </summary>
 public sealed class LendingKey
 {
     public const int ShortestText = 32;
@@ -33,9 +29,6 @@ public sealed class LendingKey
         return new LendingKey(Encoding.UTF8.GetBytes(trimmed));
     }
 
-    /// <summary>
-    /// Reads the key from a file that only its owner and group may read, or says why it would not.
-    /// </summary>
     public static LendingKey? ReadFile(string? path, out string? problem)
     {
         problem = null;

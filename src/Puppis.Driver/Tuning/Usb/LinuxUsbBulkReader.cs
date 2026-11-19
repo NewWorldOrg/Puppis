@@ -5,10 +5,6 @@ using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tuning.Usb;
 
-/// <summary>
-/// Keeps a fixed set of bulk reads submitted on one endpoint. The reads and their buffers live outside the managed
-/// heap because the kernel writes into them while they are submitted.
-/// </summary>
 internal sealed unsafe class LinuxUsbBulkReader : IUsbBulkReader
 {
     private const int ShutDown = 108;
@@ -131,10 +127,6 @@ internal sealed unsafe class LinuxUsbBulkReader : IUsbBulkReader
         }
     }
 
-    /// <summary>
-    /// Waits for every discarded read to come back. Memory the kernel may still write into is not freed until the
-    /// device is closed, which is when the kernel lets go of the reads it still holds.
-    /// </summary>
     private bool ReapTheDiscarded()
     {
         long started = Stopwatch.GetTimestamp();

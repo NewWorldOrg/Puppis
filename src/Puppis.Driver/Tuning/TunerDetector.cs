@@ -14,9 +14,6 @@ public sealed record TunerDetection(
     DeviceHardware? Hardware = null
 );
 
-/// <param name="Name">The name the hardware gives itself, or <see langword="null"/> when it could not be asked.</param>
-/// <param name="KernelDriver">The kernel driver the device is bound to, when one is.</param>
-/// <param name="UsbPort">Where a USB device hangs on the bus.</param>
 public sealed record DeviceHardware(string? Name, string? KernelDriver, TunerBus Bus, string? UsbPort);
 
 public interface ITunerDetector

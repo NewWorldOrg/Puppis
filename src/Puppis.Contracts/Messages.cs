@@ -345,15 +345,8 @@ public sealed record SessionSnapshot(
 
     public string? FailureTitle { get; init; }
 
-    /// <summary>
-    /// When the recording's file was last written before this session opened it, or <see langword="null"/> when the
-    /// session began the file rather than carrying on into one that already held something.
-    /// </summary>
     public DateTimeOffset? AppendedAfter { get; init; }
 
-    /// <summary>
-    /// When this session first wrote into the recording's file, or <see langword="null"/> while it has written nothing.
-    /// </summary>
     public DateTimeOffset? FirstWrittenAt { get; init; }
 }
 
@@ -386,9 +379,6 @@ public sealed record TunerSnapshot(
 
     public bool Toggled { get; init; }
 
-    /// <summary>
-    /// The machine the tuner belongs to when it is not this driver's own, or <see langword="null"/> for this one.
-    /// </summary>
     public string? Machine { get; init; }
 
     public TunerHardwareDto? Hardware { get; init; }

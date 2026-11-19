@@ -129,9 +129,6 @@ public sealed class Dt295StartupTests
     }
 }
 
-/// <summary>
-/// Passes requests on and writes each write into a list, beside whatever else the test writes there.
-/// </summary>
 internal sealed class RecordingConnection(IUsbConnection usb, List<string> seen) : IUsbConnection
 {
     public string Path => usb.Path;

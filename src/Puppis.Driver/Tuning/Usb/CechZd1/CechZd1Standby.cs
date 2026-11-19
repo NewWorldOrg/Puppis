@@ -3,10 +3,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
-/// <summary>
-/// The bridge and the frontend of a tuner that was closed, kept open and asleep so that the next session on the same
-/// device wakes and tunes them instead of starting the bridge and initialising the chips again.
-/// </summary>
 public sealed class CechZd1Standby : IDisposable
 {
     private readonly Lock gate = new();
@@ -40,10 +36,6 @@ public sealed class CechZd1Standby : IDisposable
         }
     }
 
-    /// <summary>
-    /// Hands out what is kept for <paramref name="path"/>, or null when nothing is. Whatever is kept for another path
-    /// is closed, since the tuner it belonged to is no longer where it was.
-    /// </summary>
     public KeptTuner? Take(string path)
     {
         KeptTuner? taken;
@@ -69,10 +61,6 @@ public sealed class CechZd1Standby : IDisposable
         return null;
     }
 
-    /// <summary>
-    /// Keeps the tuner for the next session. Anything kept before, and anything given after this standby is disposed,
-    /// is closed instead.
-    /// </summary>
     public void Keep(KeptTuner tuner)
     {
         KeptTuner? replaced;
@@ -91,9 +79,6 @@ public sealed class CechZd1Standby : IDisposable
         }
     }
 
-    /// <summary>
-    /// Asks the kept demodulator to identify itself, which is the check a closed device would get by being opened.
-    /// </summary>
     public void Check(string path)
     {
         KeptTuner? taken = Take(path);

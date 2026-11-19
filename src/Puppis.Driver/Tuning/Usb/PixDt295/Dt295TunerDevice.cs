@@ -8,10 +8,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// The PIX-DT295 on USB, driven from its bridge's power-on state with nothing written to flash, and given back as
-/// it was found when it closes. One device tunes one side, terrestrial or satellite, per opening.
-/// </summary>
 public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 {
     public static readonly UsbModel Model = new(0x06B8, 0x103B);
@@ -56,14 +52,8 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
     public bool IsOpen => !Volatile.Read(ref closed);
 
-    /// <summary>
-    /// The card slot of this tuner as a smart-card service, valid while the tuner is open.
-    /// </summary>
     public ISmartCardService CardService() => bridge.CardService();
 
-    /// <summary>
-    /// Opens the device from power on, tunes it and starts the stream; closing gives the device back as it was found.
-    /// </summary>
     public static Dt295TunerDevice Open(
         IUsbHost host,
         string path,
@@ -74,12 +64,6 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         string knownHandler = Dt295Startup.HandlerAtPowerOn
     ) => Start(Dt295Bridge.Open(host, path, pacing, logger, knownHandler), channel, pacing, bytePatience, logger, null);
 
-    /// <summary>
-    /// Tunes an open bridge and starts the stream. Closing stops the stream and hands the bridge to
-    /// <paramref name="keep"/> at rest, unless the device failed, in which case the bridge is closed and given back;
-    /// without <paramref name="keep"/> it is always closed. A channel that does not lock hands the bridge on the same
-    /// way; any other failure closes it.
-    /// </summary>
     public static Dt295TunerDevice Start(
         Dt295Bridge bridge,
         DvbChannel channel,
@@ -114,10 +98,6 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    /// <summary>
-    /// Hands the bridge on at rest or closes it, whatever goes wrong on the way: a bridge is never left neither kept
-    /// nor closed.
-    /// </summary>
     internal static void LetGo(Dt295Bridge bridge, Action<Dt295Bridge>? keep, bool faulted, ILogger? logger)
     {
         try

@@ -70,9 +70,6 @@ public sealed record BorrowSettings(
     string? KeyFile = null
 );
 
-/// <summary>
-/// Lending this driver's card to other drivers in the household, or borrowing one; absent, the driver does neither.
-/// </summary>
 public sealed record CardLendingSettings(LendSettings? Lend = null, BorrowSettings? Borrow = null)
 {
     public const int DefaultPort = 40772;

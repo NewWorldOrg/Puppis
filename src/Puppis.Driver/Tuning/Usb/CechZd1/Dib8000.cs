@@ -9,9 +9,6 @@ public enum Diversity
     Both = 1,
 }
 
-/// <summary>
-/// The ISDB-T demodulator: its power, converter, output, pins and the settings a channel search writes.
-/// </summary>
 public sealed class Dib8000(IRegisterBus d, DevicePacing pacing)
 {
     public const ushort ChipId = 0x01B3;

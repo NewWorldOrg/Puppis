@@ -2,9 +2,6 @@ using Microsoft.Extensions.Logging;
 
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// Unscrambles a transport stream with the keys a conditional-access card hands back for the ECMs the stream carries.
-/// </summary>
 public sealed class TransportStreamDescrambler : IDescrambler
 {
     public const int PacketLength = 188;
@@ -94,9 +91,6 @@ public sealed class TransportStreamDescrambler : IDescrambler
         }
     }
 
-    /// <summary>
-    /// Hands back what was read before the latest call and not yet handed on: the held head and any incomplete packet.
-    /// </summary>
     public byte[] WhatItCouldNotRead()
     {
         lock (gate)
@@ -325,10 +319,6 @@ public sealed class TransportStreamDescrambler : IDescrambler
         }
     }
 
-    /// <summary>
-    /// Reads what the held packets carried on a PID before it was known to carry sections: every PMT in turn, and only
-    /// the latest ECM, which goes to the card at once rather than at its next repetition.
-    /// </summary>
     private void LookBack()
     {
         if (lookingBack)
@@ -458,10 +448,6 @@ public sealed class TransportStreamDescrambler : IDescrambler
 
     private bool EveryProgrammeIsSettled() => map.Complete && Answered(map.EcmPids);
 
-    /// <summary>
-    /// The PAT has been read, a PMT has named an ECM for this card, every ECM named so far has been answered, and every
-    /// scrambled packet held that still has no keys belongs to an ECM the card has already refused.
-    /// </summary>
     private bool EverythingHeldCanBeRead() =>
         hold is HeadHold.WhatIsHeld
         && map.PatSeen

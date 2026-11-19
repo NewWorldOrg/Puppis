@@ -2,14 +2,8 @@ using System.Buffers.Binary;
 
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// What the card said to one ECM: its return code, and the keys when the code grants them.
-/// </summary>
 public sealed class EcmAnswer(ushort returnCode, ScrambleKeys? keys)
 {
-    /// <summary>
-    /// The system key, the initial value and the key pair, one after another: what the keys were made from.
-    /// </summary>
     public const int KeyMaterialLength = Multi2.SystemKeyLength + ScrambleKeys.InitialValueLength + ScrambleKeys.PairLength;
 
     private readonly byte[] keyMaterial = [];
@@ -20,15 +14,8 @@ public sealed class EcmAnswer(ushort returnCode, ScrambleKeys? keys)
 
     public bool Granted => Keys is not null;
 
-    /// <summary>
-    /// What <see cref="Keys"/> were made from, kept so they can be lent; empty where the keys were not granted.
-    /// </summary>
     public ReadOnlyMemory<byte> KeyMaterial => keyMaterial;
 
-    /// <summary>
-    /// The answer to an ECM that unlocked its keys, made from <paramref name="material"/> as
-    /// <see cref="KeyMaterial"/> lays it out.
-    /// </summary>
     public static EcmAnswer Granting(ushort returnCode, ReadOnlySpan<byte> material)
     {
         if (material.Length is not KeyMaterialLength)
@@ -50,10 +37,6 @@ public sealed class EcmAnswer(ushort returnCode, ScrambleKeys? keys)
         : this(returnCode, keys) => this.keyMaterial = keyMaterial;
 }
 
-/// <summary>
-/// Which card answered the initial setting: the CA system it belongs to and its card ID, the six bytes that follow
-/// the CA system in the answer. The ID names one card, so <see cref="ToString"/> leaves it out.
-/// </summary>
 public sealed class CardIdentity
 {
     public const int CardIdLength = 6;
@@ -74,17 +57,11 @@ public sealed class CardIdentity
 
     public int CaSystemId { get; }
 
-    /// <summary>
-    /// The card ID as twelve upper-case hexadecimal digits, one pair for each byte in the order the card sent them.
-    /// </summary>
     public string CardId { get; }
 
     public override string ToString() => $"a card of CA system 0x{CaSystemId:X4}";
 }
 
-/// <summary>
-/// The conditional-access card of ARIB STD-B25, spoken to over PC/SC with the two commands descrambling needs.
-/// </summary>
 public sealed class ConditionalAccessCard : IConditionalAccess
 {
     public const int LongestEcmBody = 255;
@@ -146,25 +123,15 @@ public sealed class ConditionalAccessCard : IConditionalAccess
         Reader = reader;
     }
 
-    /// <summary>
-    /// The reader the card answered in, as the service lists it.
-    /// </summary>
     public string Reader { get; }
 
     public int CaSystemId => Identity?.CaSystemId ?? 0;
 
-    /// <summary>
-    /// The card that answered the initial setting last, which after the card was reset may be another card.
-    /// </summary>
     public CardIdentity? Identity { get; private set; }
 
     public static ReadOnlySpan<byte> InitialSettingCommand =>
         [CommandClass, InitialSettingInstruction, 0x00, 0x00, 0x00];
 
-    /// <summary>
-    /// Takes the service over and connects to the first reader, in the order the service lists them, whose card answers the initial setting.
-    /// <paramref name="settled"/> hears which card answered, each time one does.
-    /// </summary>
     public static ConditionalAccessCard Open(ISmartCardService service, Action<CardIdentity>? settled = null)
     {
         ArgumentNullException.ThrowIfNull(service);
@@ -245,9 +212,6 @@ public sealed class ConditionalAccessCard : IConditionalAccess
         }
     }
 
-    /// <summary>
-    /// Hands the card the body of one ECM section — the bytes after its eight-byte header and before its CRC.
-    /// </summary>
     public EcmAnswer Answer(ReadOnlySpan<byte> ecmBody)
     {
         if (ecmBody.Length is 0 or > LongestEcmBody)

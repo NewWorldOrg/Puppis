@@ -6,9 +6,6 @@ using Puppis.Driver.Configuration;
 
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// Something that can say how its card stands without speaking to the card.
-/// </summary>
 public interface ICardReaderReport
 {
     CardReaderDto Inspect();
@@ -16,10 +13,6 @@ public interface ICardReaderReport
 
 public static partial class CardReaderNames
 {
-    /// <summary>
-    /// The reader's name as it may be shown: pcsc-lite adds the reader's serial number in parentheses, the interface in
-    /// brackets and the slot as two numbers at the end, and the serial names one unit.
-    /// </summary>
     public static string Shown(string listed) =>
         Spaces().Replace(Slot().Replace(Enclosed().Replace(listed, " "), string.Empty), " ").Trim();
 
@@ -35,10 +28,6 @@ public static partial class CardReaderNames
 
 public static class CardReaders
 {
-    /// <summary>
-    /// How the card of a driver stands. A DVB driver that reads no card has no smart-card library to read it with, since
-    /// the configuration cannot otherwise leave it without one.
-    /// </summary>
     public static CardReaderDto Inspect(
         IDescramblerFactory cards,
         DriverConfiguration configuration,
@@ -63,9 +52,6 @@ public static class CardReaders
     }
 }
 
-/// <summary>
-/// Passes a card through, writing down each time it answers an ECM.
-/// </summary>
 internal sealed class NoticedCard(IConditionalAccess card, Action answered) : IConditionalAccess
 {
     public int CaSystemId => card.CaSystemId;
@@ -81,9 +67,6 @@ internal sealed class NoticedCard(IConditionalAccess card, Action answered) : IC
     public void Dispose() => card.Dispose();
 }
 
-/// <summary>
-/// When something last answered and last failed to, as ticks so a stream's thread and a request can share them.
-/// </summary>
 internal sealed class AnswerTimes(TimeProvider clock)
 {
     private long answered;

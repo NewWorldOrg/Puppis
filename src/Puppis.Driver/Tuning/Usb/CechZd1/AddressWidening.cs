@@ -3,10 +3,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
-/// <summary>
-/// Diverts the bridge's handling of a memory request through a routine of ours that takes the address bits the
-/// handling at power on throws away. Only RAM is written, and the bridge forgets it when power goes.
-/// </summary>
 public static class AddressWidening
 {
     public const uint ReadSideFirst = 0xE9AC0;

@@ -170,11 +170,6 @@ public sealed class BorrowedCardTests
     }
 }
 
-/// <summary>
-/// The lending port over real loopback sockets. The lender's clock stands still unless a test moves it, the deadline
-/// to borrow is checked when a test asks, and every wait is for something that happens, given time to spare on a busy
-/// machine.
-/// </summary>
 public sealed class CardLendingOverTheWireTests : IAsyncLifetime
 {
     private const string Host = "lender.example";

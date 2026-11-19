@@ -7,10 +7,6 @@ using Puppis.Driver.Tuning.Usb.CechZd1;
 
 namespace Puppis.Driver.Tests;
 
-/// <summary>
-/// A register file standing in for one I2C device, which answers reads with what was last written unless a reading
-/// is scripted for that register.
-/// </summary>
 public sealed class FakeChip(int registerBytes) : IRegisterBus
 {
     public int RegisterBytes { get; } = registerBytes;
@@ -51,10 +47,6 @@ public sealed class FakeChip(int registerBytes) : IRegisterBus
     public ushort Last(int register) => WritesTo(register)[^1];
 }
 
-/// <summary>
-/// The bridge as a memory, with its power-on limits on addresses and multi-word writes, an I2C master that talks to
-/// fake chips, and a bulk endpoint that hands out queued transfers.
-/// </summary>
 public sealed class FakeBridge : IUsbConnection
 {
     private const uint Status = BridgeI2c.Status;
@@ -302,9 +294,6 @@ public static class UsbTestSupport
         );
     }
 
-    /// <summary>
-    /// A demodulator and tuner that identify as the ones this driver knows and lock on whatever they are tuned to.
-    /// </summary>
     public static (FakeChip Demodulator, FakeChip Tuner) LockingChips()
     {
         var demodulator = new FakeChip(2);

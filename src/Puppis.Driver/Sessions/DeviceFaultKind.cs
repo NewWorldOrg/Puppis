@@ -3,10 +3,6 @@ using Puppis.Driver.Configuration;
 
 namespace Puppis.Driver.Sessions;
 
-/// <summary>
-/// Why a device was faulted, and for a device the ledger disagrees with, the kind the ledger declares and
-/// the kinds the device receives.
-/// </summary>
 public sealed record DeviceFaultKind
 {
     private DeviceFaultKind(TunerFaultKind kind, DeviceKind? declared, IReadOnlyList<DeviceKind> receives)

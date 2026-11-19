@@ -3,10 +3,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
-/// <summary>
-/// The path from the demodulator's parallel output to the bulk endpoint: the bridge's capture block writes timed
-/// units into a ring in SDRAM, and a program on the first small core hands them to the endpoint.
-/// </summary>
 public sealed class TransportCapture(BridgeMemory memory)
 {
     public const byte Endpoint = 0x81;
@@ -224,9 +220,6 @@ public sealed class TransportCapture(BridgeMemory memory)
         return program.Assemble(CoreProgramOrigin);
     }
 
-    /// <summary>
-    /// Readies the capture block, the core and the endpoint, leaving the capture's input and writer stopped.
-    /// </summary>
     public void Prepare()
     {
         foreach ((uint at, uint value) in CaptureBlock)

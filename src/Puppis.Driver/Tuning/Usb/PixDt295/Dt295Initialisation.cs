@@ -1,8 +1,5 @@
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// One step of setting the chips up: a wait, or a write or a read and write back to one of the four.
-/// </summary>
 public abstract record ChipStep
 {
     public abstract void Apply(Dt295Chips chips, DevicePacing pacing);
@@ -28,9 +25,6 @@ public sealed record WriteRT(byte Register, byte Value) : ChipStep
     public override void Apply(Dt295Chips chips, DevicePacing pacing) => chips.WriteRT(Register, Value);
 }
 
-/// <summary>
-/// Sends the terrestrial tuner a register number with no value after it.
-/// </summary>
 public sealed record PointRT(byte Register) : ChipStep
 {
     public override void Apply(Dt295Chips chips, DevicePacing pacing) => chips.WriteRT(Register);
@@ -46,11 +40,6 @@ public sealed record WriteRS(byte Register, byte[] Values) : ChipStep
     public override void Apply(Dt295Chips chips, DevicePacing pacing) => chips.WriteRS(Register, Values);
 }
 
-/// <summary>
-/// The demodulator's two halves and both tuners as they are set up once each time the device is opened. The
-/// satellite half is set up and left asleep even for a terrestrial device. The terrestrial demodulator's 0x70 keeps
-/// the value it has after the reset.
-/// </summary>
 public static class Dt295Initialisation
 {
     public static readonly IReadOnlyList<ChipStep> Steps =

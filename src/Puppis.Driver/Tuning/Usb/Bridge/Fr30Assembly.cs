@@ -19,10 +19,6 @@ public enum Fr30Condition
     Higher = 0xF,
 }
 
-/// <summary>
-/// Writes FR30 instructions into words, two big endian instructions to a word, as the bridge's processors read them.
-/// A branch whose target is out of reach becomes the inverse branch over a load of the target and a jump.
-/// </summary>
 public sealed class Fr30Assembly
 {
     public const ushort Nop = 0x9FA0;
@@ -33,7 +29,6 @@ public sealed class Fr30Assembly
     private readonly List<Item> items = [];
     private readonly int scratch;
 
-    /// <param name="scratch">The register a far branch may load its target into.</param>
     public Fr30Assembly(int scratch)
     {
         this.scratch = Register(scratch);
@@ -67,18 +62,12 @@ public sealed class Fr30Assembly
 
     public Fr30Assembly StoreWord(int value, int at) => Pair(0x1400, at, value);
 
-    /// <summary>
-    /// Loads the word at R13 plus <paramref name="from"/>.
-    /// </summary>
     public Fr30Assembly LoadWordIndexed(int from, int into) => Pair(0x0000, from, into);
 
     public Fr30Assembly LoadHalfIndexed(int from, int into) => Pair(0x0100, from, into);
 
     public Fr30Assembly LoadByteIndexed(int from, int into) => Pair(0x0200, from, into);
 
-    /// <summary>
-    /// Stores the word at R13 plus <paramref name="at"/>.
-    /// </summary>
     public Fr30Assembly StoreWordIndexed(int value, int at) => Pair(0x1000, at, value);
 
     public Fr30Assembly StoreHalf(int value, int at) => Pair(0x1500, at, value);
@@ -114,10 +103,6 @@ public sealed class Fr30Assembly
             _ => throw new ArgumentOutOfRangeException(nameof(count), count, "A shift moves 0 to 31 places."),
         };
 
-    /// <summary>
-    /// The word of an LDI:20 that loads <paramref name="value"/> into <paramref name="register"/>, as it is written over
-    /// an instruction of the bridge's own to divert it.
-    /// </summary>
     public static uint LoadTwentyWord(uint value, int register) =>
         value > 0xFFFFF
             ? throw new ArgumentOutOfRangeException(nameof(value), value, "LDI:20 carries 20 bits.")
@@ -134,9 +119,6 @@ public sealed class Fr30Assembly
         return this;
     }
 
-    /// <summary>
-    /// Leaves for an address outside the program through the scratch register.
-    /// </summary>
     public Fr30Assembly JumpTo(uint address) => LoadTwenty(address, scratch).Jump(scratch);
 
     public Fr30Assembly AlignToWord()

@@ -8,9 +8,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
-/// <summary>
-/// The CECH-ZD1 terrestrial tuner on USB, driven from its bridge's power-on state with nothing written to flash.
-/// </summary>
 public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
 {
     public static readonly UsbModel Model = new(0x054C, 0x04B2);
@@ -155,10 +152,6 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    /// <summary>
-    /// Tunes a tuner kept from the last session. Whatever goes wrong, the kept tuner is closed, so that the device is
-    /// started from its bridge again rather than kept in a state that does not lock.
-    /// </summary>
     private static CechZd1TunerDevice WakeAndTune(
         CechZd1Standby.KeptTuner kept,
         long hertz,
@@ -222,9 +215,6 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         return device;
     }
 
-    /// <summary>
-    /// Puts the frontend to sleep and keeps it for the next session, or closes the device when it will not sleep.
-    /// </summary>
     internal static void Rest(CechZd1Standby.KeptTuner kept, CechZd1Standby? standby)
     {
         bool asleep = Quietly(() => kept.Frontend.Demodulator.LedGreen()) & Quietly(kept.Frontend.Sleep);

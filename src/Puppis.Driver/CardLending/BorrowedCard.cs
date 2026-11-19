@@ -9,19 +9,11 @@ using Puppis.Driver.Descrambling;
 
 namespace Puppis.Driver.CardLending;
 
-/// <summary>
-/// Which lender to borrow a card from, by the address it is reached at and the host name it answers to.
-/// </summary>
-/// <param name="Patience">How long a request to the lender may take; <see cref="BorrowedCard.Patience"/> where not given.</param>
 public sealed record CardLoan(IPEndPoint Lender, string HostName, int HopLimit, LendingKey Key, TimeSpan? Patience = null)
 {
     public TimeSpan Waits => Patience ?? BorrowedCard.Patience;
 }
 
-/// <summary>
-/// A card lent by another driver in the household: each ECM goes to the lender over one connection of its own, and the
-/// keys come back sealed for this lease. Anything that stops the lender answering is the card not answering.
-/// </summary>
 public sealed class BorrowedCard : IConditionalAccess
 {
     public static readonly TimeSpan Patience = TimeSpan.FromSeconds(3);
@@ -233,9 +225,6 @@ public sealed class BorrowedCard : IConditionalAccess
     }
 }
 
-/// <summary>
-/// Opens a descrambler per tuner over a card borrowed for it alone.
-/// </summary>
 public sealed class BorrowedCards : IDescramblerFactory, ICardReaderReport
 {
     private readonly Func<IConditionalAccess> borrow;
@@ -259,7 +248,6 @@ public sealed class BorrowedCards : IDescramblerFactory, ICardReaderReport
         times = new AnswerTimes(this.clock);
     }
 
-    /// <param name="lenderHostName">The name the lender answers to, which is all the reader report says of it.</param>
     public static BorrowedCards Over(
         Func<IConditionalAccess> borrow,
         ILogger? logger,
@@ -279,9 +267,6 @@ public sealed class BorrowedCards : IDescramblerFactory, ICardReaderReport
         return new BorrowedCards(() => BorrowedCard.Open(loan, logger), logger, loan.HostName, clock);
     }
 
-    /// <summary>
-    /// Says the card is borrowed and whether the last attempt to borrow it failed, without asking the lender.
-    /// </summary>
     public CardReaderDto Inspect() =>
         new()
         {

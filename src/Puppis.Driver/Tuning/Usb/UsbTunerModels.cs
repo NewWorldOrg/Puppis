@@ -6,9 +6,6 @@ namespace Puppis.Driver.Tuning.Usb;
 
 public sealed record UsbTunerModel(UsbModel Model, string ProductName, IReadOnlyList<DeviceKind> Receives);
 
-/// <summary>
-/// The USB tuners this driver knows, by the vendor and product they report.
-/// </summary>
 public static class UsbTunerModels
 {
     public static readonly IReadOnlyList<UsbTunerModel> All =

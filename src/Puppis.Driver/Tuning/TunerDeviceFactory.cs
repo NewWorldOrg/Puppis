@@ -31,9 +31,6 @@ public interface ITunerDeviceCheck
 {
     void Check(DeviceSettings device);
 
-    /// <summary>
-    /// Closes whatever is kept open for <paramref name="device"/> between its sessions, when anything is.
-    /// </summary>
     void LetGo(DeviceSettings device) { }
 
     bool IsKeptOpen(DeviceSettings device) => false;
@@ -117,7 +114,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             descramblers ?? NoDescrambling.Instance
         );
 
-    /// <param name="dt295Handler">The digest a PIX-DT295's request handling must have, for a simulated one.</param>
     public static TunerDeviceFactory Using(
         DriverConfiguration configuration,
         IUsbHost usbHost,
@@ -284,11 +280,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         standby?.Release();
     }
 
-    /// <summary>
-    /// Takes in what a presence check found for <paramref name="device"/>: a tuner gone is let go of, and a PIX-DT295
-    /// found is written down with its slot, looked at once if nobody has looked since it was plugged in. Nothing here
-    /// throws; a device that cannot be asked counts as not yet looked at.
-    /// </summary>
     public void Looked(DeviceSettings device, bool present)
     {
         if (device.Id is not { } deviceId)
@@ -337,10 +328,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         }
     }
 
-    /// <summary>
-    /// Whether the slot of an idle PIX-DT295 nobody holds open holds a card: one register read, which the bridge
-    /// answers as it powers on, or null when the device would not be opened.
-    /// </summary>
     private bool? PeekAtTheSlot(string path)
     {
         lock (opening)
@@ -379,10 +366,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             : OpenCechZd1(device, path, tuning, tune, hold);
     }
 
-    /// <summary>
-    /// A kept PIX-DT295 is asked whether it is still as it was left, without being opened again; any other is opened
-    /// afresh, from its bridge's start-up to the program hooked in, and then kept for the next session.
-    /// </summary>
     private void CheckDt295(DeviceSettings device, string path)
     {
         string deviceId = device.Id ?? path;
@@ -406,11 +389,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         }
     }
 
-    /// <summary>
-    /// Opens a PIX-DT295, or takes the one kept open since its last session, which then only has to be tuned. It is
-    /// read through the card a lender holds where there is one and through the card in the tuner's own slot where
-    /// there is not, asked for while the tuner tunes.
-    /// </summary>
     private ITunerDevice OpenDt295(DeviceSettings device, string path, DvbChannel channel, HeadHold hold)
     {
         RequireTheDeclaredKind(device, channel);
@@ -458,9 +436,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         return ThroughTheCard(Start, hold, slot);
     }
 
-    /// <summary>
-    /// Opens a PIX-DT295 from power on. It may be kept again afterwards unless it is let go of while it opens.
-    /// </summary>
     private Dt295Bridge OpenAfresh(string deviceId, string path)
     {
         keeper.Admit(deviceId);
@@ -578,10 +553,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         );
     }
 
-    /// <summary>
-    /// Tunes the device while the card is asked for, so that the card's answer to the initial setting is not added to
-    /// the time the frontend takes to lock. A card that answers after the tuning has failed is let go of.
-    /// </summary>
     private ITunerDevice ThroughTheCard(Func<ITunerDevice> open, HeadHold hold, IDescramblerFactory cards)
     {
         long started = Stopwatch.GetTimestamp();
@@ -645,10 +616,6 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             TaskScheduler.Default
         );
 
-    /// <summary>
-    /// The cards every tuner of this driver may be read through. The cards in tuners' own slots are not among them:
-    /// each serves only the tuner it sits in.
-    /// </summary>
     private IDescramblerFactory Shared => descramblers is SlotCards ? NoDescrambling.Instance : descramblers;
 
     private ITunerDevice Unscrambling(ITunerDevice opened, IDescrambler? descrambler, IDescramblerFactory cards, HeadHold hold)

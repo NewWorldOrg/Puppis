@@ -2,9 +2,6 @@ using System.Runtime.InteropServices;
 
 namespace Puppis.Driver.Tuning.Usb;
 
-/// <summary>
-/// The usbdevfs structures and requests from linux/usbdevice_fs.h, as laid out on a 64 bit little endian machine.
-/// </summary>
 public static class UsbdevfsLayout
 {
     private const uint NoData = 0;

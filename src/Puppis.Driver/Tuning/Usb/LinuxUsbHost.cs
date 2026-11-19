@@ -5,9 +5,6 @@ using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tuning.Usb;
 
-/// <summary>
-/// Reaches USB devices through usbdevfs, the nodes under /dev/bus/usb, without a library between.
-/// </summary>
 public sealed partial class LinuxUsbHost : IUsbHost
 {
     public const string NodeRoot = "/dev/bus/usb/";

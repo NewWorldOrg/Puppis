@@ -6,9 +6,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// Brings the bridge from how it powers on to a running I2C master with the demodulator out of reset.
-/// </summary>
 public static class Dt295Startup
 {
     public const uint SetUpMark = 0x82008;
@@ -38,10 +35,6 @@ public static class Dt295Startup
         }
     }
 
-    /// <summary>
-    /// Refuses a bridge whose request handling is not the code the hook was written for. The two words the hook
-    /// replaces are counted as they are at power on, whether or not the hook is in place.
-    /// </summary>
     public static void RequireTheKnownHandler(BridgeMemory memory, string expected = HandlerAtPowerOn)
     {
         uint[] words = memory.ReadWords(HandlerStart, HandlerBytes / 4);

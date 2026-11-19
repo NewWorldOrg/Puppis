@@ -19,9 +19,6 @@ using Puppis.Driver.Descrambling;
 
 namespace Puppis.Driver.CardLending;
 
-/// <summary>
-/// Where and to whom this driver lends its card.
-/// </summary>
 public sealed record LendingPlan(
     IPEndPoint Listen,
     IReadOnlyList<string> HostNames,
@@ -31,27 +28,12 @@ public sealed record LendingPlan(
     LendingKey Key
 );
 
-/// <summary>
-/// The lending port: a server of its own, apart from the one on the driver's socket, that serves the three lending
-/// requests and nothing else. A connection from outside the household is closed before it is read, and a request
-/// naming a host the lender is not called, or carrying the marks of a proxy or a browser, is not answered.
-/// </summary>
 public sealed class CardLendingServer : IHostedService, IDisposable
 {
-    /// <summary>
-    /// How long a connection may stay without borrowing before it is closed.
-    /// </summary>
     public static readonly TimeSpan UnborrowedLife = TimeSpan.FromSeconds(2);
 
-    /// <summary>
-    /// A ceiling on open connections far above what the door seats, so that connections it has just turned away and
-    /// that are still closing never keep out the one it let in.
-    /// </summary>
     public const int MostConnections = 256;
 
-    /// <summary>
-    /// How often the connections that waited too long are looked for.
-    /// </summary>
     public static readonly TimeSpan BetweenSweeps = TimeSpan.FromMilliseconds(250);
 
     private static readonly string[] HeadersNotAnswered =
@@ -100,14 +82,8 @@ public sealed class CardLendingServer : IHostedService, IDisposable
 
     public CardLender Lender { get; }
 
-    /// <summary>
-    /// The address the port was bound to once the server started.
-    /// </summary>
     public IPEndPoint? Bound { get; private set; }
 
-    /// <summary>
-    /// A bound listening socket whose hop limit every connection it accepts inherits, the SYN-ACK included.
-    /// </summary>
     public static Socket ListenSocket(EndPoint endpoint, int hops)
     {
         Socket socket = SocketTransportOptions.CreateDefaultBoundListenSocket(endpoint);
@@ -235,10 +211,6 @@ public sealed class CardLendingServer : IHostedService, IDisposable
         }
     }
 
-    /// <summary>
-    /// Closes every connection that has waited longer than <see cref="UnborrowedLife"/> without borrowing, by this
-    /// server's clock, and says how many it closed.
-    /// </summary>
     public int CloseOverdue()
     {
         int closed = 0;

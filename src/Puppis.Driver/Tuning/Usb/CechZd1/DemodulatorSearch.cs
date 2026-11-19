@@ -13,10 +13,6 @@ public enum SearchOutcome
 
 public sealed record SearchTiming(uint TimingFrequency, int TunerKilohertz, int AskedKilohertz);
 
-/// <summary>
-/// Walks the demodulator from a search for the transmission mode to a lock and data on the output, one stage at a
-/// time. A stage that stays where it is looks again ten milliseconds later.
-/// </summary>
 public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, DevicePacing pacing)
 {
     public static readonly TimeSpan Patience = TimeSpan.FromSeconds(5);

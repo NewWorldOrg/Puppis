@@ -68,9 +68,6 @@ public sealed class DescramblingTunerDevice : ITunerDevice
 
     public ISignalQualitySource? Quality => source.Quality;
 
-    /// <summary>
-    /// The card being asked for while the tuner is read as it comes, or a finished task when nothing is being asked.
-    /// </summary>
     public Task AskedForTheCard
     {
         get
@@ -121,10 +118,6 @@ public sealed class DescramblingTunerDevice : ITunerDevice
         }
     }
 
-    /// <summary>
-    /// The descrambler in hand, or null while there is none. Asking for one happens away from the read, so a card that
-    /// is slow to answer, or a lender across the network, never holds the tuner's bytes back.
-    /// </summary>
     private IDescrambler? TheCard()
     {
         lock (gate)

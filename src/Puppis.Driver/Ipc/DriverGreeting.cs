@@ -36,9 +36,6 @@ public static class DriverGreeting
     public static IReadOnlyList<string> Unscrambling(bool descrambling) =>
         descrambling ? [.. Capabilities, DriverCapabilities.Descrambling] : Capabilities;
 
-    /// <summary>
-    /// The version this driver was built as, without the source revision the build appends.
-    /// </summary>
     public static readonly string Version =
         (typeof(DriverGreeting).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?? string.Empty).Split('+')[0].Trim();

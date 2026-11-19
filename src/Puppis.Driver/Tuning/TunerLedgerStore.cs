@@ -21,10 +21,6 @@ public sealed class TunerLedgerStore(DriverConfiguration configuration, string? 
         };
     }
 
-    /// <summary>
-    /// Saves the tuners asked for. When <paramref name="expectedSavedHash"/> is given, the save is taken
-    /// only while the saved ledger is still the one that hash was read from.
-    /// </summary>
     public LedgerRevision Save(
         IReadOnlyList<TunerConfigEntry>? requested,
         IReadOnlyList<TunerDetection> detected,
@@ -56,10 +52,6 @@ public sealed class TunerLedgerStore(DriverConfiguration configuration, string? 
         }
     }
 
-    /// <summary>
-    /// Turns the low-noise block power of one satellite tuner on or off in the saved ledger, leaving
-    /// every other setting as it is saved. The running driver takes it on its next start.
-    /// </summary>
     public LedgerRevision SwitchLnbPower(string deviceId, bool on)
     {
         lock (gate)

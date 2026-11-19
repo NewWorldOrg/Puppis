@@ -23,9 +23,6 @@ internal sealed class FakeDt295Host(FakeDt295 device) : IUsbHost
     }
 }
 
-/// <summary>
-/// A clock that moves only when it is told to, on the calendar and on the monotonic reading alike.
-/// </summary>
 public sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 {
     private long ticks;
@@ -41,9 +38,6 @@ public sealed class SteppedClock(DateTimeOffset start) : TimeProvider
 
 internal static class PixDt295Support
 {
-    /// <summary>
-    /// A clock that moves only when the device is made to wait, and writes each wait into the device's log.
-    /// </summary>
     public static (DevicePacing Pacing, SteppedClock Clock) Pacing(FakeDt295 device)
     {
         var clock = new SteppedClock(UsbTestSupport.Start);
@@ -67,10 +61,6 @@ internal static class PixDt295Support
 
     public static Dt295Chips Chips(FakeDt295 device) => new(new BridgeI2c(new BridgeMemory(new TurnTakingConnection(device))));
 
-    /// <summary>
-    /// The spec's way of writing the chip steps, one per line, made into what the device's log shows: a wait, a write
-    /// to one of the four chips, or a read and write back to the terrestrial tuner.
-    /// </summary>
     public static IReadOnlyList<string> Expected(string steps) =>
     [
         .. steps
@@ -78,9 +68,6 @@ internal static class PixDt295Support
             .SelectMany(Expand),
     ];
 
-    /// <summary>
-    /// The log without what was read, for comparing with steps that say only what is written.
-    /// </summary>
     public static IReadOnlyList<string> Written(FakeDt295 device) =>
         [.. device.Log.Select(line => line.Contains(" r[", StringComparison.Ordinal) ? line[..line.IndexOf(" r[", StringComparison.Ordinal)] : line)];
 

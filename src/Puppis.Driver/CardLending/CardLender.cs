@@ -9,9 +9,6 @@ using Puppis.Driver.Descrambling;
 
 namespace Puppis.Driver.CardLending;
 
-/// <summary>
-/// How many borrowers may hold the card at once, and how long a borrower may take to answer the challenge.
-/// </summary>
 public sealed record CardLendingLimits(int Leases, TimeSpan RoundTrip)
 {
     public static readonly TimeSpan DefaultRoundTrip = TimeSpan.FromMilliseconds(
@@ -19,9 +16,6 @@ public sealed record CardLendingLimits(int Leases, TimeSpan RoundTrip)
     );
 }
 
-/// <summary>
-/// The status and the body of one answer on the lending port. A refusal's body is one short word saying why.
-/// </summary>
 public sealed record LendingReply(int Status, byte[] Body)
 {
     public const int Ok = 200;
@@ -39,10 +33,6 @@ public sealed record LendingReply(int Status, byte[] Body)
     internal static LendingReply Refused(int status, string reason) => new(status, Encoding.ASCII.GetBytes(reason));
 }
 
-/// <summary>
-/// Lends this machine's card to borrowers that prove they hold the key: one lease per connection, each with a card
-/// connection of its own, given back when the connection closes. ECMs and keys are never written to the log.
-/// </summary>
 public sealed class CardLender : IDisposable
 {
     public const int MostEcmsPerSecond = 32;
@@ -104,9 +94,6 @@ public sealed class CardLender : IDisposable
         }
     }
 
-    /// <summary>
-    /// Starts a lease on the connection again and hands it the first nonce.
-    /// </summary>
     public byte[] Challenge(string connection)
     {
         byte[] nonce = LendingProtocol.Nonce();
@@ -119,16 +106,9 @@ public sealed class CardLender : IDisposable
         return nonce;
     }
 
-    /// <summary>
-    /// Hands the connection a new nonce. An answer to the nonce handed out last, keyed to the transcript and to which
-    /// round trip it is, is one round trip and its time is kept for the lease; any other answer starts again.
-    /// </summary>
     public byte[] Challenge(string connection, string host, ReadOnlySpan<byte> answer) =>
         Challenge(connection, host, answer, out _);
 
-    /// <summary>
-    /// As <see cref="Challenge(string, string, ReadOnlySpan{byte})"/>, saying whether the answer was keyed.
-    /// </summary>
     public byte[] Challenge(string connection, string host, ReadOnlySpan<byte> answer, out bool keyed)
     {
         byte[] nonce = LendingProtocol.Nonce();
@@ -430,10 +410,6 @@ public sealed class CardLender : IDisposable
         }
     }
 
-    /// <summary>
-    /// The nonces handed out on one connection so far, when the last one was, who answered them, and how long each
-    /// keyed answer took.
-    /// </summary>
     private sealed record IssuedChallenge(byte[][] Nonces, DateTimeOffset At, byte[]? BorrowerNonce, TimeSpan[] Samples)
     {
         public byte[] Transcript => [.. Nonces.SelectMany(nonce => nonce)];

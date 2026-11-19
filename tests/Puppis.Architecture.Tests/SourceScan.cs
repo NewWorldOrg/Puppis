@@ -14,6 +14,15 @@ public static class SourceScan
         IEnumerable<string> those)
         => Matching(directory, source => Mentions(source, these) && Mentions(source, those));
 
+    public static IReadOnlyList<string> Files(string directory)
+        =>
+        [
+            .. Directory
+                .EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories)
+                .Where(file => !IsBuildOutput(file))
+                .Order(StringComparer.Ordinal),
+        ];
+
     private static IReadOnlyList<string> Matching(string directory, Func<string, bool> predicate)
         => Directory
             .EnumerateFiles(directory, "*.cs", SearchOption.AllDirectories)

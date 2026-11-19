@@ -3,10 +3,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// The bridge's capture block, which writes the demodulator's packets into the ring with a stamp in front of each,
-/// and the USB core's side of the bulk endpoint the copying program hands the ring to.
-/// </summary>
 public sealed class Dt295Capture(BridgeWindow window, BridgeMemory memory)
 {
     public const byte Endpoint = 0x81;
@@ -70,9 +66,6 @@ public sealed class Dt295Capture(BridgeWindow window, BridgeMemory memory)
     private const uint EndpointBuffer = 0xFDBC14;
     private const uint EndpointReset = 0xFDBD08;
 
-    /// <summary>
-    /// Readies the capture block with its input and its writer stopped.
-    /// </summary>
     public void Prepare()
     {
         window.WriteAndCheck(Clocked, window.Read(Clocked) | 0x00040000);
@@ -90,10 +83,6 @@ public sealed class Dt295Capture(BridgeWindow window, BridgeMemory memory)
         }
     }
 
-    /// <summary>
-    /// Reads what the endpoint holds before anything is written to it, refusing a USB core whose register group is not
-    /// at rest.
-    /// </summary>
     public EndpointState KeepTheEndpoint()
     {
         var kept = new EndpointState(memory.Read(EndpointMode), memory.Read(EndpointBuffer), memory.Read(EndpointReset));
@@ -102,9 +91,6 @@ public sealed class Dt295Capture(BridgeWindow window, BridgeMemory memory)
         return kept;
     }
 
-    /// <summary>
-    /// Sets the endpoint up for the copying program from what <see cref="KeepTheEndpoint"/> read.
-    /// </summary>
     public void ReadyTheEndpoint(EndpointState kept)
     {
         InGroup(1, EndpointMode, 0x85000000);
@@ -116,9 +102,6 @@ public sealed class Dt295Capture(BridgeWindow window, BridgeMemory memory)
         InGroup(8, EndpointBuffer, buffer);
     }
 
-    /// <summary>
-    /// Puts back what the endpoint held, carrying on past a write that fails and saying at the end which did.
-    /// </summary>
     public void RestoreTheEndpoint(EndpointState kept)
     {
         List<string> failed = [];

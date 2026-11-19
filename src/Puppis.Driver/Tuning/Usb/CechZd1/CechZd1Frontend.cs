@@ -2,9 +2,6 @@ using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
-/// <summary>
-/// The demodulator and the tuner taken together: bringing them up, tuning a channel and putting them to sleep.
-/// </summary>
 public sealed class CechZd1Frontend
 {
     public const int LowestUhfKilohertz = 250_001;

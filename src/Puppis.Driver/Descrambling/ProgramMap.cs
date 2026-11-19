@@ -2,9 +2,6 @@ using System.Buffers.Binary;
 
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// Which ECM unlocks which PID, as the PAT and the PMTs of one stream say, for the conditional-access system of one card.
-/// </summary>
 public sealed class ProgramMap(int caSystemId)
 {
     public const byte PatTableId = 0x00;
@@ -31,9 +28,6 @@ public sealed class ProgramMap(int caSystemId)
 
     public bool PatSeen => patVersion >= 0;
 
-    /// <summary>
-    /// The PAT has been read, and so has the PMT of every programme it lists.
-    /// </summary>
     public bool Complete => PatSeen && pmtPids.Keys.All(programs.ContainsKey);
 
     public IReadOnlyCollection<int> EcmPids => ecmPids;
@@ -44,9 +38,6 @@ public sealed class ProgramMap(int caSystemId)
 
     public bool IsEcm(int pid) => ecmPids.Contains(pid);
 
-    /// <summary>
-    /// The ECM a PID is unlocked by: the one its PMT names, else, once every PMT has been read, the stream's only ECM when it carries exactly one.
-    /// </summary>
     public int? EcmFor(int pid)
     {
         if (ecmByPid.TryGetValue(pid, out int ecm))

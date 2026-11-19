@@ -3,9 +3,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
-/// <summary>
-/// Brings the bridge from how it powers on to a running I2C master with the demodulator powered and out of reset.
-/// </summary>
 public static class BridgeStartup
 {
     public const uint SetUpMark = 0x82008;

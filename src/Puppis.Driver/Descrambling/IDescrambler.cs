@@ -1,8 +1,5 @@
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// Which way a card failed to answer, where the failure says.
-/// </summary>
 public enum DescramblingFailure
 {
     Unspecified = 0,
@@ -31,9 +28,6 @@ public interface IDescramblerFactory
 {
     bool Unscrambles { get; }
 
-    /// <summary>
-    /// The card that answered last, when this driver started or as a tuner opened, or null where none has.
-    /// </summary>
     CardIdentity? CardInHand { get; }
 
     IDescrambler? Open(HeadHold hold);

@@ -2,10 +2,6 @@ using Puppis.Driver.Transport;
 
 namespace Puppis.Driver.Tuning.Usb.Bridge;
 
-/// <summary>
-/// Takes the four byte arrival time off each unit the bridge sends and hands on the packet behind it. Reads do not
-/// break on unit boundaries, so the head of a unit is found by two sync bytes one unit apart.
-/// </summary>
 public sealed class CaptureUnpacker
 {
     public const int StampBytes = 4;
@@ -18,14 +14,8 @@ public sealed class CaptureUnpacker
     private int held;
     private bool aligned;
 
-    /// <summary>
-    /// How many times the units fell out of step after they had first been found, each of which lost what lay between.
-    /// </summary>
     public long Realignments { get; private set; }
 
-    /// <summary>
-    /// Lets go of what is held and looks for the head of a unit again, for a stream the sender says it broke.
-    /// </summary>
     public void Forget()
     {
         held = 0;

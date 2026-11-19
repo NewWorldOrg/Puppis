@@ -24,14 +24,8 @@ public sealed class ScriptedDvbSystemCalls : IDvbSystemCalls
 
     public List<OpenedNode> Opened { get; } = [];
 
-    /// <summary>
-    /// Each open, tune, filter and status read in the order they were made.
-    /// </summary>
     public List<string> Made { get; } = [];
 
-    /// <summary>
-    /// Runs on every rest between two status reads, before the scripted clock moves on.
-    /// </summary>
     public Action? Resting { get; set; }
 
     public List<int> Closed { get; } = [];

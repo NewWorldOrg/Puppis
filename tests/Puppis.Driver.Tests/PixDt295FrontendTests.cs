@@ -158,9 +158,6 @@ public sealed class Dt295TerrestrialTests
     }
 }
 
-/// <summary>
-/// The satellite side follows the specification only. None of it has been through a real satellite signal.
-/// </summary>
 public sealed class Dt295SatelliteFollowsTheSpecOnlyTests
 {
     private const string BsOneOnStream = """
