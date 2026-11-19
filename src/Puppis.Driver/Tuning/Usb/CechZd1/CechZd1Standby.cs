@@ -15,7 +15,7 @@ public sealed class CechZd1Standby : IDisposable
 
     public sealed record KeptTuner(
         string Path,
-        IUsbConnection Usb,
+        TurnTakingConnection Usb,
         BridgeMemory Memory,
         CechZd1Frontend Frontend,
         TransportCapture Capture

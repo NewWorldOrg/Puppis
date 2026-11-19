@@ -22,7 +22,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
     public static readonly TimeSpan TransferPatience = TimeSpan.FromMilliseconds(300);
 
     private readonly CechZd1Standby.KeptTuner kept;
-    private readonly IUsbConnection usb;
+    private readonly TurnTakingConnection usb;
     private readonly CechZd1Frontend frontend;
     private readonly TransportCapture capture;
     private readonly IUsbBulkReader reader;
@@ -32,7 +32,6 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
     private readonly CaptureUnpacker unpacker = new();
     private readonly List<byte> packets = [];
     private readonly byte[] transfer = new byte[TransportCapture.TransferBytes];
-    private readonly Lock gate = new();
     private ILogger? logger;
     private long opened;
     private long hertz;
@@ -129,7 +128,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
     )
     {
         long started = Stopwatch.GetTimestamp();
-        IUsbConnection usb = host.Open(path, Interface);
+        var usb = new TurnTakingConnection(host.Open(path, Interface));
         CechZd1Frontend? frontend = null;
 
         try
@@ -240,18 +239,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    public SignalQuality Measure()
-    {
-        SignalRegisters registers;
-
-        lock (gate)
-        {
-            ObjectDisposedException.ThrowIf(closed, this);
-            registers = frontend.ReadSignal();
-        }
-
-        return CechZd1Signal.QualityOf(registers);
-    }
+    public SignalQuality Measure() => CechZd1Signal.QualityOf(ReadSignalWhileOpen());
 
     public byte[] Read(int count, CancellationToken cancellationToken)
     {
@@ -284,33 +272,47 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
 
     public void Dispose()
     {
-        lock (gate)
+        using HeldTurn turn = usb.TakeTurn();
+
+        if (closed)
         {
-            if (closed)
-            {
-                return;
-            }
-
-            closed = true;
-            long began = Stopwatch.GetTimestamp();
-            bool stopped = Quietly(capture.Stop) & Quietly(reader.Dispose);
-
-            if (stopped)
-            {
-                Rest(kept, standby);
-            }
-            else
-            {
-                usb.Dispose();
-            }
-
-            logger?.LogInformation(
-                "{Path}: closing took {Milliseconds:0} ms; the tuner is {State}.",
-                usb.Path,
-                Stopwatch.GetElapsedTime(began).TotalMilliseconds,
-                standby?.Holds(usb.Path) is true ? "kept asleep for the next session" : "closed"
-            );
+            return;
         }
+
+        closed = true;
+        long began = Stopwatch.GetTimestamp();
+        bool stopped = Quietly(capture.Stop) & Quietly(reader.Dispose);
+
+        if (stopped)
+        {
+            Rest(kept, standby);
+        }
+        else
+        {
+            usb.Dispose();
+        }
+
+        logger?.LogInformation(
+            "{Path}: closing took {Milliseconds:0} ms; the tuner is {State}.",
+            usb.Path,
+            Stopwatch.GetElapsedTime(began).TotalMilliseconds,
+            standby?.Holds(usb.Path) is true ? "kept asleep for the next session" : "closed"
+        );
+    }
+
+    private SignalRegisters ReadSignalWhileOpen()
+    {
+        using HeldTurn turn = usb.TakeTurn();
+        ObjectDisposedException.ThrowIf(closed, this);
+
+        return frontend.ReadSignal();
+    }
+
+    private SignalRegisters ReadSignal()
+    {
+        using HeldTurn turn = usb.TakeTurn();
+
+        return frontend.ReadSignal();
     }
 
     private DvbDeviceException NothingArrived()
@@ -320,10 +322,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
 
         try
         {
-            lock (gate)
-            {
-                registers = frontend.ReadSignal();
-            }
+            registers = ReadSignal();
         }
         catch (DvbDeviceException)
         {
