@@ -19,7 +19,7 @@ public sealed class Multi2Tests
     private const ulong SyntheticInitialValue = 0x0F1E2D3C4B5A6978;
 
     [Fact]
-    public void TheFirstPublishedVectorComesOut()
+    public void TheFirstSelfTestVectorOfLibtomcryptComesOut()
     {
         byte[] systemKey = new byte[Multi2.SystemKeyLength];
         byte[] dataKey = [0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
@@ -31,7 +31,7 @@ public sealed class Multi2Tests
     }
 
     [Fact]
-    public void TheSecondPublishedVectorComesOut()
+    public void TheSecondSelfTestVectorOfLibtomcryptComesOut()
     {
         byte[] systemKey =
         [
