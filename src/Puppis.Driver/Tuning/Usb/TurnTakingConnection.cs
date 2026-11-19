@@ -71,10 +71,10 @@ public sealed class TurnTakingConnection(IUsbConnection usb) : IUsbConnection
             return default;
         }
 
-        Wait();
+        long turn = Wait();
         Volatile.Write(ref holder, Thread.CurrentThread);
 
-        return new HeldTurn(this);
+        return new HeldTurn(this, turn);
     }
 
     public IUsbBulkReader ReadBulk(byte endpoint, int transferBytes, int transfersInFlight) =>
@@ -82,15 +82,24 @@ public sealed class TurnTakingConnection(IUsbConnection usb) : IUsbConnection
 
     public void Dispose() => usb.Dispose();
 
-    internal void GiveBack()
+    internal void GiveBack(long turn)
     {
-        Volatile.Write(ref holder, null);
-        Pass();
+        lock (turns)
+        {
+            if (turn != serving)
+            {
+                return;
+            }
+
+            Volatile.Write(ref holder, null);
+            serving++;
+            Monitor.PulseAll(turns);
+        }
     }
 
     private bool Holds() => ReferenceEquals(Volatile.Read(ref holder), Thread.CurrentThread);
 
-    private void Wait()
+    private long Wait()
     {
         lock (turns)
         {
@@ -100,6 +109,8 @@ public sealed class TurnTakingConnection(IUsbConnection usb) : IUsbConnection
             {
                 Monitor.Wait(turns);
             }
+
+            return mine;
         }
     }
 

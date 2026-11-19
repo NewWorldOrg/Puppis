@@ -114,6 +114,50 @@ public sealed class HeldTurnTests
     }
 
     [Fact]
+    public void ATurnGivenBackTwiceLetsOnlyOneCallerIn()
+    {
+        (TurnTakingConnection turns, WatchedConnection watched) = Connection();
+        HeldTurn turn = turns.TakeTurn();
+        HeldTurn copy = turn;
+        watched.HoldAt(request => request.Address is 0x2000);
+        Thread second = Started(() => Ask(turns, 0x2000));
+        Assert.True(Queued(second));
+        Thread third = Started(() => Ask(turns, 0x3000));
+        Assert.True(Queued(third));
+
+        turn.Dispose();
+        Assert.True(watched.WaitUntilHolding());
+        copy.Dispose();
+
+        Assert.False(SpinWait.SpinUntil(() => watched.Requests.Count > 1, TimeSpan.FromMilliseconds(300)));
+        watched.LetGo();
+        Assert.All([second, third], caller => Assert.True(caller.Join(WatchedConnection.Patience)));
+        Assert.Equal(1, watched.MostAtOnce);
+        Assert.Equal([0x2000u, 0x3000u], watched.Requests.Select(request => request.Address));
+    }
+
+    [Fact]
+    public void ATurnGivenBackTwiceDoesNotEndTheTurnTakenAfterIt()
+    {
+        (TurnTakingConnection turns, WatchedConnection watched) = Connection();
+        HeldTurn turn = turns.TakeTurn();
+        HeldTurn copy = turn;
+        turn.Dispose();
+        HeldTurn next = turns.TakeTurn();
+        Thread other = Started(() => Ask(turns, 0x2000));
+        Assert.True(Queued(other));
+
+        copy.Dispose();
+        Ask(turns, 0x1000);
+
+        Assert.False(SpinWait.SpinUntil(() => watched.Requests.Count > 1, TimeSpan.FromMilliseconds(300)));
+        next.Dispose();
+        Assert.True(other.Join(WatchedConnection.Patience));
+        Assert.Equal(1, watched.MostAtOnce);
+        Assert.Equal([0x1000u, 0x2000u], watched.Requests.Select(request => request.Address));
+    }
+
+    [Fact]
     public void ClosingWhileCallersWaitLeavesNobodyWaiting()
     {
         (TurnTakingConnection turns, WatchedConnection watched) = Connection();
