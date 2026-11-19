@@ -93,7 +93,7 @@ public sealed class CopyProgramRunTests
         device.Word(CopyProgram.HookAt, CopyProgram.Hook[0]);
         device.Word(CopyProgram.HookAt + 4, CopyProgram.Hook[1]);
 
-        return (device, new BridgeMemory(device));
+        return (device, new BridgeMemory(new TurnTakingConnection(device)));
     }
 
     private static uint[] Send(FakeDt295 device, byte[] instruction)

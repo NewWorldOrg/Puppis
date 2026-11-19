@@ -101,7 +101,7 @@ public sealed class BridgeMemoryTests
     {
         var bridge = new FakeBridge();
         bridge.Memory[0x100] = 0x01020304;
-        var memory = new BridgeMemory(bridge);
+        var memory = new BridgeMemory(new TurnTakingConnection(bridge));
 
         Assert.Equal(0x01020304u, memory.Read(0x100));
     }
@@ -110,7 +110,7 @@ public sealed class BridgeMemoryTests
     public void BeforeWideningEveryWordIsItsOwnRequest()
     {
         var bridge = new FakeBridge();
-        var memory = new BridgeMemory(bridge);
+        var memory = new BridgeMemory(new TurnTakingConnection(bridge));
 
         memory.WriteWords(0x1000, [1, 2, 3]);
 
@@ -122,7 +122,7 @@ public sealed class BridgeMemoryTests
     public void AfterWideningSixteenWordsGoInOneRequest()
     {
         var bridge = new FakeBridge();
-        var memory = new BridgeMemory(bridge);
+        var memory = new BridgeMemory(new TurnTakingConnection(bridge));
         AddressWidening.Widen(memory);
         bridge.Requests.Clear();
 
@@ -135,7 +135,7 @@ public sealed class BridgeMemoryTests
     [Fact]
     public void AnAddressBeyondTwentyFourBitsIsRefusedBeforeWidening()
     {
-        var memory = new BridgeMemory(new FakeBridge());
+        var memory = new BridgeMemory(new TurnTakingConnection(new FakeBridge()));
 
         Assert.Throws<InvalidOperationException>(() => memory.Read(0x1600000));
     }
@@ -145,7 +145,7 @@ public sealed class BridgeMemoryTests
     {
         var bridge = new FakeBridge();
         bridge.Memory[0xF1010C] = 0x1234ABCD;
-        var memory = new BridgeMemory(bridge);
+        var memory = new BridgeMemory(new TurnTakingConnection(bridge));
 
         memory.WriteHalf(0xF1010C, 0x8201);
 
@@ -159,7 +159,7 @@ public sealed class AddressWideningTests
     public void FromPowerOnTheRoutineGoesInTheFirstPlaceAndTheFiveWordsPointAtIt()
     {
         var bridge = new FakeBridge();
-        var memory = new BridgeMemory(bridge);
+        var memory = new BridgeMemory(new TurnTakingConnection(bridge));
 
         AddressWidening.Widen(memory);
 
@@ -179,7 +179,7 @@ public sealed class AddressWideningTests
     {
         var bridge = new FakeBridge();
 
-        AddressWidening.Widen(new BridgeMemory(bridge));
+        AddressWidening.Widen(new BridgeMemory(new TurnTakingConnection(bridge)));
 
         uint[] patched = [.. AddressWidening.Patched.Select(patch => patch.Address)];
         Assert.Equal(patched, bridge.Writes.Select(write => write.Address).Where(patched.Contains));
@@ -189,10 +189,10 @@ public sealed class AddressWideningTests
     public void WideningTwiceWritesNothingTheSecondTime()
     {
         var bridge = new FakeBridge();
-        AddressWidening.Widen(new BridgeMemory(bridge));
+        AddressWidening.Widen(new BridgeMemory(new TurnTakingConnection(bridge)));
         bridge.Writes.Clear();
 
-        var reopened = new BridgeMemory(bridge);
+        var reopened = new BridgeMemory(new TurnTakingConnection(bridge));
         AddressWidening.Widen(reopened);
 
         Assert.Empty(bridge.Writes);
@@ -203,10 +203,10 @@ public sealed class AddressWideningTests
     public void ARoutineThatIsNotOursIsReplacedFromTheOtherPlace()
     {
         var bridge = new FakeBridge();
-        AddressWidening.Widen(new BridgeMemory(bridge));
+        AddressWidening.Widen(new BridgeMemory(new TurnTakingConnection(bridge)));
         bridge.Memory[AddressWidening.FirstPlace + 8] ^= 0xFFFF;
 
-        AddressWidening.Widen(new BridgeMemory(bridge));
+        AddressWidening.Widen(new BridgeMemory(new TurnTakingConnection(bridge)));
 
         Assert.Equal(AddressWidening.LoadOf(AddressWidening.SecondPlace), bridge.Word(AddressWidening.ReadSideFirst));
         Assert.Equal(
@@ -221,7 +221,7 @@ public sealed class AddressWideningTests
         var bridge = new FakeBridge();
         bridge.Memory[AddressWidening.ReadSideFirst] = 0x12345678;
 
-        DvbDeviceException refused = UsbTestSupport.Refusal(() => AddressWidening.Widen(new BridgeMemory(bridge)));
+        DvbDeviceException refused = UsbTestSupport.Refusal(() => AddressWidening.Widen(new BridgeMemory(new TurnTakingConnection(bridge))));
 
         Assert.Equal(TuningFailure.DeviceUnusable, refused.Failure);
         Assert.Contains("plug it back in", refused.Message, StringComparison.Ordinal);
@@ -243,7 +243,7 @@ public sealed class BridgeStartupTests
         bridge.Memory[0xF02008] = 0x00010000;
         (DevicePacing pacing, _, _) = UsbTestSupport.Pacing();
 
-        DvbDeviceException refused = UsbTestSupport.Refusal(() => BridgeStartup.Start(new BridgeMemory(bridge), pacing));
+        DvbDeviceException refused = UsbTestSupport.Refusal(() => BridgeStartup.Start(new BridgeMemory(new TurnTakingConnection(bridge)), pacing));
 
         Assert.Equal(TuningFailure.DeviceUnusable, refused.Failure);
         Assert.Contains("plug it back in", refused.Message, StringComparison.Ordinal);
@@ -256,7 +256,7 @@ public sealed class BridgeStartupTests
         var bridge = new FakeBridge();
         (DevicePacing pacing, _, List<TimeSpan> slept) = UsbTestSupport.Pacing();
 
-        BridgeStartup.Start(new BridgeMemory(bridge), pacing);
+        BridgeStartup.Start(new BridgeMemory(new TurnTakingConnection(bridge)), pacing);
 
         Assert.Equal([0x00400000u, 0x00410000u], bridge.WritesAt(BridgeStartup.GpioValue));
         Assert.Equal([0x00410000u], bridge.WritesAt(BridgeStartup.GpioDirection));
@@ -271,7 +271,7 @@ public sealed class BridgeStartupTests
         bridge.Memory[0x444] = 0x1F1F1F1F;
         (DevicePacing pacing, _, _) = UsbTestSupport.Pacing();
 
-        BridgeStartup.Start(new BridgeMemory(bridge), pacing);
+        BridgeStartup.Start(new BridgeMemory(new TurnTakingConnection(bridge)), pacing);
 
         Assert.Equal([0x1F1F1F1Fu], bridge.WritesAt(0x440));
         Assert.Empty(bridge.WritesAt(0x444));
@@ -287,7 +287,7 @@ public sealed class BridgeI2cTests
         var bridge = new FakeBridge();
         bridge.Chips[Dib8000Bus.Address] = chip;
 
-        new Dib8000Bus(new BridgeI2c(new BridgeMemory(bridge))).Write(1287, 0x0003);
+        new Dib8000Bus(new BridgeI2c(new BridgeMemory(new TurnTakingConnection(bridge)))).Write(1287, 0x0003);
 
         Assert.Equal([(1287, (ushort)0x0003)], chip.Written);
         Assert.Equal(
@@ -304,7 +304,7 @@ public sealed class BridgeI2cTests
         var bridge = new FakeBridge();
         bridge.Chips[Dib0090Bus.Address] = chip;
 
-        ushort read = new Dib0090Bus(new BridgeI2c(new BridgeMemory(bridge))).Read(0x1A);
+        ushort read = new Dib0090Bus(new BridgeI2c(new BridgeMemory(new TurnTakingConnection(bridge)))).Read(0x1A);
 
         Assert.Equal(0x0223, read);
         Assert.Equal(
@@ -320,7 +320,7 @@ public sealed class BridgeI2cTests
         var bridge = new FakeBridge();
 
         DvbDeviceException refused = UsbTestSupport.Refusal(
-            () => new Dib8000Bus(new BridgeI2c(new BridgeMemory(bridge))).Write(1, 2)
+            () => new Dib8000Bus(new BridgeI2c(new BridgeMemory(new TurnTakingConnection(bridge)))).Write(1, 2)
         );
 
         Assert.Equal(TuningFailure.DeviceUnusable, refused.Failure);

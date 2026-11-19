@@ -347,7 +347,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         {
             try
             {
-                using IUsbConnection usb = usbHost.Value.Open(path, Dt295TunerDevice.Interface);
+                using var usb = new TurnTakingConnection(usbHost.Value.Open(path, Dt295TunerDevice.Interface));
 
                 return (new BridgeMemory(usb).Read(CardUart.Status) & CardUart.CardInserted) is not 0;
             }

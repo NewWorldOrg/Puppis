@@ -349,7 +349,7 @@ public sealed class TransportCaptureTests
     private static (FakeBridge Bridge, BridgeMemory Memory) Widened()
     {
         var bridge = new FakeBridge();
-        var memory = new BridgeMemory(bridge);
+        var memory = new BridgeMemory(new TurnTakingConnection(bridge));
         AddressWidening.Widen(memory);
 
         return (bridge, memory);

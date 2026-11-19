@@ -91,18 +91,31 @@ public sealed class BridgeTurnsTests
     }
 
     [Fact]
-    public void AMemoryGivenAPlainConnectionTakesTurnsOfItsOwn()
+    public void TwoMemoriesOnOneDeviceShareItsOneQueue()
     {
-        (FakeChip demodulator, FakeChip tuner) = UsbTestSupport.LockingChips();
-        var watched = new WatchedConnection(UsbTestSupport.BridgeWith(demodulator, tuner));
-        var memory = new BridgeMemory(watched);
+        (TurnTakingConnection turns, WatchedConnection watched, _, _) = Bridge();
+        var first = new BridgeMemory(turns);
+        var second = new BridgeMemory(turns);
+        var demodulator = new Dib8000Bus(new BridgeI2c(first));
+        int writing = RequestsOf(watched, () => demodulator.Write(100, 7));
 
-        Thread modifying = Started(() => memory.Modify(0x1000, 0, 1));
-        Thread reading = Started(() => memory.Read(0x3000));
+        Thread writer = Started(() => demodulator.Write(100, 7));
+        Thread modifying = Started(() => second.Modify(0x1000, 0, 1));
+        Thread plain = Started(() => second.Read(0x3000));
 
-        Assert.All([modifying, reading], thread => Assert.True(thread.Join(WatchedConnection.Patience)));
+        Assert.All([writer, modifying, plain], thread => Assert.True(thread.Join(WatchedConnection.Patience)));
         Assert.Equal(1, watched.MostAtOnce);
+        AssertWholeRuns(watched, writer, writing);
         AssertWholeRuns(watched, modifying, 2);
-        Assert.Equal(Rounds * 3, memory.Requests);
+        Assert.Equal(watched.Requests.Count, first.Requests + second.Requests);
+    }
+
+    [Fact]
+    public void AMemoryIsBuiltOnlyOnAConnectionThatTakesTurns()
+    {
+        Assert.Equal(
+            [typeof(TurnTakingConnection)],
+            typeof(BridgeMemory).GetConstructors().SelectMany(constructor => constructor.GetParameters()).Select(parameter => parameter.ParameterType)
+        );
     }
 }
