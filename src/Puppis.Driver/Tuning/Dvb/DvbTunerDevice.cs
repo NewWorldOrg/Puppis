@@ -2,10 +2,6 @@ using Puppis.Driver.Configuration;
 
 namespace Puppis.Driver.Tuning.Dvb;
 
-/// <param name="ReadsFromTheLock">
-/// Whether the reader is opened before the frontend is tuned, so that the first bytes after the lock are not held back
-/// while the adapter starts its transfer. What reached the reader before the lock is thrown away.
-/// </param>
 public sealed record DvbTunerSettings(
     TimeSpan LockPatience,
     TimeSpan LockPollInterval,
@@ -343,10 +339,6 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    /// <summary>
-    /// Reads off what the demodulator put out while it was still finding the signal, which is almost all marked as
-    /// errors, and stops at the first read that would wait.
-    /// </summary>
     private static void ThrowAwayWhatCameBeforeTheLock(IDvbSystemCalls calls, int dvr)
     {
         byte[] spilt = new byte[SpillBytes];

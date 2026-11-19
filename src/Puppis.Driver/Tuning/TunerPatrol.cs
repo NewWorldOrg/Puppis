@@ -6,10 +6,6 @@ using Puppis.Driver.Configuration;
 
 namespace Puppis.Driver.Tuning;
 
-/// <summary>
-/// Looks once a minute for every tuner no session holds, and writes down whether it is still in its place. A tuner a
-/// session holds is left alone; reading from it is proof enough.
-/// </summary>
 public sealed class TunerPatrol(
     DriverConfiguration configuration,
     TunerHardwareBook book,

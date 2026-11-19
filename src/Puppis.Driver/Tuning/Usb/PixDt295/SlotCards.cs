@@ -6,21 +6,12 @@ using Puppis.Driver.Descrambling;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// The cards in the slots of the PIX-DT295 tuners a usb driver drives, for a driver that has no other card. What it
-/// says is worked out from what is known now each time it is asked: which of those tuners are plugged in, as the
-/// driver's presence checks last found, and whether each slot held a card when the slot was last spoken to. Answering
-/// asks no device anything.
-/// </summary>
 public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDescramblerFactory, ICardReaderReport
 {
     private readonly TimeProvider clock = clock ?? TimeProvider.System;
     private readonly Lock gate = new();
     private readonly Dictionary<string, Slot> slots = new(StringComparer.Ordinal);
 
-    /// <summary>
-    /// Whether a PIX-DT295 is plugged in now with a card in its slot.
-    /// </summary>
     public bool Unscrambles
     {
         get
@@ -47,21 +38,11 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
         }
     }
 
-    /// <summary>
-    /// The slot cards of a usb driver that borrows no card, or null for any other driver.
-    /// </summary>
     public static SlotCards? For(DriverConfiguration configuration, bool borrows, ILogger? logger, TimeProvider? clock) =>
         borrows || configuration.Tuner?.Backend is not TunerBackend.Usb ? null : new SlotCards(logger, clock);
 
-    /// <summary>
-    /// Nothing is asked for without a tuner to reach the slot through.
-    /// </summary>
     public IDescrambler? Open(HeadHold hold) => null;
 
-    /// <summary>
-    /// Writes down that the PIX-DT295 declared as <paramref name="deviceId"/> is plugged in, and whether its slot was
-    /// seen to hold a card, when that was looked at.
-    /// </summary>
     public void Present(string deviceId, bool? card)
     {
         lock (gate)
@@ -72,9 +53,6 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
         }
     }
 
-    /// <summary>
-    /// Whether the slot of <paramref name="deviceId"/> has been seen, with or without a card, since it was last plugged in.
-    /// </summary>
     public bool Knows(string deviceId)
     {
         lock (gate)
@@ -83,10 +61,6 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
         }
     }
 
-    /// <summary>
-    /// Writes down that <paramref name="deviceId"/> is not plugged in, or is not a PIX-DT295, so its slot no longer
-    /// counts.
-    /// </summary>
     public void Absent(string deviceId)
     {
         lock (gate)
@@ -95,10 +69,6 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
         }
     }
 
-    /// <summary>
-    /// The cards of <paramref name="tuner"/>'s slot, for the session about to start on it; the slot is looked at once
-    /// on the way, while the tuner is open for the session anyway.
-    /// </summary>
     public IDescramblerFactory Attach(string deviceId, Dt295Bridge tuner, Func<ISmartCardService> session)
     {
         Descramblers cards = Descramblers.Over(session, logger, clock);
@@ -209,9 +179,6 @@ public sealed class SlotCards(ILogger? logger, TimeProvider? clock = null) : IDe
             };
     }
 
-    /// <summary>
-    /// Passes a slot's cards through, writing down each time one is in hand.
-    /// </summary>
     private sealed class Noted(IDescramblerFactory cards, Action answered) : IDescramblerFactory
     {
         public bool Unscrambles => cards.Unscrambles;

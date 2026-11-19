@@ -2,19 +2,12 @@ using Puppis.Driver.Descrambling;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// What a card's answer to reset says about how to speak to it: the first byte of its speed and the most a block
-/// it takes may carry.
-/// </summary>
 public sealed record AnswerToReset(byte SpeedByte, bool OffersT1, int InformationFieldSize)
 {
     public const byte Direct = 0x3B;
 
     public const int DefaultInformationFieldSize = 32;
 
-    /// <summary>
-    /// Reads an answer to reset, or answers null for bytes that are not a whole and well-formed one.
-    /// </summary>
     public static AnswerToReset? Read(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length < 2 || bytes[0] is not Direct)
@@ -92,11 +85,6 @@ public sealed record AnswerToReset(byte SpeedByte, bool OffersT1, int Informatio
     }
 }
 
-/// <summary>
-/// The block protocol of ISO/IEC 7816-3 (T=1) over something that sends a frame and collects one: commands are cut to
-/// what the card takes per block and chained, chained answers are acknowledged and joined, and a card asking for
-/// more time is given it. A block that arrives broken ends the command rather than being asked for again.
-/// </summary>
 public sealed class T1Protocol(Func<byte[], byte[]> exchangeBlock, int cardFieldSize)
 {
     public const byte Node = 0x00;
@@ -113,9 +101,6 @@ public sealed class T1Protocol(Func<byte[], byte[]> exchangeBlock, int cardField
 
     private const byte More = 0x20;
 
-    /// <summary>
-    /// The most times a card may ask for more time within one command.
-    /// </summary>
     public const int MostWaitRequests = 16;
 
     private int sent;

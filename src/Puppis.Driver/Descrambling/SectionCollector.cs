@@ -2,9 +2,6 @@ using System.Buffers.Binary;
 
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// Gathers the sections one PID carries from the payloads of its packets, and hands on each whole one whose CRC holds.
-/// </summary>
 public sealed class SectionCollector
 {
     private const int HeaderLength = 3;
@@ -141,9 +138,6 @@ public sealed class SectionCollector
     }
 }
 
-/// <summary>
-/// The long-form sections of ISO/IEC 13818-1: an eight-byte header, a body, and a CRC over all of it.
-/// </summary>
 public static class PsiSection
 {
     public const int HeaderLength = 8;
@@ -152,9 +146,6 @@ public static class PsiSection
 
     private static readonly uint[] Table = BuildTable();
 
-    /// <summary>
-    /// Whether a section has the syntax indicator set, room for its header and CRC, and a CRC that holds.
-    /// </summary>
     public static bool Holds(ReadOnlySpan<byte> section) =>
         section.Length >= HeaderLength + CrcLength && (section[1] & 0x80) is not 0 && Crc(section) is 0;
 

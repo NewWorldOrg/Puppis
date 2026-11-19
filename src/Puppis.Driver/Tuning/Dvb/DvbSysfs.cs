@@ -7,10 +7,6 @@ public sealed record DvbSysfsEntry(string? KernelDriver, TunerBus Bus)
     public static readonly DvbSysfsEntry Unfiled = new(null, TunerBus.Unspecified);
 }
 
-/// <summary>
-/// Reads where the kernel filed a DVB frontend: <c>dvb{adapter}.frontend{n}</c> under the class directory, whose
-/// <c>device</c> link leads to the kernel driver it is bound to and the bus it sits on. Nothing there is opened.
-/// </summary>
 public sealed class DvbSysfs(string classRoot)
 {
     public const string ClassRoot = "/sys/class/dvb";

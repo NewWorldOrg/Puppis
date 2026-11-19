@@ -3,11 +3,6 @@ using System.Net.Sockets;
 
 namespace Puppis.Driver.CardLending;
 
-/// <summary>
-/// The addresses a household's own network hands out and the internet does not route: loopback, the private ranges of
-/// RFC 1918, unique local addresses (RFC 4193) and link-local addresses. The shared range carriers put in front of
-/// many households (RFC 6598) is not one of them.
-/// </summary>
 public static class HomeNetwork
 {
     private static readonly (byte[] Prefix, int Bits)[] Ipv4Ranges =

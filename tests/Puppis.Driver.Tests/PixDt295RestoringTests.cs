@@ -11,9 +11,6 @@ using Puppis.Driver.Tuning.Usb.PixDt295;
 
 namespace Puppis.Driver.Tests;
 
-/// <summary>
-/// A device that fails part way through opening is given back as it was found.
-/// </summary>
 public sealed class Dt295RestoringTests
 {
     private const string Path = "/dev/bus/usb/001/005";

@@ -24,13 +24,11 @@ public enum LayerModulation
     Qam64 = 4,
 }
 
-/// <param name="CodeRate">The numerator of 1/2, 2/3, 3/4, 5/6 or 7/8; 0 when it is still to be found.</param>
 public sealed record LayerParameters(LayerModulation Modulation, int CodeRate, int Interleave, int Segments)
 {
     public static readonly LayerParameters Unknown = new(LayerModulation.Auto, 0, 0, 0);
 }
 
-/// <param name="Guard">0 to 3 for 1/32, 1/16, 1/8 and 1/4; -1 when it is still to be found.</param>
 public sealed record ChannelParameters(
     FftSize Fft,
     int Guard,

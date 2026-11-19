@@ -3,10 +3,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// Reaches the bridge's addresses from 0x1000000 up by moving the window its memory requests see at 0x80000, and
-/// puts the window back after every access, so that what lies behind it at power on stays in reach.
-/// </summary>
 public sealed class BridgeWindow(BridgeMemory memory)
 {
     public const uint ReadWindow = 0xE9EBC;
@@ -66,9 +62,6 @@ public sealed class BridgeWindow(BridgeMemory memory)
         }
     }
 
-    /// <summary>
-    /// Writes the word and reads it back, refusing when the bridge holds something else.
-    /// </summary>
     public void WriteAndCheck(uint address, uint word)
     {
         Write(address, word);
@@ -127,10 +120,6 @@ public sealed class BridgeWindow(BridgeMemory memory)
 
     private void Close(uint window) => Place(window, AtPowerOn);
 
-    /// <summary>
-    /// Writes both window words back to how they are at power on, when this window has ever moved one, whatever
-    /// became of the moves; the last thing a closing tuner does to the bridge.
-    /// </summary>
     public void PutBack()
     {
         lock (gate)

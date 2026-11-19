@@ -1,8 +1,5 @@
 namespace Puppis.Driver.Tests;
 
-/// <summary>
-/// The memory an FR30 program runs against: big endian, with whatever registers the test puts behind it.
-/// </summary>
 public interface IFr30Memory
 {
     uint ReadWord(uint address);
@@ -14,11 +11,6 @@ public interface IFr30Memory
     void WriteWord(uint address, uint value);
 }
 
-/// <summary>
-/// Runs the FR30 instructions the bridge programs here are made of, one at a time, until the program jumps to an
-/// address it does not hold. Every other instruction stops the run, so a program that uses one this machine does not
-/// know is caught rather than run wrongly.
-/// </summary>
 public sealed class Fr30Machine(IFr30Memory memory)
 {
     public uint[] Registers { get; } = new uint[16];
@@ -35,9 +27,6 @@ public sealed class Fr30Machine(IFr30Memory memory)
 
     public long Steps { get; private set; }
 
-    /// <summary>
-    /// Runs from <paramref name="entry"/> until the program leaves the range it was loaded at, and answers where it went.
-    /// </summary>
     public uint Run(uint entry, uint programStart, uint programEnd, long mostSteps = 50_000_000)
     {
         uint pc = entry;

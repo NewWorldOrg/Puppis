@@ -1408,17 +1408,9 @@ public sealed class TunerSessionManager(
         return session is not null;
     }
 
-    /// <summary>
-    /// The last session of that name this driver saw end. One name can have ended more than once, and
-    /// this is the run that ended last.
-    /// </summary>
     private TunerSession? WhatEndedUnder(SessionId sessionId) =>
         ended.LastOrDefault(candidate => candidate.SessionId == sessionId);
 
-    /// <summary>
-    /// Whether a recording start names the recording an ended session of the same name was writing,
-    /// which lets it take that name again.
-    /// </summary>
     private static bool CarriesOn(TunerSession ended, StartSessionRequest request) =>
         request.Purpose is SessionPurpose.Recording
         && request.RecordingId is { Length: > 0 } recordingId
@@ -1486,10 +1478,6 @@ public sealed class TunerSessionManager(
         return SessionExtension.Extended(session);
     }
 
-    /// <summary>
-    /// How far a viewing is held open: as far as the app asks, but never further ahead than the window
-    /// its purpose is given.
-    /// </summary>
     private DateTimeOffset HeldNoFurtherThan(
         TunerSession session,
         DateTimeOffset asked,
@@ -1939,9 +1927,6 @@ public sealed class TunerSessionManager(
         }
     }
 
-    /// <summary>
-    /// Whether a channel has failed to tune on this device since it last delivered a session through to its end.
-    /// </summary>
     public bool IsFailingToTune(string deviceId)
     {
         lock (streakGate)

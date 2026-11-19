@@ -2,9 +2,6 @@ using System.Text.Json.Serialization;
 
 namespace Puppis.Contracts;
 
-/// <summary>
-/// Which card a driver descrambles with: one in this machine's reader, one another driver lends, or none.
-/// </summary>
 [JsonConverter(typeof(CardReaderUseConverter))]
 public enum CardReaderUse
 {
@@ -35,9 +32,6 @@ public enum CardState
     NotUsed = 6,
 }
 
-/// <summary>
-/// Why a card cannot be used, as a kind the reader can put in its own words.
-/// </summary>
 [JsonConverter(typeof(CardProblemConverter))]
 public enum CardProblem
 {
@@ -56,9 +50,6 @@ public enum CardProblem
 
 public sealed record CardReaderSlotDto
 {
-    /// <summary>
-    /// The reader's product name, without the serial number or the slot the smart-card service adds to it.
-    /// </summary>
     public string Name { get; init; } = string.Empty;
 
     public CardState State { get; init; }
@@ -66,10 +57,6 @@ public sealed record CardReaderSlotDto
     public bool InUse { get; init; }
 }
 
-/// <summary>
-/// The card reader as a driver last looked at it. It names no card: the card ID, the answer to reset and the keys
-/// stay inside the driver.
-/// </summary>
 public sealed record CardReaderDto
 {
     private readonly IReadOnlyList<CardReaderSlotDto> readers = [];
@@ -86,14 +73,8 @@ public sealed record CardReaderDto
         init => readers = value ?? [];
     }
 
-    /// <summary>
-    /// The name the lender answers to, as the configuration gives it, when the card is borrowed.
-    /// </summary>
     public string? LenderHostName { get; init; }
 
-    /// <summary>
-    /// How many tuners of other drivers this driver's card is lent to, when it lends.
-    /// </summary>
     public int? LeasesOut { get; init; }
 
     public DateTimeOffset? LastAnsweredAt { get; init; }

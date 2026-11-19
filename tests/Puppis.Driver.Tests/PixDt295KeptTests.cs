@@ -14,9 +14,6 @@ using Puppis.Driver.Tuning.Usb.PixDt295;
 
 namespace Puppis.Driver.Tests;
 
-/// <summary>
-/// A PIX-DT295 stays open and ready between sessions, and is given back as it was found when the driver lets go of it.
-/// </summary>
 public sealed class Dt295KeptTests
 {
     private const string Path = "/dev/bus/usb/001/005";

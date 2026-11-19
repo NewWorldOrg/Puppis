@@ -11,9 +11,6 @@ internal struct PcscIoRequest
     public nuint Length;
 }
 
-/// <summary>
-/// pcsc-lite's SCARD_READERSTATE. The answer to reset the service copies in is never read.
-/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct PcscReaderState
 {
@@ -32,9 +29,6 @@ internal unsafe struct PcscReaderState
     public fixed byte AnswerToReset[AnswerToResetCapacity];
 }
 
-/// <summary>
-/// The PC/SC functions of pcsc-lite, where a DWORD and a LONG are as wide as a pointer.
-/// </summary>
 public sealed unsafe class PcscLibrary
 {
     public const string SharedObject = "libpcsclite.so.1";
@@ -132,9 +126,6 @@ public sealed unsafe class PcscLibrary
         return new Service(this, context);
     }
 
-    /// <summary>
-    /// Splits the reader list the service answers with: names ended by a zero byte, the list ended by one more.
-    /// </summary>
     public static IReadOnlyList<string> ReaderNames(ReadOnlySpan<byte> list)
     {
         List<string> names = [];
@@ -155,9 +146,6 @@ public sealed unsafe class PcscLibrary
         return names;
     }
 
-    /// <summary>
-    /// Reads a slot from the event state the service answers with: a mute card is there but would not answer reset.
-    /// </summary>
     public static CardSlot SlotOf(nuint eventState)
     {
         if ((eventState & StateMute) is not 0)

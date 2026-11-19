@@ -5,12 +5,6 @@ using Puppis.Driver.Descrambling;
 
 namespace Puppis.Driver.CardLending;
 
-/// <summary>
-/// What crosses the wire between a lending driver and a borrowing one. A lease starts with the lender's nonce; the
-/// borrower answers with its own nonce and a proof derived from the shared key, the host it asked for and both nonces;
-/// the lender answers with the card's CA system and a proof of its own. Every answer to an ECM is then sealed with
-/// AES-GCM under a key derived the same way, so the keys never cross the wire in the clear.
-/// </summary>
 public static class LendingProtocol
 {
     public const string ChallengePath = "/card-lending/v1/challenge";
@@ -29,12 +23,6 @@ public static class LendingProtocol
 
     public const int LongestBody = 512;
 
-    /// <summary>
-    /// How many round trips a borrower makes before it asks for a lease: the lease request and the challenges before
-    /// it, each answering the nonce the one before was handed with a proof only the holder of the key can make. The
-    /// quickest of them is what the lender holds against its limit, since nothing on the way can make a keyed round
-    /// trip quicker than the path to the key.
-    /// </summary>
     public const int RoundTripProbes = 3;
 
     public const int AnswerLength = NonceLength + ProofLength;
@@ -54,10 +42,6 @@ public static class LendingProtocol
     internal static byte[] Nonce() => RandomNumberGenerator.GetBytes(NonceLength);
 }
 
-/// <summary>
-/// The borrower's half of starting a lease: every nonce the lender handed out on the way is part of the transcript,
-/// and every answer is keyed to it, so only the holder of the key can make a round trip the lender times.
-/// </summary>
 public sealed class BorrowerHandshake
 {
     private readonly LendingKey key;
@@ -84,10 +68,6 @@ public sealed class BorrowerHandshake
         return new BorrowerHandshake(key, host, Checked(lenderNonce), LendingProtocol.Nonce());
     }
 
-    /// <summary>
-    /// The answer to the nonce heard last: the borrower's nonce and a proof over the transcript, bound to which round
-    /// trip this is.
-    /// </summary>
     public byte[] Answer() =>
         [
             .. borrowerNonce,
@@ -96,15 +76,9 @@ public sealed class BorrowerHandshake
 
     public void Heard(ReadOnlySpan<byte> lenderNonce) => lenderNonces.Add(Checked(lenderNonce));
 
-    /// <summary>
-    /// The borrower's nonce followed by its proof over the whole transcript.
-    /// </summary>
     public byte[] Request =>
         [.. borrowerNonce, .. key.Derive(LendingProtocol.BorrowerPurpose, host, Transcript, borrowerNonce)];
 
-    /// <summary>
-    /// Takes the lender's answer to <see cref="Request"/> and starts the lease, once the lender has shown it holds the key.
-    /// </summary>
     public LendingSession Accept(ReadOnlySpan<byte> reply)
     {
         if (reply.Length is not LendingProtocol.LeaseReplyLength)
@@ -139,9 +113,6 @@ public sealed class BorrowerHandshake
             );
 }
 
-/// <summary>
-/// One lease as either side holds it: the CA system of the lent card and the key its answers are sealed with.
-/// </summary>
 public sealed class LendingSession
 {
     private readonly byte[] sealingKey;
@@ -192,10 +163,6 @@ public sealed class LendingSession
         return sealedAnswer;
     }
 
-    /// <summary>
-    /// Opens an answer the lender sealed for this lease. One sealed for another lease, changed on the way, or handed
-    /// back a second time is refused.
-    /// </summary>
     public EcmAnswer Open(ReadOnlySpan<byte> sealedAnswer)
     {
         int plainLength = sealedAnswer.Length - LendingProtocol.SealHeaderLength - LendingProtocol.TagLength;

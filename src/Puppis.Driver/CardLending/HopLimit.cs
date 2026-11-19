@@ -2,10 +2,6 @@ using System.Net.Sockets;
 
 namespace Puppis.Driver.CardLending;
 
-/// <summary>
-/// How many routers a packet of card lending may cross before it is dropped: the IPv4 time to live and the IPv6 hop
-/// limit, kept small so that what is sent does not reach past the household.
-/// </summary>
 public static class HopLimit
 {
     public const int Least = 1;

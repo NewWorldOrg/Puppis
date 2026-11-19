@@ -2,9 +2,6 @@ using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// What the demodulator's registers say about the signal, on either half.
-/// </summary>
 public static class Dt295Signal
 {
     public const FrontendStatus Locked =
@@ -14,8 +11,6 @@ public static class Dt295Signal
 
     private const int SatelliteFloor = 3000;
 
-    /// <param name="status">The four bytes from T[0x80].</param>
-    /// <param name="layers">The byte at T[0xB0].</param>
     public static bool TerrestrialLock(ReadOnlySpan<byte> status, byte layers) =>
         (status[0] & 0x28) is 0 && (layers & 0x0F) >= 8;
 
@@ -23,7 +18,6 @@ public static class Dt295Signal
 
     public static FrontendStatus StatusOf(bool locked) => locked ? Locked : FrontendStatus.None;
 
-    /// <param name="raw">The three bytes from T[0x8B], upper first.</param>
     public static double? TerrestrialDecibels(ReadOnlySpan<byte> raw)
     {
         int value = (raw[0] << 16) | (raw[1] << 8) | raw[2];
@@ -38,7 +32,6 @@ public static class Dt295Signal
         return (0.000024 * Math.Pow(p, 4)) - (0.0016 * Math.Pow(p, 3)) + (0.0398 * p * p) + (0.5491 * p) + 3.0965;
     }
 
-    /// <param name="raw">The two bytes from S[0xBC], upper first.</param>
     public static double SatelliteDecibels(ReadOnlySpan<byte> raw)
     {
         int value = (raw[0] << 8) | raw[1];

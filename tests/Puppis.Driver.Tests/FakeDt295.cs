@@ -8,20 +8,12 @@ using Puppis.Driver.Tuning.Usb.PixDt295;
 
 namespace Puppis.Driver.Tests;
 
-/// <summary>
-/// One I2C transfer as the bus saw it: what was written to the address, and what was read back after a repeated start.
-/// </summary>
 public sealed record I2cTransfer(byte Address, byte[] Written, byte[] Read)
 {
     public override string ToString() =>
         $"{Address:X2} w[{Convert.ToHexString(Written)}] r[{Convert.ToHexString(Read)}]";
 }
 
-/// <summary>
-/// A PIX-DT295 as its bridge answers memory requests: RAM and registers in one big-endian space, the window at
-/// 0x80000, the I2C master in front of the demodulator's two halves and their tuners, the card UART with a T=1 card in
-/// it, the capture ring, and the hooked write handling that runs whatever program the hook leads to on an FR30 machine.
-/// </summary>
 internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 {
     public const uint RequestBlock = 0x000C461C;
@@ -102,30 +94,16 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 
     public bool InstructionsTimeOut { get; set; }
 
-    /// <summary>
-    /// Says, for the address a write reaches, whether the request fails; the write lands first when
-    /// <see cref="WritesLandBeforeFailing"/> says so.
-    /// </summary>
     public Func<uint, bool>? FailingWrite { get; set; }
 
     public bool WritesLandBeforeFailing { get; set; }
 
-    /// <summary>
-    /// Runs before each write lands, with the address it reaches; whatever it throws is what the request throws.
-    /// </summary>
     public Action<uint>? BeforeWrite { get; set; }
 
-    /// <summary>
-    /// Says, for the address a read reaches, whether the request fails.
-    /// </summary>
     public Func<uint, bool>? FailingRead { get; set; }
 
     public long Requests { get; private set; }
 
-    /// <summary>
-    /// Whether the capture block writes one more unit each time its writer's position is read, as a broadcast keeps
-    /// it moving.
-    /// </summary>
     public bool Broadcasting { get; set; }
 
     private byte unitCounter;
@@ -157,9 +135,6 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
         return device;
     }
 
-    /// <summary>
-    /// The SHA-256 of the handler region as this fake holds it, with the hook counted as it is at power on.
-    /// </summary>
     public string HandlerHash()
     {
         lock (sync)
@@ -211,9 +186,6 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
         }
     }
 
-    /// <summary>
-    /// The capture block writes <paramref name="units"/> stamped packets into the ring and moves its writer on.
-    /// </summary>
     public void Broadcast(int units, byte firstCounter = 0)
     {
         lock (sync)
@@ -455,9 +427,6 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 
     private bool Hooked() => CopyProgram.IsOurHook(Load(HookAt), Load(HookAt + 4));
 
-    /// <summary>
-    /// Lays a write out in the block the bridge's handling reads it from, which every write passes through.
-    /// </summary>
     private void Stage(UsbSetup setup, ReadOnlySpan<byte> data)
     {
         Store(RequestBlock, AddressOf(setup));

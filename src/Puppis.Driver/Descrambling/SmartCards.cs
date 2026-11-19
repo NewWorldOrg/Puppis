@@ -1,8 +1,5 @@
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// A failure the smart-card service reported, carrying its result code and nothing the card said.
-/// </summary>
 public sealed class SmartCardException(string message, uint code) : IOException(message)
 {
     public uint Code { get; } = code;
@@ -10,9 +7,6 @@ public sealed class SmartCardException(string message, uint code) : IOException(
     public bool CardWasReset => Code is SmartCardCodes.ResetCard or SmartCardCodes.RemovedCard;
 }
 
-/// <summary>
-/// The PC/SC result codes this driver tells apart.
-/// </summary>
 public static class SmartCardCodes
 {
     public const uint Success = 0x00000000;
@@ -51,9 +45,6 @@ public static class SmartCardCodes
         } + $" (0x{code:X8})";
 }
 
-/// <summary>
-/// One connection to the card in one reader, spoken to in whole commands.
-/// </summary>
 public interface ISmartCardConnection : IDisposable
 {
     byte[] Transmit(ReadOnlySpan<byte> command);
@@ -61,9 +52,6 @@ public interface ISmartCardConnection : IDisposable
     void Reconnect();
 }
 
-/// <summary>
-/// What a reader says its slot holds, read without speaking to the card.
-/// </summary>
 public enum CardSlot
 {
     Unknown = 0,
@@ -75,16 +63,10 @@ public enum CardSlot
     Mute = 3,
 }
 
-/// <summary>
-/// A context with the smart-card service: the readers it sees and a way to connect to one.
-/// </summary>
 public interface ISmartCardService : IDisposable
 {
     IReadOnlyList<string> Readers();
 
-    /// <summary>
-    /// What each of <paramref name="readers"/> holds, in the same order, as the service knows it now.
-    /// </summary>
     IReadOnlyList<CardSlot> Slots(IReadOnlyList<string> readers);
 
     ISmartCardConnection Connect(string reader);

@@ -11,9 +11,6 @@ public enum Dt295Side
     Satellite = 2,
 }
 
-/// <summary>
-/// The demodulator and the two tuners once they are set up: tuning either side and reading how the signal stands.
-/// </summary>
 public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 {
     public const byte DemodulatorIdentity = 0x77;
@@ -69,9 +66,6 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
     public static ushort TerrestrialDivider(long hertz) => (ushort)(hertz * 64 / 1_000_000);
 
-    /// <summary>
-    /// Tunes the terrestrial side and answers whether it locked within its patience.
-    /// </summary>
     public bool TuneTerrestrial(long hertz)
     {
         if (Tuned is Dt295Side.Satellite)
@@ -117,10 +111,6 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         return Await(TerrestrialLockPatience, TerrestrialLocked);
     }
 
-    /// <summary>
-    /// Tunes the satellite side to the intermediate frequency and answers whether it locked on the transport stream.
-    /// Without a transport stream id, the first one the demodulator offers once it has a signal is taken.
-    /// </summary>
     public bool TuneSatellite(long kilohertz, int? transportStreamId, string path)
     {
         if (Tuned is Dt295Side.Terrestrial)
@@ -292,9 +282,6 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
     }
 }
 
-/// <summary>
-/// The satellite tuner's synthesiser bytes and band byte for an intermediate frequency.
-/// </summary>
 public sealed record SatellitePlan(byte[] Pll, byte Band)
 {
     private const long LowBandCeiling = 1_100_000;

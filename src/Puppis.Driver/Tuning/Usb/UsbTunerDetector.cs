@@ -3,10 +3,6 @@ using Puppis.Driver.Configuration;
 
 namespace Puppis.Driver.Tuning.Usb;
 
-/// <summary>
-/// Finds the USB tuners this driver knows among the devices the host can read. The device id follows the port the
-/// tuner hangs on, which a replug into the same socket keeps.
-/// </summary>
 public sealed class UsbTunerDetector : ITunerDetector
 {
     private readonly Lazy<IUsbHost> host;
@@ -23,10 +19,6 @@ public sealed class UsbTunerDetector : ITunerDetector
 
     public static string IdOf(UsbDeviceNode node) => $"usb{node.Port}";
 
-    /// <summary>
-    /// Finds the node the tuner with this id hangs on now. The node number changes whenever the device is plugged in
-    /// again, so the recorded path is only used for an id no port answers to.
-    /// </summary>
     public static string? NodeFor(IUsbHost host, string? deviceId, string? recordedPath) =>
         host.List()
             .FirstOrDefault(node =>

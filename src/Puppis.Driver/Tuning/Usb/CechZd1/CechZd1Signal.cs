@@ -4,9 +4,6 @@ namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
 public sealed record SignalRegisters(ushort StatusBefore, ushort Noise, ushort Signal, ushort Strength, ushort StatusAfter);
 
-/// <summary>
-/// Reads the demodulator's status, signal strength and carrier to noise ratio off its registers.
-/// </summary>
 public static class CechZd1Signal
 {
     public const ushort Synchronised = 0x1000;

@@ -1,10 +1,5 @@
 namespace Puppis.Driver.Tuning.Usb;
 
-/// <summary>
-/// Hands the control endpoint to its callers one turn at a time and in the order they asked, so that a caller sending
-/// a long run of requests keeps another waiting for no more than one turn. A turn is one request, or the requests a
-/// caller asks to make together.
-/// </summary>
 public sealed class TurnTakingConnection(IUsbConnection usb) : IUsbConnection
 {
     private readonly object turns = new();
@@ -54,9 +49,6 @@ public sealed class TurnTakingConnection(IUsbConnection usb) : IUsbConnection
         }
     }
 
-    /// <summary>
-    /// Makes <paramref name="requests"/> in one turn, so that nobody else's request comes between them.
-    /// </summary>
     public T Together<T>(Func<T> requests)
     {
         using HeldTurn turn = TakeTurn();

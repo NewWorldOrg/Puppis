@@ -24,9 +24,6 @@ public static class RegisterBusExtensions
     }
 }
 
-/// <summary>
-/// The demodulator's registers: a two byte register number and a 16 bit value, both upper byte first.
-/// </summary>
 public sealed class Dib8000Bus(BridgeI2c i2c) : IRegisterBus
 {
     public const byte Address = 0x12;
@@ -43,9 +40,6 @@ public sealed class Dib8000Bus(BridgeI2c i2c) : IRegisterBus
         i2c.Write(Address, [(byte)(register >> 8), (byte)register, (byte)(value >> 8), (byte)value]);
 }
 
-/// <summary>
-/// The tuner's registers, behind the demodulator: a one byte register number and a 16 bit value.
-/// </summary>
 public sealed class Dib0090Bus(BridgeI2c i2c) : IRegisterBus
 {
     public const byte Address = 0xC0;

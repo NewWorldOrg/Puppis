@@ -2,10 +2,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// The demodulator's two halves on the bridge's I2C bus, and the tuner behind each, reached through the half in front
-/// of it. Register numbers and values are one byte, and a run of values goes to the registers that follow.
-/// </summary>
 public sealed class Dt295Chips(BridgeI2c i2c)
 {
     public const byte Terrestrial = 0x10 << 1;
@@ -44,9 +40,6 @@ public sealed class Dt295Chips(BridgeI2c i2c)
     public void WriteRS(byte register, params ReadOnlySpan<byte> values) =>
         i2c.Write(Satellite, [Gateway, TunerWrite, register, .. values]);
 
-    /// <summary>
-    /// Reads the satellite tuner from where it stands; it takes no register number.
-    /// </summary>
     public byte[] ReadRS(int count) => Read(Satellite, [Gateway, TunerRead], count);
 
     private byte[] Read(byte address, ReadOnlySpan<byte> written, int count)

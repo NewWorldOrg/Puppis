@@ -3,12 +3,6 @@ using System.Net.Sockets;
 
 namespace Puppis.Driver.CardLending;
 
-/// <summary>
-/// Who may wait at the lending port without having borrowed: a few connections in all and fewer from any one address,
-/// an IPv6 subnet of /64 counting as one address, apart from the connections that hold a lease. A newcomer to a full
-/// address or a full door turns away the connection there that has waited longest, so nothing without the key can keep
-/// a borrower out; a connection that has answered with the key is never turned away.
-/// </summary>
 public sealed class LendingDoor(int unborrowed = LendingDoor.MostUnborrowed, int perAddress = LendingDoor.PerAddress)
 {
     public const int MostUnborrowed = 8;
@@ -23,10 +17,6 @@ public sealed class LendingDoor(int unborrowed = LendingDoor.MostUnborrowed, int
 
     private long arrivals;
 
-    /// <summary>
-    /// Seats the connection; <paramref name="evicted"/> names the connection that had to give up its seat for it, which
-    /// the caller closes. It says no only when every connection it could turn away has answered with the key.
-    /// </summary>
     public bool TryAdmit(string connection, IPAddress address, DateTimeOffset now, out string? evicted)
     {
         ArgumentNullException.ThrowIfNull(address);
@@ -55,9 +45,6 @@ public sealed class LendingDoor(int unborrowed = LendingDoor.MostUnborrowed, int
         }
     }
 
-    /// <summary>
-    /// Marks the connection as one that has answered a round trip with the key, so that it is never turned away.
-    /// </summary>
     public void Proven(string connection)
     {
         lock (gate)
@@ -88,9 +75,6 @@ public sealed class LendingDoor(int unborrowed = LendingDoor.MostUnborrowed, int
         }
     }
 
-    /// <summary>
-    /// The connections that have waited longer than <paramref name="life"/> without borrowing.
-    /// </summary>
     public IReadOnlyList<string> Overdue(DateTimeOffset now, TimeSpan life)
     {
         lock (gate)

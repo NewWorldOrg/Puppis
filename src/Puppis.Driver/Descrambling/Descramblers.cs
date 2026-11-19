@@ -28,9 +28,6 @@ public sealed class Descramblers : IDescramblerFactory, ICardReaderReport
         times = new AnswerTimes(this.clock);
     }
 
-    /// <summary>
-    /// Cards asked for through the smart-card service <paramref name="openService"/> opens, a new one each time.
-    /// </summary>
     public static Descramblers Over(Func<ISmartCardService> openService, ILogger? logger, TimeProvider? clock = null)
     {
         ArgumentNullException.ThrowIfNull(openService);
@@ -38,11 +35,6 @@ public sealed class Descramblers : IDescramblerFactory, ICardReaderReport
         return new Descramblers(openService, logger, clock);
     }
 
-    /// <summary>
-    /// What a tuner of this driver is read through: a card borrowed from <paramref name="loan"/> where there is one,
-    /// otherwise the card in this machine's reader for a DVB tuner, and nothing for a synthetic one.
-    /// </summary>
-    /// <param name="slots">The cards in the tuners' own slots, for a usb driver that borrows none.</param>
     public static IDescramblerFactory For(
         DriverConfiguration configuration,
         CardLoan? loan,
@@ -67,10 +59,6 @@ public sealed class Descramblers : IDescramblerFactory, ICardReaderReport
         return backend is TunerBackend.Dvb ? Probe(logger, clock) : slots ?? NoDescrambling.Instance;
     }
 
-    /// <summary>
-    /// Opens the card in this machine's reader each time it is called, for lending; where the smart-card service cannot
-    /// be loaded, every call says so.
-    /// </summary>
     public static Func<IConditionalAccess> CardsToLend(ILogger? logger)
     {
         PcscLibrary? library = PcscLibrary.Load(out string whyNot);
@@ -141,9 +129,6 @@ public sealed class Descramblers : IDescramblerFactory, ICardReaderReport
         }
     }
 
-    /// <summary>
-    /// Looks at what each reader holds, through a context of its own, without connecting to a card.
-    /// </summary>
     public CardReaderDto Inspect()
     {
         DateTimeOffset now = clock.GetUtcNow();

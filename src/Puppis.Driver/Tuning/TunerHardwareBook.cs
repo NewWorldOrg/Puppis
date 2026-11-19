@@ -3,10 +3,6 @@ using Puppis.Driver.Configuration;
 
 namespace Puppis.Driver.Tuning;
 
-/// <summary>
-/// What each tuner was found to be, kept from the last detection that named it. A frontend another process holds
-/// cannot be asked its name, so a name read once stays until a later detection reads another.
-/// </summary>
 public sealed class TunerHardwareBook(DriverConfiguration configuration, TimeProvider clock)
 {
     private readonly Lock gate = new();
@@ -29,9 +25,6 @@ public sealed class TunerHardwareBook(DriverConfiguration configuration, TimePro
         }
     }
 
-    /// <summary>
-    /// Writes down what a look at the device's place found. A device that is not there keeps when it was last seen.
-    /// </summary>
     public void Looked(DeviceSettings device, bool present)
     {
         if (device.Id is not { } deviceId)

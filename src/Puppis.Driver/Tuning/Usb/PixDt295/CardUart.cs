@@ -3,10 +3,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// The bridge's smart-card UART, which the card slot hangs on: powering the card, and moving bytes one register access
-/// at a time.
-/// </summary>
 public sealed class CardUart(BridgeMemory memory, DevicePacing pacing)
 {
     public const uint Enable = 0xFEA000;
@@ -118,10 +114,6 @@ public sealed class CardUart(BridgeMemory memory, DevicePacing pacing)
         memory.Write(Transmit, 1);
     }
 
-    /// <summary>
-    /// Collects what the card sends within <paramref name="patience"/>, until <paramref name="enough"/> says the
-    /// bytes so far are whole or the card has been silent for a while after it started.
-    /// </summary>
     public byte[] Receive(TimeSpan patience, Func<IReadOnlyList<byte>, bool> enough)
     {
         long started = pacing.Timestamp;

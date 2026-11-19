@@ -5,9 +5,6 @@ using Puppis.Driver.CardLending;
 
 namespace Puppis.Driver.Configuration;
 
-/// <summary>
-/// What a card-lending setting must be before the driver opens a port for it or asks another driver for keys.
-/// </summary>
 public static class CardLendingRules
 {
     public const string Section = "cardLending";
@@ -94,9 +91,6 @@ public static class CardLendingRules
         return problems;
     }
 
-    /// <summary>
-    /// The lender's address and the names it answers to, the key read from its file, or the problems in the way.
-    /// </summary>
     public static LendingPlan? Plan(LendSettings? lend, List<string> problems)
     {
         if (lend is null)

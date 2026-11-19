@@ -5,11 +5,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// A program on the bridge's main processor that copies the capture ring to the bulk endpoint each time the host asks.
-/// It is entered from a hook over two words of the bridge's handling of a memory write, and hands every other write
-/// back to that handling as the two words would have.
-/// </summary>
 public static class CopyProgram
 {
     public const uint Entry = 0xE1000;
@@ -280,9 +275,6 @@ public static class CopyProgram
         return program.Assemble(Entry);
     }
 
-    /// <summary>
-    /// Puts the program and the hook in place, or leaves them where they already are, and asks the program to answer.
-    /// </summary>
     public static void Install(BridgeMemory memory, Fr30Program program, Func<CopyAnswer> ping)
     {
         uint[] hook = memory.ReadWords(HookAt, 2);
@@ -362,15 +354,8 @@ public static class CopyProgram
         }
     }
 
-    /// <summary>
-    /// Puts the two words the hook replaced back as they were at power on, in one request.
-    /// </summary>
     public static void Unhook(BridgeMemory memory) => memory.WriteInOneRequest(HookAt, [HookAtPowerOn[0], HookAtPowerOn[1]]);
 
-    /// <summary>
-    /// Takes the hook out when the two words are ours, and leaves them as they are when they are not, which is the
-    /// state to close in whether or not a write of the hook went through.
-    /// </summary>
     public static void UnhookIfOurs(BridgeMemory memory)
     {
         uint[] hook = memory.ReadWords(HookAt, 2);
@@ -432,15 +417,8 @@ public enum CopyResult : uint
     NotStreaming = 3,
 }
 
-/// <summary>
-/// The program's answer to one instruction: where to read from next, how many chunks it copied, where the writer
-/// stood when it last looked, and how it went.
-/// </summary>
 public sealed record CopyAnswer(uint Next, uint Copied, uint Writer, CopyResult Result)
 {
-    /// <summary>
-    /// Reads the sixteen words the program left, refusing an answer that is not to this instruction.
-    /// </summary>
     public static CopyAnswer From(ReadOnlySpan<uint> words, uint sequence, CopyCommand command, string path)
     {
         if (words[0] != CopyProgram.Magic || words[1] != sequence || words[2] != ((uint)command | CopyProgram.Answered))

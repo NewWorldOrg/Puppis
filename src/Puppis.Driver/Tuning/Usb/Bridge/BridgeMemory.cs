@@ -4,9 +4,6 @@ using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tuning.Usb.Bridge;
 
-/// <summary>
-/// The bridge's memory, registers included, through its vendor request. Words travel big endian.
-/// </summary>
 public sealed class BridgeMemory(TurnTakingConnection usb)
 {
     public const byte MemoryRequest = 0xBC;
@@ -25,9 +22,6 @@ public sealed class BridgeMemory(TurnTakingConnection usb)
 
     private long requests;
 
-    /// <summary>
-    /// Whether the bridge takes full 32 bit addresses and writes of more than one word.
-    /// </summary>
     public bool Widened { get; private set; }
 
     public string Path => usb.Path;
@@ -101,9 +95,6 @@ public sealed class BridgeMemory(TurnTakingConnection usb)
         }
     }
 
-    /// <summary>
-    /// Writes every word in one request, which a bridge whose addresses were never widened takes for as many as two.
-    /// </summary>
     public void WriteInOneRequest(uint address, ReadOnlySpan<uint> words)
     {
         Reachable(address, words.Length);
@@ -118,9 +109,6 @@ public sealed class BridgeMemory(TurnTakingConnection usb)
         usb.ControlOut(SetupFor(WriteRequestType, address), bytes, Patience);
     }
 
-    /// <summary>
-    /// Reads a 16 bit register with a request for its two bytes alone.
-    /// </summary>
     public ushort ReadSixteen(uint address)
     {
         Reachable(address, 1);
@@ -135,9 +123,6 @@ public sealed class BridgeMemory(TurnTakingConnection usb)
             );
     }
 
-    /// <summary>
-    /// Writes a 16 bit register with a request for its two bytes alone.
-    /// </summary>
     public void WriteSixteen(uint address, ushort value)
     {
         Reachable(address, 1);
@@ -149,9 +134,6 @@ public sealed class BridgeMemory(TurnTakingConnection usb)
 
     public ushort ReadHalf(uint address) => (ushort)(Read(address) >> 16);
 
-    /// <summary>
-    /// Writes a 16 bit register, which is the upper half of its word; the lower half is written back as read.
-    /// </summary>
     public void WriteHalf(uint address, ushort value)
     {
         using HeldTurn turn = usb.TakeTurn();

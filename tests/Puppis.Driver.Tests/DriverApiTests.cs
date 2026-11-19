@@ -1191,10 +1191,6 @@ public sealed class DriverApiTests
         );
     }
 
-    /// <summary>
-    /// Reads event names off an open feed until the awaited one arrives, and answers with what did
-    /// arrive when it never does.
-    /// </summary>
     private static async Task<IReadOnlyList<string>> NamesUntil(StreamReader reader, string awaited)
     {
         var names = new List<string>();

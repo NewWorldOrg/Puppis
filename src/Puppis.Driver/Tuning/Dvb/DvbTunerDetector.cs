@@ -21,7 +21,6 @@ public sealed class DvbTunerDetector : ITunerDetector
         this.sysfs = sysfs;
     }
 
-    /// <param name="sysfsRoot">Where the kernel files its DVB devices, or <see langword="null"/> to read nothing there.</param>
     public static DvbTunerDetector Using(IDvbSystemCalls calls, string root, string? sysfsRoot = null) =>
         new(new Lazy<IDvbSystemCalls>(() => calls), root, sysfsRoot is null ? null : new DvbSysfs(sysfsRoot));
 

@@ -74,10 +74,6 @@ public sealed class CopyProgramTests
     }
 }
 
-/// <summary>
-/// The copying program run on an FR30 machine against a simulated bridge, through the hook, as the bridge would run it
-/// for each memory write.
-/// </summary>
 public sealed class CopyProgramRunTests
 {
     private static (FakeDt295 Device, BridgeMemory Memory) Hooked()

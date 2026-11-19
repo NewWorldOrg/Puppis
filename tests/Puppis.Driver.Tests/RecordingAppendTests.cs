@@ -8,10 +8,6 @@ using Puppis.Driver.Tuning;
 
 namespace Puppis.Driver.Tests;
 
-/// <summary>
-/// A recording put back on a stream under its own name has the writer open the file it already has
-/// and write on the end of it.
-/// </summary>
 public sealed class RecordingAppendTests : IDisposable
 {
     private static readonly DateTimeOffset Start = new(2026, 8, 13, 21, 0, 0, TimeSpan.Zero);

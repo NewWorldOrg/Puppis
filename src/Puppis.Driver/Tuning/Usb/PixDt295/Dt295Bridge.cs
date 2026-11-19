@@ -6,10 +6,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// An open PIX-DT295 with its bridge started, its chips set up and the copying program hooked in: everything a
-/// session needs before it tunes. It outlives the sessions on it, and is given back as it was found when it closes.
-/// </summary>
 public sealed class Dt295Bridge
 {
     private readonly TurnTakingConnection usb;
@@ -46,9 +42,6 @@ public sealed class Dt295Bridge
 
     public Dt295CardSlot Slot { get; }
 
-    /// <summary>
-    /// Whether a session's stream is running on the bridge.
-    /// </summary>
     public bool InSession => streaming;
 
     public bool IsOpen
@@ -62,15 +55,8 @@ public sealed class Dt295Bridge
         }
     }
 
-    /// <summary>
-    /// The card slot as a smart-card service, valid while the bridge is open.
-    /// </summary>
     public ISmartCardService CardService() => Slot.Service();
 
-    /// <summary>
-    /// Opens the device and brings it from power on to ready for tuning, or closes it again, given back, when any step
-    /// fails.
-    /// </summary>
     public static Dt295Bridge Open(
         IUsbHost host,
         string path,
@@ -102,10 +88,6 @@ public sealed class Dt295Bridge
         }
     }
 
-    /// <summary>
-    /// Whether the device is still as it was left: the hook and the window words in place, the USB core's register
-    /// group at rest, and the terrestrial tuner answering on the I2C bus. A failed request answers false.
-    /// </summary>
     public bool StillAsLeft()
     {
         try
@@ -124,9 +106,6 @@ public sealed class Dt295Bridge
         }
     }
 
-    /// <summary>
-    /// Readies the capture block and the endpoint, puts the reads on the endpoint and starts the stream.
-    /// </summary>
     public Dt295Stream StartStream()
     {
         lock (gate)
@@ -146,10 +125,6 @@ public sealed class Dt295Bridge
         }
     }
 
-    /// <summary>
-    /// Ends the stream as the bridge's capture expects and puts the endpoint back. Answers whether every step went
-    /// through, which is what keeping the device open for the next session asks for.
-    /// </summary>
     public bool StopStream()
     {
         streaming = false;
@@ -179,10 +154,6 @@ public sealed class Dt295Bridge
         }
     }
 
-    /// <summary>
-    /// Puts whichever side was tuned back to how the set-up leaves it, ready for the next tune, and switches the card
-    /// off. Answers whether it went through.
-    /// </summary>
     public bool Rest() =>
         Quietly(
             "putting the tuner to rest",
@@ -200,10 +171,6 @@ public sealed class Dt295Bridge
             }
         ) & Quietly("switching the card off", Slot.Rest);
 
-    /// <summary>
-    /// Gives the bridge back step by step, carrying on past a step that fails and saying which one did, and closes
-    /// the device.
-    /// </summary>
     public void Close()
     {
         lock (gate)

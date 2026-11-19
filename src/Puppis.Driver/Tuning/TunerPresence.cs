@@ -6,9 +6,6 @@ using Puppis.Driver.Tuning.Usb;
 
 namespace Puppis.Driver.Tuning;
 
-/// <summary>
-/// Says whether a tuner is in its place without opening it, so looking never disturbs a device.
-/// </summary>
 public interface ITunerPresence
 {
     bool IsPresent(DeviceSettings device, TunerHardwareDto hardware);
@@ -20,10 +17,6 @@ public sealed class DvbPresence : ITunerPresence
         (hardware.DevicePath ?? device.DevicePath) is { } path && File.Exists(path);
 }
 
-/// <summary>
-/// Looks for the tuner's port among the devices the kernel lists under <c>/sys/bus/usb/devices</c>, and for the
-/// tuner's model in what the kernel says that port holds.
-/// </summary>
 public sealed class UsbPresence(string deviceTree) : ITunerPresence
 {
     public const string DeviceTree = "/sys/bus/usb/devices";

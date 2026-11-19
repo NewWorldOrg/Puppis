@@ -5,9 +5,6 @@ using Puppis.Driver.Tuning;
 
 namespace Puppis.Driver.Sessions;
 
-/// <summary>
-/// When a faulted device is next tried, and whether it failed again soon after it was last handed back out.
-/// </summary>
 public sealed record RecheckPlan(DateTimeOffset NextTryAt, bool Relapsed);
 
 public sealed class FaultedTunerRecheck(

@@ -18,7 +18,6 @@ public sealed class Multi2Tests
 
     private const ulong SyntheticInitialValue = 0x0F1E2D3C4B5A6978;
 
-    /// <summary>The first vector of the MULTI2 self-test in libtomcrypt: 128 steps, which is 16 cycles of eight.</summary>
     [Fact]
     public void TheFirstPublishedVectorComesOut()
     {
@@ -31,7 +30,6 @@ public sealed class Multi2Tests
         Assert.Equal(0x0000000000000001UL, cipher.Decrypt(0xF89440845E11CF89UL));
     }
 
-    /// <summary>The second vector of the MULTI2 self-test in libtomcrypt: 216 steps, which is 27 cycles of eight.</summary>
     [Fact]
     public void TheSecondPublishedVectorComesOut()
     {

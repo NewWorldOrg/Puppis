@@ -2,10 +2,6 @@ using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tuning.Usb.CechZd1;
 
-/// <summary>
-/// The tuner behind the demodulator. Tuning runs as a machine of steps, each of which names how long to wait, in
-/// tenths of a millisecond, before the next.
-/// </summary>
 public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
 {
     public const int MostSteps = 1000;
@@ -138,11 +134,6 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
             );
     }
 
-    /// <summary>
-    /// Wakes the tuner. The calibrations are done again and the band and synthesiser are written again at the next
-    /// tune, as they are after power-up, because the calibration clears the enable register that a tune to the
-    /// frequency already requested would otherwise leave as it is.
-    /// </summary>
     public void Wake()
     {
         t.Modify(0x23, 0, Awake);

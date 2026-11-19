@@ -11,10 +11,6 @@ public interface IRecordingWriter : IDisposable
 
     long BytesWritten { get; }
 
-    /// <summary>
-    /// When the file was last written before this writer opened it, or <see langword="null"/> when it opened a file
-    /// that held nothing.
-    /// </summary>
     DateTimeOffset? AppendedAfter => null;
 
     void Write(ReadOnlySpan<byte> bytes);

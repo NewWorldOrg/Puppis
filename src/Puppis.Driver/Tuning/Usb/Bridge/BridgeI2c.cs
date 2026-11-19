@@ -2,12 +2,6 @@ using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tuning.Usb.Bridge;
 
-/// <summary>
-/// The bridge's I2C master, driven one byte at a time through memory requests. Each byte costs three requests: the
-/// data, the control word that sends it, and one read of the status and control words together, which says whether
-/// the byte is done and whether it was acknowledged. A transaction ends by writing the idle control word, and the
-/// next one waits for the bus to be idle before it starts, so the stop condition is waited for once, not twice.
-/// </summary>
 public sealed class BridgeI2c(BridgeMemory memory)
 {
     public const uint Status = 0xFD8FE0;

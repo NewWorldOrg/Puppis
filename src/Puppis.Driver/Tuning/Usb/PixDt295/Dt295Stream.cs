@@ -6,12 +6,6 @@ using Puppis.Driver.Tuning.Usb.Bridge;
 
 namespace Puppis.Driver.Tuning.Usb.PixDt295;
 
-/// <summary>
-/// The stream of an open PIX-DT295. One thread asks the copying program for what the ring holds, one instruction after
-/// another; another takes the bulk reads as they finish and unpacks them, so that the endpoint always has reads waiting
-/// whatever the reader of the packets is doing. When the program falls too far behind, or too long passes between two
-/// instructions, reading moves to where the writer stands and the gap is counted.
-/// </summary>
 public sealed class Dt295Stream : IDisposable
 {
     public const uint Behind = CopyProgram.RingBytes / 4 * 3;
@@ -45,7 +39,6 @@ public sealed class Dt295Stream : IDisposable
     private long dropped;
     private uint sequence;
 
-    /// <param name="writer">Reads where the capture block's writer stands, for a jump past what was lost.</param>
     public Dt295Stream(TurnTakingConnection usb, BridgeMemory memory, Func<uint> writer, IUsbBulkReader reader, DevicePacing pacing)
     {
         this.usb = usb;
@@ -57,17 +50,10 @@ public sealed class Dt295Stream : IDisposable
         reaping = new Thread(Reap) { IsBackground = true, Name = "PIX-DT295 bulk reads" };
     }
 
-    /// <summary>
-    /// Times the stream lost bytes: jumps past what the ring no longer held, unit heads lost and found again, and
-    /// bytes dropped because nobody took them.
-    /// </summary>
     public long Losses => Interlocked.Read(ref skips) + unpacker.Realignments + Interlocked.Read(ref dropped);
 
     public long Skips => Interlocked.Read(ref skips);
 
-    /// <summary>
-    /// Whether the stream stopped on a fault of its own rather than being closed.
-    /// </summary>
     public bool Faulted
     {
         get
@@ -87,10 +73,6 @@ public sealed class Dt295Stream : IDisposable
         asking.Start();
     }
 
-    /// <summary>
-    /// Takes whole packets, waiting as long as <paramref name="patience"/> by the device's clock for the first of
-    /// them. Answers an empty array when none came in time; throws what stopped the stream.
-    /// </summary>
     public byte[] Take(int count, TimeSpan patience, CancellationToken cancellationToken)
     {
         long asked = pacing.Timestamp;
@@ -144,10 +126,6 @@ public sealed class Dt295Stream : IDisposable
         }
     }
 
-    /// <summary>
-    /// Stops asking, waits for the instruction in flight to come back, and then stops taking the bulk reads, which
-    /// stay on the endpoint for whoever cancels them.
-    /// </summary>
     public void Dispose()
     {
         lock (held)
@@ -161,9 +139,6 @@ public sealed class Dt295Stream : IDisposable
         Join(reaping);
     }
 
-    /// <summary>
-    /// What a read the stream's own closing interrupted ends with: a stop, never a fault of the device.
-    /// </summary>
     public static OperationCanceledException Closing(CancellationToken cancellationToken) =>
         new("The tuner was closed while it was being read, so the read ends here.", cancellationToken);
 
@@ -175,10 +150,6 @@ public sealed class Dt295Stream : IDisposable
         }
     }
 
-    /// <summary>
-    /// Sends the copying program one instruction and reads its answer in the same turn, since the next write anybody
-    /// sends lands where the answer is.
-    /// </summary>
     public static CopyAnswer Instruct(
         TurnTakingConnection usb,
         BridgeMemory memory,

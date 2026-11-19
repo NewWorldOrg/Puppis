@@ -3,9 +3,6 @@ using System.Numerics;
 
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// The MULTI2 block cipher of ARIB STD-B25, holding the eight work-key words derived from one system key and one data key.
-/// </summary>
 public sealed class Multi2
 {
     public const int SystemKeyLength = 32;
@@ -40,9 +37,6 @@ public sealed class Multi2
         this.cycles = cycles;
     }
 
-    /// <summary>
-    /// Derives the work key from a 32-byte system key and an 8-byte data key; one cycle is the eight-step sequence of the four round functions.
-    /// </summary>
     public static Multi2 Keyed(
         ReadOnlySpan<byte> systemKey,
         ReadOnlySpan<byte> dataKey,
@@ -139,9 +133,6 @@ public sealed class Multi2
         return ((ulong)left << 32) | right;
     }
 
-    /// <summary>
-    /// Scrambles a payload in place the way a broadcast does: whole blocks chained from the initial value, and a short tail masked with the encrypted last block.
-    /// </summary>
     public void EncryptPayload(Span<byte> payload, ulong initialValue)
     {
         ulong chain = initialValue;
@@ -157,9 +148,6 @@ public sealed class Multi2
         MaskTail(payload[whole..], chain);
     }
 
-    /// <summary>
-    /// Unscrambles a payload in place: the inverse of <see cref="EncryptPayload"/>.
-    /// </summary>
     public void DecryptPayload(Span<byte> payload, ulong initialValue)
     {
         ulong chain = initialValue;

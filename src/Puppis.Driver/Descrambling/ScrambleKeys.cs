@@ -2,9 +2,6 @@ using System.Buffers.Binary;
 
 namespace Puppis.Driver.Descrambling;
 
-/// <summary>
-/// The odd and the even scramble key one ECM unlocked, keyed and ready to unscramble payloads.
-/// </summary>
 public sealed class ScrambleKeys
 {
     public const int PairLength = 2 * Multi2.DataKeyLength;
@@ -24,9 +21,6 @@ public sealed class ScrambleKeys
         this.initialValue = initialValue;
     }
 
-    /// <summary>
-    /// Keys a pair answered for an ECM: the odd key in the first eight bytes, the even key in the next eight.
-    /// </summary>
     public static ScrambleKeys Of(
         ReadOnlySpan<byte> systemKey,
         ReadOnlySpan<byte> initialValue,
