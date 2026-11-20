@@ -9,7 +9,7 @@ driver を使う側との通信プロトコルは `Puppis.Contracts` として n
 
 ## 動かす
 
-イメージは `ghcr.io/newworldorg/puppis` にあり、`v0.3.0` のようなバージョンのタグと `latest` が使えます。\
+イメージは `ghcr.io/newworldorg/puppis` にあり、`v0.4.0` のようなバージョンのタグと `latest` が使えます。\
 driver は root で動き、設定ファイルのパスを `PUPPIS_DRIVER_CONFIG` で渡します。
 
 ```bash
@@ -22,7 +22,7 @@ docker run -d --privileged \
   -v driver-run:/run/carina \
   -v /srv/recordings:/srv/recordings \
   --device /dev/dvb/adapter0 \
-  ghcr.io/newworldorg/puppis:v0.3.0
+  ghcr.io/newworldorg/puppis:v0.4.0
 ```
 
 `/run/carina` は Carina の app と同じボリュームにし、`/run/pcscd` はホストの pcscd のディレクトリをそのまま渡します。
@@ -39,7 +39,7 @@ docker run -d --privileged \
 | `socketPath` | ソケットのパス。既定は `/run/carina/driver.sock` |
 | `socketGroupId` | ソケットの所有グループ。既定は 10001。app を動かすグループに合わせます |
 | `outputRoots` | 録画の保存先。`name` と `path` の組を 1 つ以上 |
-| `tuner.backend` | `dvb`、`usb`(CECH-ZD1 と PIX-DT295)、`fake`(合成チューナー)のいずれか。必須です |
+| `tuner.backend` | `dvb`、`usb`(CECH-ZD1 と PIX-DT295)、`fake`(擬似チューナー)のいずれか。必須です |
 | `devices` | チューナーの一覧。`id`・`kind`(`terrestrial` か `satellite`)・`devicePath`・`enabled` |
 | `shutdownGraceHours` | 停止時に録画の終了を待つ上限。既定は 6 時間 |
 | `name` | 画面に表示するこの機械の名前。省略すると「この機械」と表示します |
