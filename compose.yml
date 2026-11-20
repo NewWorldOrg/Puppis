@@ -19,6 +19,7 @@ services:
       - driver-run:/run/carina
       - ${PUPPIS_RECORDINGS_DIR:-recordings}:/srv/recordings
       - driver-build:/driver
+      - driver-state:/var/lib/puppis
       # pcscd replaces the socket inside this directory whenever it restarts, so bind the directory: a bind mount of the socket file would go on pointing at the one that is gone.
       - /run/pcscd:/run/pcscd:ro
     stop_grace_period: 7h
@@ -31,6 +32,7 @@ services:
       start_interval: 10s
     environment:
       PUPPIS_DRIVER_CONFIG: /code/docker/driver.development.json
+      PUPPIS_DRIVER_STATE: /var/lib/puppis
       DOTNET_hostBuilder__reloadConfigOnChange: 'false'
       ASPNETCORE_URLS: ''
       ASPNETCORE_HTTP_PORTS: ''
@@ -40,4 +42,5 @@ volumes:
   nuget:
   driver-run:
   driver-build:
+  driver-state:
   recordings:
