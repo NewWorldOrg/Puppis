@@ -60,6 +60,8 @@ public sealed class TransportStreamDescrambler : IDescrambler
 
     private bool headReported;
 
+    private HeadReport? headToReport;
+
     private bool disposed;
 
     public TransportStreamDescrambler(
@@ -90,18 +92,20 @@ public sealed class TransportStreamDescrambler : IDescrambler
         {
             ObjectDisposedException.ThrowIf(disposed, this);
 
-            if (stream.Length > 0)
+            if (holding && stream.Length > 0)
             {
-                head.FirstByte();
+                head.BytesCame();
             }
 
             int shelved = shelf.Length;
             byte[] carried = partial;
             bool wasHolding = holding;
+            bool wasReported = headReported;
+            byte[] readable;
 
             try
             {
-                return Take(stream);
+                readable = Take(stream);
             }
             catch
             {
@@ -109,9 +113,15 @@ public sealed class TransportStreamDescrambler : IDescrambler
                 waiting.RemoveAll(offset => offset >= shelved);
                 partial = carried;
                 holding = wasHolding;
+                headReported = wasReported;
+                headToReport = null;
 
                 throw;
             }
+
+            WriteTheHeadReport();
+
+            return readable;
         }
     }
 
@@ -119,6 +129,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
     {
         lock (gate)
         {
+            ReportAHeadStillHeld("what it held was taken back unread");
             byte[] unread = [.. shelf.Written, .. partial];
             shelf.Clear();
             waiting.Clear();
@@ -444,6 +455,8 @@ public sealed class TransportStreamDescrambler : IDescrambler
             ecms[pid] = state;
         }
 
+        state.Seen++;
+
         if (state.Answered && body.SequenceEqual(state.LastBody))
         {
             return;
@@ -463,6 +476,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
         bool first = head.Answer is null;
         long asked = first ? time.GetTimestamp() : 0;
         EcmAnswer answer = card.Answer(body);
+        state.Answers++;
         state.Keys = answer.Keys;
 
         if (first)
@@ -531,27 +545,66 @@ public sealed class TransportStreamDescrambler : IDescrambler
         }
 
         headReported = true;
-        double held = head.SinceTheFirstByte.TotalMilliseconds;
+        headToReport = new HeadReport(
+            shelf.Length,
+            head.SinceTheFirstByte.TotalMilliseconds,
+            met,
+            met is null ? WhatIsStillMissing() : string.Empty,
+            head.ToString()
+        );
+    }
 
-        if (met is null)
+    private void WriteTheHeadReport()
+    {
+        if (headToReport is not { } report || logger is null)
+        {
+            return;
+        }
+
+        headToReport = null;
+
+        if (report.Met is null)
         {
             logger.LogWarning(
                 "The head of the stream reached its size limit under the {Hold} hold, {Milliseconds:0.0} ms after the first byte was received, with this still missing: {Missing}.",
                 HoldName,
-                held,
-                string.Join("; ", StillMissing())
+                report.HeldMilliseconds,
+                report.Missing
             );
         }
 
         logger.LogInformation(
             "The head of the stream, {Bytes} bytes, was handed on {Milliseconds:0.0} ms after the first byte was received under the {Hold} hold because {Why}: {Times}.",
-            shelf.Length,
-            held,
+            report.Bytes,
+            report.HeldMilliseconds,
             HoldName,
-            met is null ? "it reached its size limit" : $"the {met} condition was met",
+            report.Met is null ? "it reached its size limit" : $"the {report.Met} condition was met",
+            report.Times
+        );
+    }
+
+    private void ReportAHeadStillHeld(string when)
+    {
+        if (!holding || headReported || !head.Started || logger is null)
+        {
+            return;
+        }
+
+        headReported = true;
+        logger.LogInformation(
+            "The head of the stream, {Bytes} bytes, was still held when {When}, {Milliseconds:0.0} ms after the first byte was received and {Idle:0.0} ms after the last, under the {Hold} hold, with this still missing: {Missing}; {Times}.",
+            shelf.Length,
+            when,
+            head.SinceTheFirstByte.TotalMilliseconds,
+            head.SinceTheLastBytes.TotalMilliseconds,
+            HoldName,
+            WhatIsStillMissing(),
             head.ToString()
         );
     }
+
+    private string WhatIsStillMissing() =>
+        StillMissing() is { Count: > 0 } missing ? string.Join("; ", missing) : "nothing this driver can name";
 
     private List<string> StillMissing()
     {
@@ -572,7 +625,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
             missing.Add("no ECM PID is known");
         }
 
-        missing.AddRange(map.EcmPids.Where(ecm => !Answered([ecm])).Order().Select(Unanswered));
+        missing.AddRange(map.EcmPids.Where(TheCardGaveNoAnswerFor).Order().Select(Unanswered));
 
         if (hold is HeadHold.WhatIsHeld && HeldWithoutAnAnsweredEcm() is { Count: > 0 } untied)
         {
@@ -584,11 +637,16 @@ public sealed class TransportStreamDescrambler : IDescrambler
         return missing;
     }
 
+    private bool TheCardGaveNoAnswerFor(int ecm) => !ecms.TryGetValue(ecm, out EcmState? state) || state.Answers is 0;
+
     private string Unanswered(int ecm)
     {
-        bool seen = ecms.TryGetValue(ecm, out EcmState? state);
+        if (!ecms.TryGetValue(ecm, out EcmState? state) || state.Seen is 0)
+        {
+            return $"the ECM on PID 0x{ecm:X4} had no answer (an ECM was not seen on it and the card was asked 0 times)";
+        }
 
-        return $"the ECM on PID 0x{ecm:X4} had no answer (an ECM was {(seen ? "seen" : "not seen")} on it and the card was asked {state?.Asks ?? 0} times)";
+        return $"the ECM on PID 0x{ecm:X4} had no answer (an ECM was seen on it {state.Seen} times and the card was asked {state.Asks} times without answering)";
     }
 
     private List<int> HeldWithoutAnAnsweredEcm() =>
@@ -629,10 +687,13 @@ public sealed class TransportStreamDescrambler : IDescrambler
             }
 
             disposed = true;
+            ReportAHeadStillHeld("the descrambler was closed");
         }
 
         card.Dispose();
     }
+
+    private sealed record HeadReport(int Bytes, double HeldMilliseconds, string? Met, string Missing, string Times);
 
     private sealed class EcmState
     {
@@ -640,7 +701,11 @@ public sealed class TransportStreamDescrambler : IDescrambler
 
         public bool Answered { get; set; }
 
+        public int Seen { get; set; }
+
         public int Asks { get; set; }
+
+        public int Answers { get; set; }
 
         public ScrambleKeys? Keys { get; set; }
 

@@ -3,6 +3,7 @@ namespace Puppis.Driver.Descrambling;
 public sealed class HeadHoldTimes(TimeProvider time)
 {
     private long firstByteAt;
+    private long lastBytesAt;
     private bool started;
 
     public TimeSpan? Pat { get; private set; }
@@ -13,17 +14,23 @@ public sealed class HeadHoldTimes(TimeProvider time)
 
     public TimeSpan? Answer { get; private set; }
 
+    public bool Started => started;
+
     public TimeSpan SinceTheFirstByte => started ? time.GetElapsedTime(firstByteAt) : TimeSpan.Zero;
 
-    public void FirstByte()
+    public TimeSpan SinceTheLastBytes => started ? time.GetElapsedTime(lastBytesAt) : TimeSpan.Zero;
+
+    public void BytesCame()
     {
+        lastBytesAt = time.GetTimestamp();
+
         if (started)
         {
             return;
         }
 
         started = true;
-        firstByteAt = time.GetTimestamp();
+        firstByteAt = lastBytesAt;
     }
 
     public void PatSeen() => Pat ??= SinceTheFirstByte;

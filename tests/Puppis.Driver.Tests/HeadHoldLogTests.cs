@@ -22,17 +22,25 @@ public sealed class HeadHoldLogTests
 
     private static readonly byte[] FirstEcm = Encoding.ASCII.GetBytes("synthetic ecm one");
 
+    private static readonly byte[] SecondEcm = Encoding.ASCII.GetBytes("second synthetic ecm");
+
     private static (TransportStreamDescrambler Descrambler, SteppedClock Clock, CapturingLogger<TransportStreamDescrambler> Log) Open(
         HeadHold hold,
         int limitInPackets = 0,
         double cardTakesMilliseconds = 42.5,
-        string cardKind = "local"
+        string cardKind = "local",
+        Func<int, bool>? cardIsSilentOn = null
     )
     {
         var clock = new SteppedClock(UsbTestSupport.Start);
         var log = new CapturingLogger<TransportStreamDescrambler>();
         FakeSmartCardService service = FakeSmartCardService.WithOneCard(out _);
-        var card = new CardThatTakesItsTime(ConditionalAccessCard.Open(service), clock, TimeSpan.FromMilliseconds(cardTakesMilliseconds));
+        var card = new CardThatTakesItsTime(
+            ConditionalAccessCard.Open(service),
+            clock,
+            TimeSpan.FromMilliseconds(cardTakesMilliseconds),
+            cardIsSilentOn ?? (_ => false)
+        );
 
         return (
             new TransportStreamDescrambler(
@@ -259,6 +267,141 @@ public sealed class HeadHoldLogTests
     }
 
     [Fact]
+    public void AHeadTakenBackBecauseTheCardWentSilentSaysOnceWhatItWasStillWaitingFor()
+    {
+        (TransportStreamDescrambler descrambler, SteppedClock clock, CapturingLogger<TransportStreamDescrambler> log) = Open(
+            HeadHold.WhatIsHeld,
+            cardIsSilentOn: _ => true
+        );
+
+        Assert.Empty(descrambler.Descramble(new SyntheticScrambledStream().Pat((1, PmtPid), (2, OtherPmtPid)).Input));
+        Assert.Empty(descrambler.Descramble(After(clock, 10, new SyntheticScrambledStream().Pmt(PmtPid, 1, EcmPid, [(VideoPid, null)]))));
+        Assert.Throws<DescramblingException>(() => descrambler.Descramble(After(clock, 20, new SyntheticScrambledStream().Ecm(EcmPid, FirstEcm))));
+        clock.Advance(TimeSpan.FromMilliseconds(5));
+        Assert.Equal(376, descrambler.WhatItCouldNotRead().Length);
+        descrambler.Dispose();
+
+        Assert.Equal(
+            "Information The head of the stream, 376 bytes, was still held when what it held was taken back unread, 77.5 ms after the first byte was received and 47.5 ms after the last, under the live hold, with this still missing: the ECM on PID 0x0901 had no answer (an ECM was seen on it 1 times and the card was asked 1 times without answering); PAT after 0.0 ms, first PMT naming an ECM PID after 10.0 ms, first ECM after 30.0 ms, first answer from the card not seen.",
+            Assert.Single(log.Lines)
+        );
+    }
+
+    [Fact]
+    public void AHeadStillHeldWhenTheDescramblerIsClosedSaysOnceWhatItWasStillWaitingFor()
+    {
+        (TransportStreamDescrambler descrambler, SteppedClock clock, CapturingLogger<TransportStreamDescrambler> log) = Open(HeadHold.WhatIsHeld);
+        SyntheticScrambledStream held = new SyntheticScrambledStream()
+            .Pat((1, PmtPid), (2, OtherPmtPid))
+            .Scrambled(VideoPid, FirstEcm, odd: false, seed: 1);
+
+        Assert.Empty(descrambler.Descramble(held.Input));
+        clock.Advance(TimeSpan.FromMilliseconds(120));
+        Assert.Empty(descrambler.Descramble(new SyntheticScrambledStream().Scrambled(VideoPid, FirstEcm, odd: true, seed: 2).Input));
+        clock.Advance(TimeSpan.FromMilliseconds(5000));
+        descrambler.Dispose();
+        descrambler.Dispose();
+
+        Assert.Equal(
+            "Information The head of the stream, 564 bytes, was still held when the descrambler was closed, 5120.0 ms after the first byte was received and 5000.0 ms after the last, under the live hold, with this still missing: no ECM PID is known; 2 held scrambled packets were on PIDs tied to no answered ECM (PID 0x0111); PAT after 0.0 ms, first PMT naming an ECM PID not seen, first ECM not seen, first answer from the card not seen.",
+            Assert.Single(log.Lines)
+        );
+    }
+
+    [Fact]
+    public void ADescramblerClosedBeforeItReceivedAByteWritesNothingAboutAHead()
+    {
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(HeadHold.WhatIsHeld);
+
+        Assert.Empty(descrambler.Descramble([]));
+        Assert.Empty(descrambler.WhatItCouldNotRead());
+        descrambler.Dispose();
+
+        Assert.Empty(log.Lines);
+    }
+
+    [Fact]
+    public void ADescramblerClosedAfterItsHeadWasHandedOnWritesNoSecondLineAboutTheHead()
+    {
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(HeadHold.WhatIsHeld);
+        byte[] stream = new SyntheticScrambledStream().Pat((1, PmtPid)).Pmt(PmtPid, 1, EcmPid, [(VideoPid, null)]).Ecm(EcmPid, FirstEcm).Input;
+
+        Assert.NotEmpty(descrambler.Descramble(stream));
+        descrambler.WhatItCouldNotRead();
+        descrambler.Dispose();
+
+        Assert.Single(log.Lines, line => line.Contains("The head of the stream", StringComparison.Ordinal));
+        Assert.DoesNotContain(log.Lines, line => line.Contains("was still held", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AHeadHandedOnInAReadThatThenFailsIsNotReportedUntilItIsReallyHandedOnOrTakenBack()
+    {
+        byte[] SettledThenChanged() =>
+            new SyntheticScrambledStream()
+                .Pat((1, PmtPid), (2, OtherPmtPid))
+                .Pmt(PmtPid, 1, EcmPid, [(VideoPid, null)])
+                .Ecm(EcmPid, FirstEcm)
+                .Scrambled(VideoPid, FirstEcm, odd: false, seed: 1)
+                .Ecm(EcmPid, SecondEcm)
+                .Input;
+
+        IReadOnlyList<string> HeadLines(CapturingLogger<TransportStreamDescrambler> log) =>
+            [.. log.Lines.Where(line => line.Contains("The head of the stream", StringComparison.Ordinal))];
+
+        (TransportStreamDescrambler takenBack, _, CapturingLogger<TransportStreamDescrambler> takenBackLog) = Open(
+            HeadHold.WhatIsHeld,
+            cardIsSilentOn: asked => asked is 2
+        );
+
+        Assert.Throws<DescramblingException>(() => takenBack.Descramble(SettledThenChanged()));
+        Assert.Empty(HeadLines(takenBackLog));
+        takenBack.WhatItCouldNotRead();
+        takenBack.Dispose();
+
+        Assert.Contains("was still held when what it held was taken back unread", Assert.Single(HeadLines(takenBackLog)), StringComparison.Ordinal);
+
+        (TransportStreamDescrambler readAgain, _, CapturingLogger<TransportStreamDescrambler> readAgainLog) = Open(
+            HeadHold.WhatIsHeld,
+            cardIsSilentOn: asked => asked is 2
+        );
+
+        Assert.Throws<DescramblingException>(() => readAgain.Descramble(SettledThenChanged()));
+        Assert.NotEmpty(readAgain.Descramble(SettledThenChanged()));
+        readAgain.Dispose();
+
+        Assert.Contains("was handed on", Assert.Single(HeadLines(readAgainLog)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AHeadThatReachesItsLimitAfterTheCardWentSilentSaysTheEcmCameAndTheCardWasAskedWithoutAnswering()
+    {
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(
+            HeadHold.EveryProgramme,
+            limitInPackets: 5,
+            cardIsSilentOn: _ => true
+        );
+        SyntheticScrambledStream untilTheLimit = new SyntheticScrambledStream().Clear(VideoPid, 1).Clear(VideoPid, 2).Clear(VideoPid, 3);
+
+        using (descrambler)
+        {
+            Assert.Empty(
+                descrambler.Descramble(new SyntheticScrambledStream().Pat((1, PmtPid), (2, OtherPmtPid)).Pmt(PmtPid, 1, EcmPid, [(VideoPid, null)]).Input)
+            );
+            Assert.Throws<DescramblingException>(() => descrambler.Descramble(new SyntheticScrambledStream().Ecm(EcmPid, FirstEcm).Input));
+            Assert.Throws<DescramblingException>(() => descrambler.Descramble(new SyntheticScrambledStream().Ecm(EcmPid, SecondEcm).Input));
+            Assert.NotEmpty(descrambler.Descramble(untilTheLimit.Input));
+        }
+
+        Assert.EndsWith(
+            "with this still missing: the PMT on PID 0x0102 was not seen; the ECM on PID 0x0901 had no answer (an ECM was seen on it 2 times and the card was asked 2 times without answering).",
+            LimitWarning(log),
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain(log.Lines, line => line.Contains("was still held", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void NothingIsWrittenForThePacketsThatAreHeldOrForThoseThatFollowTheHead()
     {
         (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(HeadHold.WhatIsHeld);
@@ -342,13 +485,21 @@ public sealed class HeadHoldLogTests
         );
     }
 
-    private sealed class CardThatTakesItsTime(IConditionalAccess card, SteppedClock clock, TimeSpan takes) : IConditionalAccess
+    private sealed class CardThatTakesItsTime(IConditionalAccess card, SteppedClock clock, TimeSpan takes, Func<int, bool> isSilentOn)
+        : IConditionalAccess
     {
+        private int asked;
+
         public int CaSystemId => card.CaSystemId;
 
         public EcmAnswer Answer(ReadOnlySpan<byte> ecmBody)
         {
             clock.Advance(takes);
+
+            if (isSilentOn(++asked))
+            {
+                throw new DescramblingException("The synthetic card did not answer.", DescramblingFailure.CardSilent);
+            }
 
             return card.Answer(ecmBody);
         }
