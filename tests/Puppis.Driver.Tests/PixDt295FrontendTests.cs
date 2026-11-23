@@ -40,7 +40,7 @@ public sealed class Dt295TerrestrialTests
         T 1D 02
         T 1E 2A
         T 1F 8A
-        wait 100
+        wait 10
         TR 80
         TR B0
         """;
@@ -61,7 +61,7 @@ public sealed class Dt295TerrestrialTests
     }
 
     [Fact]
-    public void TuningFollowsTheTableAndLooksForTheLockAfterATenthOfASecond()
+    public void TuningFollowsTheTableAndLooksForTheLockAfterAHundredthOfASecond()
     {
         (Dt295Frontend frontend, FakeDt295 device, _) = Frontend();
 
@@ -84,7 +84,7 @@ public sealed class Dt295TerrestrialTests
 
         Assert.False(locked);
         Assert.Equal(TimeSpan.FromMilliseconds(140) + TimeSpan.FromSeconds(3), clock.GetUtcNow() - started);
-        Assert.Equal(30, device.Transfers.Count(transfer => transfer.Written is [0x80]));
+        Assert.Equal(300, device.Transfers.Count(transfer => transfer.Written is [0x80]));
     }
 
     private static IEnumerable<string> Waits(FakeDt295 device) =>
@@ -96,7 +96,7 @@ public sealed class Dt295TerrestrialTests
         (Dt295Frontend frontend, FakeDt295 device, _) = Frontend();
         var waits = new TuneWaits(() => device.Log.Add("while settling"), () => device.Log.Add("before the first look"));
         List<string> expected = [.. PixDt295Support.Expected(Channel27)];
-        expected.Insert(expected.LastIndexOf("wait 100"), "before the first look");
+        expected.Insert(expected.LastIndexOf("wait 10"), "before the first look");
         expected.Insert(expected.IndexOf("wait 100"), "while settling");
 
         bool locked = frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(27), null, waits);
@@ -111,14 +111,14 @@ public sealed class Dt295TerrestrialTests
         (Dt295Frontend frontend, FakeDt295 device, SteppedClock clock) = Frontend();
         var waits = new TuneWaits(
             () => clock.Advance(TimeSpan.FromMilliseconds(30)),
-            () => clock.Advance(TimeSpan.FromMilliseconds(40))
+            () => clock.Advance(TimeSpan.FromMilliseconds(4))
         );
         DateTimeOffset started = clock.GetUtcNow();
 
         frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(27), null, waits);
 
-        Assert.Equal(["wait 20", "wait 20", "wait 70", "wait 60"], Waits(device));
-        Assert.Equal(TimeSpan.FromMilliseconds(240), clock.GetUtcNow() - started);
+        Assert.Equal(["wait 20", "wait 20", "wait 70", "wait 6"], Waits(device));
+        Assert.Equal(TimeSpan.FromMilliseconds(150), clock.GetUtcNow() - started);
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public sealed class Dt295TerrestrialTests
 
         Assert.False(locked);
         Assert.Equal(TimeSpan.FromMilliseconds(140) + TimeSpan.FromSeconds(3), clock.GetUtcNow() - started);
-        Assert.Equal(26, device.Transfers.Count(transfer => transfer.Written is [0x80]));
+        Assert.Equal(251, device.Transfers.Count(transfer => transfer.Written is [0x80]));
     }
 
     [Theory]
@@ -179,7 +179,7 @@ public sealed class Dt295TerrestrialTests
 
         frontend.AwaitErrorFreePackets();
 
-        Assert.Equal(["wait 100", "20 w[80]", "wait 100", "20 w[80]", "wait 100", "20 w[80]"], PixDt295Support.Written(device));
+        Assert.Equal(["wait 10", "20 w[80]", "wait 10", "20 w[80]", "wait 10", "20 w[80]"], PixDt295Support.Written(device));
         Assert.All(device.Transfers, transfer => Assert.Single(transfer.Read));
     }
 
@@ -207,7 +207,7 @@ public sealed class Dt295TerrestrialTests
         frontend.AwaitErrorFreePackets(stages);
 
         Assert.Equal(Dt295Frontend.ErrorFreePatience, clock.GetUtcNow() - tuned);
-        Assert.Equal("300.0 ms in all (error-free packets 300.0 ms/3 looks, errors still flagged)", stages.ToString());
+        Assert.Equal("300.0 ms in all (error-free packets 300.0 ms/30 looks, errors still flagged)", stages.ToString());
     }
 
     [Fact]

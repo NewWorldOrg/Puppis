@@ -25,7 +25,9 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
     public static readonly TimeSpan ErrorFreePatience = TimeSpan.FromMilliseconds(300);
 
-    private static readonly TimeSpan BetweenLooks = TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan BetweenTerrestrialLooks = TimeSpan.FromMilliseconds(10);
+
+    private static readonly TimeSpan BetweenSatelliteLooks = TimeSpan.FromMilliseconds(100);
 
     private static readonly TimeSpan Settling = TimeSpan.FromMilliseconds(100);
 
@@ -120,7 +122,13 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         chips.WriteT(0x1F, 0x8A);
         Tuned = Dt295Side.Terrestrial;
         stages?.Mark("tune registers");
-        bool locked = Await(TerrestrialLockPatience, TerrestrialLocked, out int looks, waits?.BeforeTheFirstLook);
+        bool locked = Await(
+            TerrestrialLockPatience,
+            BetweenTerrestrialLooks,
+            TerrestrialLocked,
+            out int looks,
+            waits?.BeforeTheFirstLook
+        );
         stages?.Mark("lock", $"{looks} looks");
 
         return locked;
@@ -139,7 +147,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
         while (!errorFree && pacing.Since(started) < ErrorFreePatience)
         {
-            pacing.Sleep(BetweenLooks);
+            pacing.Sleep(BetweenTerrestrialLooks);
             looks++;
             terrestrialStatusAtTheLastLook = chips.ReadT(TerrestrialStatus, 1)[0];
             errorFree = Dt295Signal.TerrestrialErrorFree(terrestrialStatusAtTheLastLook);
@@ -204,6 +212,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         {
             bool locked = Await(
                 SatelliteLockPatience,
+                BetweenSatelliteLooks,
                 () => SatelliteLock(chips.ReadS(SatelliteStatus, 1)[0]),
                 out int looks
             );
@@ -221,6 +230,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         chips.WriteS(0x90, (byte)wanted);
         bool onTheStream = Await(
             SatelliteLockPatience - pacing.Since(started),
+            BetweenSatelliteLooks,
             () => SatelliteLockedOn(wanted),
             out int looksAtTheStream
         );
@@ -342,12 +352,18 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         }
     }
 
-    private bool Await(TimeSpan patience, Func<bool> locked, out int looks, Action? beforeTheFirstLook = null)
+    private bool Await(
+        TimeSpan patience,
+        TimeSpan betweenLooks,
+        Func<bool> locked,
+        out int looks,
+        Action? beforeTheFirstLook = null
+    )
     {
         long started = pacing.Timestamp;
         looks = 0;
         beforeTheFirstLook?.Invoke();
-        SleepWhatIsLeftOf(BetweenLooks, started);
+        SleepWhatIsLeftOf(betweenLooks, started);
 
         while (true)
         {
@@ -363,7 +379,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
                 return false;
             }
 
-            pacing.Sleep(BetweenLooks);
+            pacing.Sleep(betweenLooks);
         }
     }
 }
