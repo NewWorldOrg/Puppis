@@ -523,7 +523,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                     pacing,
                     settings.BytePatience,
                     logger,
-                    StandbyFor(device, path)
+                    StandbyFor(device, path),
+                    new TunerOpening(device.Id ?? path, device.Kind, channel, purpose)
                 ),
             hold,
             Shared

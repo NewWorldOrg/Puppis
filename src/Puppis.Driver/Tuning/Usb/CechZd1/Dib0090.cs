@@ -168,15 +168,17 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
         dcPending = false;
     }
 
-    public void Tune(int kilohertz, string path)
+    public void Tune(int kilohertz, string path, StageTimes? stages = null)
     {
         asked = kilohertz;
         phase = Phase.Start;
 
         for (int taken = 0; taken < MostSteps; taken++)
         {
-            int wait = Step();
+            string doing = WhatTheNextStepDoes();
+            int wait = Step(stages);
             pacing.SleepMilliseconds(Milliseconds(wait));
+            stages?.Mark(doing);
 
             if (phase is Phase.Done)
             {
@@ -227,7 +229,20 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
 
     public void WriteGainControl(ushort value) => t.Write(0x04, value);
 
-    private int Step()
+    private string WhatTheNextStepDoes() =>
+        phase switch
+        {
+            Phase.Start when widebandPending => "wideband detector",
+            Phase.Start when temperaturePending => "temperature",
+            Phase.Start when capacitorPending => "capacitor search",
+            Phase.Start => "PLL",
+            Phase.WidebandRead => "wideband detector",
+            Phase.TemperatureSecond or Phase.TemperatureThird or Phase.TemperatureFourth => "temperature",
+            Phase.StageZero or Phase.StageOne => "tuner steps 0 and 1",
+            _ => "capacitor search",
+        };
+
+    private int Step(StageTimes? stages)
     {
         if (phase is not Phase.Start)
         {
@@ -242,6 +257,7 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
         if (dcPending)
         {
             CalibrateDc();
+            stages?.Mark("DC offset calibration");
         }
 
         if (widebandPending)

@@ -18,6 +18,8 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
 
     public static readonly TimeSpan TransferPatience = TimeSpan.FromMilliseconds(300);
 
+    private const string Hardware = "CECH-ZD1";
+
     private readonly CechZd1Standby.KeptTuner kept;
     private readonly TurnTakingConnection usb;
     private readonly CechZd1Frontend frontend;
@@ -76,16 +78,18 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         DevicePacing pacing,
         TimeSpan bytePatience,
         ILogger? logger = null,
-        CechZd1Standby? standby = null
+        CechZd1Standby? standby = null,
+        TunerOpening? opening = null
     )
     {
         Recognise(host, path);
+        string what = opening?.On(Hardware) ?? $"{path} on {hertz / 1000} kHz";
 
         if (standby?.Take(path) is { } kept)
         {
             try
             {
-                return WakeAndTune(kept, hertz, pacing, bytePatience, logger, standby);
+                return WakeAndTune(kept, hertz, pacing, bytePatience, logger, standby, what);
             }
             catch (DvbDeviceException fault)
             {
@@ -97,7 +101,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
             }
         }
 
-        return StartAndTune(host, path, hertz, pacing, bytePatience, logger, standby);
+        return StartAndTune(host, path, hertz, pacing, bytePatience, logger, standby, what);
     }
 
     public static void OpenAndClose(IUsbHost host, string path, CechZd1Standby? standby = null)
@@ -121,7 +125,8 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         DevicePacing pacing,
         TimeSpan bytePatience,
         ILogger? logger,
-        CechZd1Standby? standby
+        CechZd1Standby? standby,
+        string what
     )
     {
         long started = Stopwatch.GetTimestamp();
@@ -140,7 +145,7 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
             stages.Mark("frontend");
             var kept = new CechZd1Standby.KeptTuner(path, usb, memory, frontend, new TransportCapture(memory));
 
-            return Tune(kept, hertz, pacing, bytePatience, logger, standby, stages, "started");
+            return Tune(kept, hertz, pacing, bytePatience, logger, standby, stages, "started", what);
         }
         catch
         {
@@ -158,14 +163,15 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         DevicePacing pacing,
         TimeSpan bytePatience,
         ILogger? logger,
-        CechZd1Standby standby
+        CechZd1Standby standby,
+        string what
     )
     {
         var stages = new OpeningStages(Stopwatch.GetTimestamp(), kept.Memory);
 
         try
         {
-            return Tune(kept, hertz, pacing, bytePatience, logger, standby, stages, "woken");
+            return Tune(kept, hertz, pacing, bytePatience, logger, standby, stages, "woken", what);
         }
         catch
         {
@@ -185,14 +191,19 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         ILogger? logger,
         CechZd1Standby? standby,
         OpeningStages stages,
-        string how
+        string how,
+        string what
     )
     {
         kept.Capture.Prepare();
         stages.Mark("capture");
+        var tune = new StageTimes(kept.Frontend.Pacing.Clock);
+        tune.Count(() => kept.Memory.Requests, kept.Frontend.Pacing);
 
-        if (kept.Frontend.Tune(hertz) is SearchOutcome.Failed)
+        if (TuneOrSayWhy(kept, hertz, tune, logger, what) is SearchOutcome.Failed)
         {
+            logger?.LogInformation("{Opening}: the tune that did not lock took {Stages}.", what, tune);
+
             throw DvbFailure.NoLock(
                 $"{kept.Path}: the demodulator did not synchronise on {hertz / 1000} kHz. Nothing was received, so no bytes will follow."
             );
@@ -211,8 +222,29 @@ public sealed class CechZd1TunerDevice : ITunerDevice, ISignalQualitySource
         device.opened = stages.Started;
         device.hertz = hertz;
         device.Report(logger, hertz, stages, how);
+        logger?.LogInformation("{Opening}: the tune of the {How} tuner took {Stages}.", what, how, tune);
 
         return device;
+    }
+
+    private static SearchOutcome TuneOrSayWhy(
+        CechZd1Standby.KeptTuner kept,
+        long hertz,
+        StageTimes tune,
+        ILogger? logger,
+        string what
+    )
+    {
+        try
+        {
+            return kept.Frontend.Tune(hertz, tune);
+        }
+        catch (DvbDeviceException)
+        {
+            logger?.LogInformation("{Opening}: the tune that was given up took {Stages}.", what, tune);
+
+            throw;
+        }
     }
 
     internal static void Rest(CechZd1Standby.KeptTuner kept, CechZd1Standby? standby)

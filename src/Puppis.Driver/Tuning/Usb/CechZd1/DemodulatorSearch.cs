@@ -28,6 +28,8 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
     private const int FiveBits = 0b1_1111;
     private const int FourBits = 0b1111;
     private const int SixBits = 0b11_1111;
+    private const string FirstSearch = "first search";
+    private const string SecondSearch = "second search";
 
     private static readonly TimeSpan Symbol = TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond / 10);
 
@@ -36,6 +38,11 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
     private bool readBack;
     private DateTimeOffset timeout;
     private SearchOutcome? outcome;
+    private StageTimes? stages;
+    private string attempt = FirstSearch;
+    private string? gaveUpAt;
+    private ushort? searchState;
+    private ushort? lockStatus;
 
     private enum Looking
     {
@@ -62,21 +69,26 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 
     public ChannelParameters Written { get; private set; } = ChannelParameters.Unknown;
 
-    public SearchOutcome Run(SearchTiming timing, string path)
+    public SearchOutcome Run(SearchTiming timing, string path, StageTimes? marked = null)
     {
+        stages = marked;
         DateTimeOffset deadline = pacing.Now + Patience;
         bool guardOnly = demodulator.Version is Dib8000.LatestVersion;
-        SearchOutcome first = Once(guardOnly, timing, deadline, path);
+        SearchOutcome first = Once(guardOnly, timing, deadline, path, FirstSearch);
 
-        return first is SearchOutcome.Failed && guardOnly ? Once(false, timing, deadline, path) : first;
+        return first is SearchOutcome.Failed && guardOnly ? Once(false, timing, deadline, path, SecondSearch) : first;
     }
 
-    private SearchOutcome Once(bool guardOnly, SearchTiming timing, DateTimeOffset deadline, string path)
+    private SearchOutcome Once(bool guardOnly, SearchTiming timing, DateTimeOffset deadline, string path, string which)
     {
         channel = guardOnly ? ChannelParameters.Unknown with { Fft = FftSize.EightK } : ChannelParameters.Unknown;
         looking = guardOnly ? Looking.Guard : Looking.Fft;
         readBack = false;
         outcome = null;
+        attempt = which;
+        gaveUpAt = null;
+        searchState = null;
+        lockStatus = null;
         Stage stage = Stage.Begin;
 
         while (true)
@@ -92,14 +104,45 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 
             if (outcome is { } finished)
             {
+                Mark(PartOf(stage));
+                NoteAFailure(finished);
+
                 return finished;
             }
 
-            stage = next;
             int gap = (int)Math.Ceiling(wait / 10.0);
             pacing.SleepMilliseconds(Math.Max(gap, SmallestGapMilliseconds));
+            Mark(PartOf(stage));
+            stage = next;
         }
     }
+
+    private void Mark(string part) => stages?.Mark($"{attempt} {part}");
+
+    private void NoteAFailure(SearchOutcome finished)
+    {
+        if (finished is SearchOutcome.Failed)
+        {
+            stages?.Note(
+                $"the {attempt} failed while waiting for {gaveUpAt ?? "nothing it names"}, D[1284] {Hex(searchState)}, D[{Dib8000.Status}] {Hex(lockStatus)}"
+            );
+        }
+    }
+
+    private static string Hex(ushort? register) => register is { } read ? $"0x{read:X4}" : "not read";
+
+    private static string PartOf(Stage stage) =>
+        stage switch
+        {
+            Stage.Begin => "begin",
+            Stage.SearchStart => "start",
+            Stage.One or Stage.Two => "wait for the search",
+            Stage.Three => "second channel configuration",
+            Stage.Four or Stage.Five => "sync",
+            Stage.Seven or Stage.Eight => "lock",
+            Stage.Nine or Stage.Ten => "data",
+            _ => "giving up",
+        };
 
     private (Stage Next, int Wait) Advance(Stage stage, SearchTiming timing) =>
         stage switch
@@ -177,6 +220,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
     {
         channel = (channel with { Guard = ChannelParameters.GuardEighth, Inversion = 0 }).WithLayerA(SearchLayer);
         demodulator.WriteChannel(channel, 16, searching: true);
+        Mark("first channel configuration");
         d.Write(6, 0x0004);
         d.Write(7, 0x0008);
         d.Write(8, 0x1000);
@@ -211,6 +255,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
         }
 
         demodulator.WriteChannel(channel, sequence, searching: true);
+        Mark("first channel configuration");
         d.Write(6, 0x0004);
         d.Write(7, 0x0008);
         d.Write(8, 0x1000);
@@ -238,6 +283,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
     private (Stage, int) StageOne()
     {
         ushort state = d.Read(1284);
+        searchState = state;
 
         if (looking is Looking.Fft && demodulator.Version is Dib8000.LatestVersion)
         {
@@ -327,10 +373,11 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
     private (Stage, int) StageFive()
     {
         ushort status = d.Read(Dib8000.Status);
+        lockStatus = status;
 
         if ((status & Synchronised) is 0)
         {
-            return (pacing.Now > timeout ? Stage.Six : Stage.Five, 0);
+            return (OrGiveUp(Stage.Five, "sync"), 0);
         }
 
         demodulator.WriteTimingFrequency(d.ReadLong(435));
@@ -347,12 +394,27 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 
     private (Stage, int) StageSeven()
     {
-        if ((d.Read(Dib8000.Status) & Settled) is not 0)
+        ushort status = d.Read(Dib8000.Status);
+        lockStatus = status;
+
+        if ((status & Settled) is not 0)
         {
             return (Stage.Eight, 14);
         }
 
-        return (pacing.Now > timeout ? Stage.Six : Stage.Seven, 0);
+        return (OrGiveUp(Stage.Seven, "lock"), 0);
+    }
+
+    private Stage OrGiveUp(Stage waiting, string forWhat)
+    {
+        if (pacing.Now > timeout)
+        {
+            gaveUpAt = forWhat;
+
+            return Stage.Six;
+        }
+
+        return waiting;
     }
 
     private (Stage, int) StageEight()
@@ -386,7 +448,9 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 
     private (Stage, int) StageTen()
     {
-        bool flowing = (d.Read(Dib8000.Status) & LayerData) is not 0;
+        ushort status = d.Read(Dib8000.Status);
+        lockStatus = status;
+        bool flowing = (status & LayerData) is not 0;
 
         if (flowing)
         {
@@ -394,6 +458,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
         }
         else if (pacing.Now > timeout)
         {
+            gaveUpAt = "data";
             outcome = SearchOutcome.Failed;
         }
 
@@ -411,6 +476,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 
     private (Stage, int) Stop()
     {
+        gaveUpAt = "the search";
         outcome = SearchOutcome.Failed;
 
         return (Stage.Six, 0);
