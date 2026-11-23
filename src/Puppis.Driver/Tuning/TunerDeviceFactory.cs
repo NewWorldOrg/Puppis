@@ -619,12 +619,13 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     )
     {
         long started = Stopwatch.GetTimestamp();
-        long cardAnswered = started;
+        long began = time.GetTimestamp();
+        long cardAnswered = began;
         Task<IDescrambler?>? asking = cards.Unscrambles
             ? Task.Run(() =>
             {
                 IDescrambler? answered = cards.Open(hold);
-                Volatile.Write(ref cardAnswered, Stopwatch.GetTimestamp());
+                Volatile.Write(ref cardAnswered, time.GetTimestamp());
 
                 return answered;
             })
@@ -648,6 +649,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         }
 
         TimeSpan tuned = Stopwatch.GetElapsedTime(started);
+        TimeSpan tunerOpen = time.GetElapsedTime(began);
         IDescrambler? descrambler;
 
         try
@@ -666,7 +668,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             tuned.TotalSeconds,
             Stopwatch.GetElapsedTime(started).TotalSeconds
         );
-        ReportTheCard(deviceId, tuned, Stopwatch.GetElapsedTime(started, Volatile.Read(ref cardAnswered)), descrambler);
+        ReportTheCard(deviceId, tunerOpen, time.GetElapsedTime(began, Volatile.Read(ref cardAnswered)), descrambler);
 
         return Unscrambling(opened, descrambler, cards, hold);
     }

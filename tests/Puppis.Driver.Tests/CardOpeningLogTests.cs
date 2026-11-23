@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 using Puppis.Contracts;
 using Puppis.Driver.Configuration;
 using Puppis.Driver.Descrambling;
@@ -6,7 +8,7 @@ using Puppis.Driver.Tuning.Dvb;
 
 namespace Puppis.Driver.Tests;
 
-public sealed class CardOpeningLogTests
+public sealed partial class CardOpeningLogTests
 {
     private const FrontendStatus Locked =
         FrontendStatus.Signal
@@ -15,23 +17,16 @@ public sealed class CardOpeningLogTests
         | FrontendStatus.Sync
         | FrontendStatus.Lock;
 
-    private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
-
     private static readonly DeviceSettings Tuner = new("tuner-a", DeviceKind.Terrestrial, "/dev/dvb/adapter0/frontend0");
 
-    private static (ITunerDevice Device, CapturingLogger<TunerDeviceFactory> Log) Open(
-        IDescramblerFactory cards,
-        Action<ScriptedDvbSystemCalls>? script = null
-    )
+    private static (ITunerDevice Device, CapturingLogger<TunerDeviceFactory> Log) Open(IDescramblerFactory cards, TimeProvider? clock = null)
     {
-        var clock = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
-        var calls = new ScriptedDvbSystemCalls(clock);
+        var calls = new ScriptedDvbSystemCalls();
         var log = new CapturingLogger<TunerDeviceFactory>();
         calls.ReportStatus(Locked);
-        script?.Invoke(calls);
         TunerDeviceFactory factory = TunerDeviceFactory.Using(
             new DriverConfiguration(null, null, 0, new TunerSettings(TunerBackend.Dvb), null),
-            clock,
+            clock ?? new ManualTimeProvider(DateTimeOffset.UnixEpoch),
             calls,
             cards,
             log
@@ -44,69 +39,49 @@ public sealed class CardOpeningLogTests
         Assert.Single(log.Lines, line => line.Contains(": asking for the card ended ", StringComparison.Ordinal));
 
     [Fact]
-    public void ACardThatAnswersWhileTheTunerIsStillLockingIsSaidToHaveComeBeforeIt()
+    public void ACardThatAnsweredBeforeTheTunerWasOpenIsSaidToHaveComeBeforeItAndByHowMuch()
     {
-        var cards = new SignallingCards(answers: true);
+        var clock = new ClockReadDifferentlyOffTheOpeningThread(tunerOpenAfter: 370, cardAnsweredAfter: 45.5);
 
-        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(
-            cards,
-            calls =>
-            {
-                calls.ReportStatusesInTurn(FrontendStatus.Signal);
-                calls.Resting = () => Assert.True(cards.Asked.Wait(Patience));
-            }
-        );
+        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(new Cards(answers: true), clock);
 
         using (device)
         {
-            Assert.Matches(
-                @"^Information devices\['tuner-a'\]: asking for the card ended \d+\.\d ms after the opening began, \d+\.\d ms before the tuner was open, and a card answered\.$",
+            Assert.Equal(
+                "Information devices['tuner-a']: asking for the card ended 45.5 ms after the opening began, 324.5 ms before the tuner was open, and a card answered.",
                 CardLine(log)
             );
         }
     }
 
     [Fact]
-    public void ACardThatAnswersAfterTheTunerIsOpenIsSaidToHaveComeAfterIt()
+    public void ACardThatAnsweredAfterTheTunerWasOpenIsSaidToHaveComeAfterItAndByHowMuch()
     {
-        using var tunerOpened = new ManualResetEventSlim();
-        var cards = new SignallingCards(answers: true, before: () => Assert.True(tunerOpened.Wait(Patience)));
-        var clock = new ManualTimeProvider(DateTimeOffset.UnixEpoch);
-        var calls = new ScriptedDvbSystemCalls(clock);
-        var log = new CapturingLogger<TunerDeviceFactory>();
-        var signalling = new SignalWhenTheTunerLineIsWritten(log, tunerOpened);
-        calls.ReportStatus(Locked);
-        TunerDeviceFactory factory = TunerDeviceFactory.Using(
-            new DriverConfiguration(null, null, 0, new TunerSettings(TunerBackend.Dvb), null),
-            clock,
-            calls,
-            cards,
-            signalling
-        );
+        var clock = new ClockReadDifferentlyOffTheOpeningThread(tunerOpenAfter: 370, cardAnsweredAfter: 1526);
 
-        using ITunerDevice device = factory.Create(Tuner, new TuningRequest(TunerKind.Terrestrial, 27), null, HeadHold.WhatIsHeld, SessionPurpose.Live);
+        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(new Cards(answers: true), clock);
 
-        Assert.Matches(
-            @"^Information devices\['tuner-a'\]: asking for the card ended \d+\.\d ms after the opening began, \d+\.\d ms after the tuner was open, and a card answered\.$",
-            CardLine(log)
-        );
+        using (device)
+        {
+            Assert.Equal(
+                "Information devices['tuner-a']: asking for the card ended 1526.0 ms after the opening began, 1156.0 ms after the tuner was open, and a card answered.",
+                CardLine(log)
+            );
+        }
     }
 
     [Fact]
     public void AnOpeningNoCardAnsweredSaysSoAndKeepsTheLineItAlwaysWrote()
     {
-        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(new SignallingCards(answers: false));
+        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(new Cards(answers: false));
 
         using (device)
         {
-            Assert.EndsWith("the tuner was open, and no card answered.", CardLine(log), StringComparison.Ordinal);
-            Assert.Single(
-                log.Lines,
-                line => System.Text.RegularExpressions.Regex.IsMatch(
-                    line,
-                    @"^Information The tuner was open after \d+\.\d{3} s and the card was in hand after \d+\.\d{3} s\.$"
-                )
+            Assert.Matches(
+                @"^Information devices\['tuner-a'\]: asking for the card ended \d+\.\d ms after the opening began, \d+\.\d ms (before|after) the tuner was open, and no card answered\.$",
+                CardLine(log)
             );
+            Assert.Single(log.Lines, line => InHand().IsMatch(line));
         }
     }
 
@@ -121,45 +96,35 @@ public sealed class CardOpeningLogTests
         }
     }
 
-    private sealed class SignallingCards(bool answers, Action? before = null) : IDescramblerFactory
-    {
-        public ManualResetEventSlim Asked { get; } = new();
+    [GeneratedRegex(@"^Information The tuner was open after \d+\.\d{3} s and the card was in hand after \d+\.\d{3} s\.$")]
+    private static partial Regex InHand();
 
+    private sealed class Cards(bool answers) : IDescramblerFactory
+    {
         public bool Unscrambles => true;
 
         public CardIdentity? CardInHand => null;
 
-        public IDescrambler? Open(HeadHold hold)
-        {
-            before?.Invoke();
-            Asked.Set();
-
-            return answers ? new ScriptedDescrambler(stream => stream.ToArray()) : null;
-        }
+        public IDescrambler? Open(HeadHold hold) => answers ? new ScriptedDescrambler(stream => stream.ToArray()) : null;
     }
 
-    private sealed class SignalWhenTheTunerLineIsWritten(CapturingLogger<TunerDeviceFactory> inner, ManualResetEventSlim written)
-        : Microsoft.Extensions.Logging.ILogger
+    private sealed class ClockReadDifferentlyOffTheOpeningThread(double tunerOpenAfter, double cardAnsweredAfter) : TimeProvider
     {
-        public IDisposable? BeginScope<TState>(TState state)
-            where TState : notnull => null;
+        private readonly Thread opening = Thread.CurrentThread;
+        private int readsWhileOpening;
 
-        public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 
-        public void Log<TState>(
-            Microsoft.Extensions.Logging.LogLevel logLevel,
-            Microsoft.Extensions.Logging.EventId eventId,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter
-        )
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch;
+
+        public override long GetTimestamp()
         {
-            inner.Log(logLevel, eventId, state, exception, formatter);
-
-            if (formatter(state, exception).Contains("opened and locked in ", StringComparison.Ordinal))
+            if (!ReferenceEquals(Thread.CurrentThread, opening))
             {
-                written.Set();
+                return TimeSpan.FromMilliseconds(cardAnsweredAfter).Ticks;
             }
+
+            return Interlocked.Increment(ref readsWhileOpening) is 1 ? 0 : TimeSpan.FromMilliseconds(tunerOpenAfter).Ticks;
         }
     }
 }
