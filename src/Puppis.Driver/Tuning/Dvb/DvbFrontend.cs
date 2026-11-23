@@ -98,15 +98,26 @@ public sealed class DvbFrontend : IDisposable
         TimeSpan interval,
         CancellationToken cancellationToken,
         out FrontendStatus lastSeen
+    ) => WaitForLock(time, patience, interval, cancellationToken, out lastSeen, out _);
+
+    public bool WaitForLock(
+        TimeProvider time,
+        TimeSpan patience,
+        TimeSpan interval,
+        CancellationToken cancellationToken,
+        out FrontendStatus lastSeen,
+        out int polls
     )
     {
         DateTimeOffset deadline = time.GetUtcNow() + patience;
+        polls = 0;
 
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             lastSeen = Status();
+            polls++;
 
             if (lastSeen.HasFlag(FrontendStatus.Lock))
             {

@@ -25,6 +25,14 @@ public interface ITunerDevice : IDisposable
 public interface ITunerDeviceFactory
 {
     ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold);
+
+    ITunerDevice Create(
+        DeviceSettings device,
+        TuningRequest tuning,
+        TuneParams? tune,
+        HeadHold hold,
+        SessionPurpose? purpose
+    ) => Create(device, tuning, tune, hold);
 }
 
 public interface ITunerDeviceCheck
@@ -103,7 +111,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         DriverConfiguration configuration,
         TimeProvider time,
         IDvbSystemCalls systemCalls,
-        IDescramblerFactory? descramblers = null
+        IDescramblerFactory? descramblers = null,
+        ILogger? logger = null
     ) =>
         new(
             configuration,
@@ -111,7 +120,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             new Lazy<IDvbSystemCalls>(() => systemCalls),
             new Lazy<IUsbHost>(() => new LinuxUsbHost()),
             DevicePacing.RealTime(time),
-            descramblers ?? NoDescrambling.Instance
+            descramblers ?? NoDescrambling.Instance,
+            logger
         );
 
     public static TunerDeviceFactory Using(
@@ -134,11 +144,20 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         );
 
     public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
+        Create(device, tuning, tune, hold, null);
+
+    public ITunerDevice Create(
+        DeviceSettings device,
+        TuningRequest tuning,
+        TuneParams? tune,
+        HeadHold hold,
+        SessionPurpose? purpose
+    ) =>
         backend switch
         {
             TunerBackend.Fake => Synthetic(tune?.ToLegacyRequest() ?? tuning),
-            TunerBackend.Dvb => OpenDvb(device, tuning, tune, hold),
-            TunerBackend.Usb => OpenUsb(device, tuning, tune, hold),
+            TunerBackend.Dvb => OpenDvb(device, tuning, tune, hold, purpose),
+            TunerBackend.Usb => OpenUsb(device, tuning, tune, hold, purpose),
             _ => throw BackendNeverEstablished(),
         };
 
@@ -357,13 +376,19 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         CechZd1TunerDevice.OpenAndClose(usbHost.Value, path, StandbyFor(device, path));
     }
 
-    private ITunerDevice OpenUsb(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold)
+    private ITunerDevice OpenUsb(
+        DeviceSettings device,
+        TuningRequest tuning,
+        TuneParams? tune,
+        HeadHold hold,
+        SessionPurpose? purpose
+    )
     {
         string path = UsbPathOf(device);
 
         return usbHost.Value.ModelAt(path) == Dt295TunerDevice.Model
-            ? OpenDt295(device, path, DvbTuneRequest.Resolve(tune, tuning), hold)
-            : OpenCechZd1(device, path, tuning, tune, hold);
+            ? OpenDt295(device, path, DvbTuneRequest.Resolve(tune, tuning), hold, purpose)
+            : OpenCechZd1(device, path, tuning, tune, hold, purpose);
     }
 
     private void CheckDt295(DeviceSettings device, string path)
@@ -389,7 +414,13 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         }
     }
 
-    private ITunerDevice OpenDt295(DeviceSettings device, string path, DvbChannel channel, HeadHold hold)
+    private ITunerDevice OpenDt295(
+        DeviceSettings device,
+        string path,
+        DvbChannel channel,
+        HeadHold hold,
+        SessionPurpose? purpose
+    )
     {
         RequireTheDeclaredKind(device, channel);
         string deviceId = device.Id ?? path;
@@ -462,7 +493,14 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
         }
     }
 
-    private ITunerDevice OpenCechZd1(DeviceSettings device, string path, TuningRequest tuning, TuneParams? tune, HeadHold hold)
+    private ITunerDevice OpenCechZd1(
+        DeviceSettings device,
+        string path,
+        TuningRequest tuning,
+        TuneParams? tune,
+        HeadHold hold,
+        SessionPurpose? purpose
+    )
     {
         if (DvbTuneRequest.Resolve(tune, tuning) is not TerrestrialChannel channel)
         {
@@ -533,21 +571,33 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     private static ITunerDevice Synthetic(TuningRequest tuning) =>
         new FakeTunerDevice(tuning.PhysicalChannel, tuning.ServiceId);
 
-    private ITunerDevice OpenDvb(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold)
+    private ITunerDevice OpenDvb(
+        DeviceSettings device,
+        TuningRequest tuning,
+        TuneParams? tune,
+        HeadHold hold,
+        SessionPurpose? purpose
+    )
     {
         DvbDevicePaths paths = PathsOf(device);
 
         return ThroughTheCard(
             () =>
-                DvbTunerDevice.Open(
+            {
+                DvbChannel channel = DvbTuneRequest.Resolve(tune, tuning);
+
+                return DvbTunerDevice.Open(
                     systemCalls.Value,
                     time,
                     paths,
-                    DvbTuneRequest.Resolve(tune, tuning),
+                    channel,
                     LnbPower.For(device.Kind, device.LnbPower),
                     settings with { ReadsFromTheLock = HeadHolds.ReadsFromTheLock(hold) },
-                    CancellationToken.None
-                ),
+                    CancellationToken.None,
+                    logger,
+                    new TunerOpening(device.Id ?? paths.Frontend, device.Kind, channel, purpose)
+                );
+            },
             hold,
             Shared
         );
