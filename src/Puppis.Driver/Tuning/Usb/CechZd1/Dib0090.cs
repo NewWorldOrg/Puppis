@@ -32,6 +32,7 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
     private int closest;
 
     private bool dcPending;
+    private (ushort Sixth, ushort Seventh)? dcOffsets;
     private bool widebandPending;
     private bool temperaturePending;
     private bool capacitorPending;
@@ -137,7 +138,7 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
     public void Wake()
     {
         t.Modify(0x23, 0, Awake);
-        dcPending = true;
+        dcPending = !HoldsItsDcOffsets();
         widebandPending = true;
         temperaturePending = true;
         RequestedKilohertz = 0;
@@ -163,8 +164,10 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
             CalibrateDcRow(row, ref bb6, ref bb7);
         }
 
-        t.Write(0x07, (ushort)(bb7 & ~0x0008));
+        bb7 = (ushort)(bb7 & ~0x0008);
+        t.Write(0x07, bb7);
         t.Write(DcSwitch, 7);
+        dcOffsets = (bb6, bb7);
         dcPending = false;
     }
 
@@ -228,6 +231,9 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
     }
 
     public void WriteGainControl(ushort value) => t.Write(0x04, value);
+
+    private bool HoldsItsDcOffsets() =>
+        dcOffsets is { } written && t.Read(0x06) == written.Sixth && t.Read(0x07) == written.Seventh;
 
     private string WhatTheNextStepDoes() =>
         phase switch

@@ -107,7 +107,7 @@ public sealed partial class CechZd1TuneStagesTests
     }
 
     [Fact]
-    public void AWokenTunerCountsWakingAndTheDcOffsetCalibrationAsStagesOfTheirOwn()
+    public void AWokenTunerCountsWakingAsAStageOfItsOwnAndIsNotCalibratedAgain()
     {
         (TunerDeviceFactory factory, _, CapturingLogger<TunerDeviceFactory> log) = Factory();
         Live(factory).Dispose();
@@ -119,10 +119,10 @@ public sealed partial class CechZd1TuneStagesTests
             Assert.Equal(2, lines.Count);
             Assert.Contains("for live on physical channel 27: the tune of the woken tuner took ", lines[1], StringComparison.Ordinal);
             Assert.Equal(
-                ["wake", "diversity both and output off", "DC offset calibration", .. TunerAndAgc, .. Search("first", SearchThatLocks), "output on and LED"],
+                ["wake", "diversity both and output off", .. TunerAndAgc, .. Search("first", SearchThatLocks), "output on and LED"],
                 StageNames(lines[1])
             );
-            Assert.Matches(@"DC offset calibration \d+\.\d ms/[1-9]\d* requests/[1-9]\d*\.0 ms in [1-9]\d* sleeps", lines[1]);
+            Assert.Matches(@"wake \d+\.\d ms/[1-9]\d* requests/", lines[1]);
         }
 
         factory.Dispose();
