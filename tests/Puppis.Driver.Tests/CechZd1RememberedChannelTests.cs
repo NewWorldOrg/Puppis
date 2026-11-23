@@ -43,7 +43,11 @@ public sealed class CechZd1RememberedChannelTests
     private static bool Searched(FakeChip demodulator) => demodulator.WritesTo(SearchSequence).Count > 0;
 
     private static IReadOnlyList<(int Register, ushort Value)> FromTheConfiguration(FakeChip demodulator) =>
-        [.. demodulator.Written.SkipWhile(write => write != LoopValuesBeforeTheLock)];
+        [
+            .. demodulator.Written
+                .SkipWhile(write => write != LoopValuesBeforeTheLock)
+                .Where(write => !Dib8000.TablesOfAChannel.Contains(write.Register)),
+        ];
 
     private static void SynchroniseOnlyAfterASearch(FakeChip demodulator, List<DateTimeOffset>? askedAt = null, TimeProvider? clock = null) =>
         demodulator.Answers[Dib8000.Status] = () =>
@@ -71,11 +75,11 @@ public sealed class CechZd1RememberedChannelTests
         Assert.DoesNotContain(demodulator.Written, write => WrittenOnlyToStartASearch.Contains(write.Register));
         Assert.DoesNotContain(SearchState, demodulator.ReadFrom);
         Assert.Equal([(ushort)0], demodulator.WritesTo(10));
-        Assert.Single(demodulator.WritesTo(250));
+        Assert.Equal(48, demodulator.Written.Count(write => write.Register is >= 117 and <= 140));
     }
 
     [Fact]
-    public void TheRememberedChannelIsWrittenAsTheSearchWroteItOnceItHadFoundIt()
+    public void ApartFromTheTablesTheRememberedChannelIsWrittenAsTheSearchWroteItOnceItHadFoundIt()
     {
         (CechZd1Frontend frontend, FakeChip demodulator, _) = Initialised();
         frontend.Tune(Channel22);

@@ -8,6 +8,13 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
 
     public const int UhfRequestOffsetKilohertz = 63;
 
+    public static readonly IReadOnlySet<int> GainRamps = new HashSet<int>
+    {
+        0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31,
+        0x35, 0x36, 0x37, 0x38,
+        0x3E, 0x3F,
+    };
+
     private const ushort Awake = 0x4000;
     private const int ReferenceKilohertz = 2000;
     private const int FractionScale = 6528;

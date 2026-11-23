@@ -44,6 +44,37 @@ public sealed class Dib8000(IRegisterBus d, DevicePacing pacing)
         396, 305, 105, -51, -77, -12, 41, 31, -11, -30, -11, 14, 15, -2, -13, -7, 5, 8, 1, -6, -7, -3, 0, 1,
     ];
 
+    public static readonly IReadOnlySet<int> TablesOfAChannel = new HashSet<int>(
+    [
+        .. Enumerable.Range(ControlLoopFirst, ControlLoopDefaults.Count),
+        116,
+        178,
+        180,
+        .. Enumerable.Range(181, 6),
+        187,
+        189,
+        192,
+        205,
+        211,
+        .. Enumerable.Range(215, 4),
+        222,
+        223,
+        225,
+        228,
+        250,
+        265,
+        266,
+        287,
+        288,
+        .. Enumerable.Range(290, 3),
+        338,
+        340,
+        341,
+        351,
+        352,
+        353,
+    ]);
+
     private const ushort AllSegments = 0b1_1111_1111_1111;
     private const int ControlLoopFirst = 80;
     private const int FourBits = 0b1111;

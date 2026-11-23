@@ -59,7 +59,8 @@ public sealed class CechZd1Frontend
         (338, [0x1461]),
     ];
 
-    private readonly IRegisterBus d;
+    private readonly UnchangedWriteSkippingBus d;
+    private readonly UnchangedWriteSkippingBus t;
     private readonly DevicePacing pacing;
     private readonly string path;
     private readonly Dictionary<int, ChannelParameters> lockedBefore = [];
@@ -67,11 +68,12 @@ public sealed class CechZd1Frontend
 
     public CechZd1Frontend(IRegisterBus demodulatorBus, IRegisterBus tunerBus, DevicePacing pacing, string path)
     {
-        d = demodulatorBus;
+        d = new UnchangedWriteSkippingBus(demodulatorBus, Dib8000.TablesOfAChannel);
+        t = new UnchangedWriteSkippingBus(tunerBus, Dib0090.GainRamps);
         this.pacing = pacing.CountedOnItsOwn();
         this.path = path;
-        Demodulator = new Dib8000(demodulatorBus, this.pacing);
-        Tuner = new Dib0090(tunerBus, this.pacing);
+        Demodulator = new Dib8000(d, this.pacing);
+        Tuner = new Dib0090(t, this.pacing);
     }
 
     public DevicePacing Pacing => pacing;
@@ -86,6 +88,8 @@ public sealed class CechZd1Frontend
 
     public void Initialise()
     {
+        d.Forget();
+        t.Forget();
         Demodulator.Identify(path);
         d.Write(1025, 0x0100);
         d.Write(1287, 0x0003);
