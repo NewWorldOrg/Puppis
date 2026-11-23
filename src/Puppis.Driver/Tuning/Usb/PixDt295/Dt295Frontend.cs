@@ -31,7 +31,11 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
     private const int SatelliteCandidates = 0xCE;
     private const int SatelliteNoise = 0xBC;
 
+    private readonly DevicePacing pacing = pacing.CountedOnItsOwn();
+
     public Dt295Side Tuned { get; private set; }
+
+    public DevicePacing Pacing => pacing;
 
     public Dt295Chips Chips => chips;
 
@@ -66,11 +70,12 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
     public static ushort TerrestrialDivider(long hertz) => (ushort)(hertz * 64 / 1_000_000);
 
-    public bool TuneTerrestrial(long hertz)
+    public bool TuneTerrestrial(long hertz, StageTimes? stages = null)
     {
         if (Tuned is Dt295Side.Satellite)
         {
             SleepTheSatelliteSide();
+            stages?.Mark("satellite side to sleep");
         }
 
         ushort divider = TerrestrialDivider(hertz);
@@ -107,15 +112,19 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         chips.WriteT(0x1E, 0x2A);
         chips.WriteT(0x1F, 0x8A);
         Tuned = Dt295Side.Terrestrial;
+        stages?.Mark("tune registers");
+        bool locked = Await(TerrestrialLockPatience, TerrestrialLocked, out int looks);
+        stages?.Mark("lock", $"{looks} looks");
 
-        return Await(TerrestrialLockPatience, TerrestrialLocked);
+        return locked;
     }
 
-    public bool TuneSatellite(long kilohertz, int? transportStreamId, string path)
+    public bool TuneSatellite(long kilohertz, int? transportStreamId, string path, StageTimes? stages = null)
     {
         if (Tuned is Dt295Side.Terrestrial)
         {
             LeaveTheTerrestrialSide();
+            stages?.Mark("terrestrial side left");
         }
 
         SatellitePlan plan = SatellitePlan.For(kilohertz, path);
@@ -159,12 +168,19 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         chips.WriteS(0xA5, (byte)(chips.ReadS(0xA5, 1)[0] | 0x40));
         chips.WriteS(0xA3, (byte)((chips.ReadS(0xA3, 1)[0] & 0x88) | 0x11));
         Tuned = Dt295Side.Satellite;
+        stages?.Mark("tune registers");
         long started = pacing.Timestamp;
 
         if (transportStreamId is not { } wanted)
         {
-            if (!Await(SatelliteLockPatience, () => SatelliteLock(chips.ReadS(SatelliteStatus, 1)[0]))
-                || FirstOffered() is not { } offered)
+            bool locked = Await(
+                SatelliteLockPatience,
+                () => SatelliteLock(chips.ReadS(SatelliteStatus, 1)[0]),
+                out int looks
+            );
+            stages?.Mark("lock", $"{looks} looks");
+
+            if (!locked || FirstOffered() is not { } offered)
             {
                 return false;
             }
@@ -174,8 +190,14 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
         chips.WriteS(0x8F, (byte)(wanted >> 8));
         chips.WriteS(0x90, (byte)wanted);
+        bool onTheStream = Await(
+            SatelliteLockPatience - pacing.Since(started),
+            () => SatelliteLockedOn(wanted),
+            out int looksAtTheStream
+        );
+        stages?.Mark("transport stream lock", $"{looksAtTheStream} looks");
 
-        return Await(SatelliteLockPatience - pacing.Since(started), () => SatelliteLockedOn(wanted));
+        return onTheStream;
     }
 
     public bool Locked() =>
@@ -261,13 +283,15 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
     private static bool SatelliteLock(byte status) => Dt295Signal.SatelliteLock(status);
 
-    private bool Await(TimeSpan patience, Func<bool> locked)
+    private bool Await(TimeSpan patience, Func<bool> locked, out int looks)
     {
         long started = pacing.Timestamp;
+        looks = 0;
 
         while (true)
         {
             pacing.Sleep(BetweenLooks);
+            looks++;
 
             if (locked())
             {

@@ -62,7 +62,8 @@ public sealed class Dt295Bridge
         string path,
         DevicePacing pacing,
         ILogger? logger = null,
-        string knownHandler = Dt295Startup.HandlerAtPowerOn
+        string knownHandler = Dt295Startup.HandlerAtPowerOn,
+        StageTimes? stages = null
     )
     {
         UsbModel model = host.ModelAt(path);
@@ -73,10 +74,16 @@ public sealed class Dt295Bridge
         }
 
         Dt295Bridge bridge = new(new TurnTakingConnection(host.Open(path, Dt295TunerDevice.Interface)), pacing, logger);
+        stages?.Mark("USB open");
+
+        if (stages is not null)
+        {
+            bridge.Count(stages);
+        }
 
         try
         {
-            bridge.Start(knownHandler);
+            bridge.Start(knownHandler, stages);
 
             return bridge;
         }
@@ -88,7 +95,22 @@ public sealed class Dt295Bridge
         }
     }
 
-    public bool StillAsLeft()
+    public void Count(StageTimes stages) => stages.Count(() => memory.Requests, Frontend.Pacing);
+
+    public bool StillAsLeft(StageTimes? stages = null)
+    {
+        if (stages is not null)
+        {
+            Count(stages);
+        }
+
+        bool asLeft = ReadsAsItWasLeft();
+        stages?.Mark("kept bridge check");
+
+        return asLeft;
+    }
+
+    private bool ReadsAsItWasLeft()
     {
         try
         {
@@ -106,20 +128,25 @@ public sealed class Dt295Bridge
         }
     }
 
-    public Dt295Stream StartStream()
+    public Dt295Stream StartStream(StageTimes? stages = null)
     {
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(closed, this);
             capture.Prepare();
+            stages?.Mark("capture set-up");
             endpoint = capture.KeepTheEndpoint();
             capture.ReadyTheEndpoint(endpoint);
+            stages?.Mark("endpoint set-up");
             reader = usb.ReadBulk(Dt295Capture.Endpoint, Dt295Capture.TransferBytes, Dt295Capture.TransfersInFlight);
+            stages?.Mark("bulk reads");
             capturing = true;
             capture.Start();
+            stages?.Mark("intake");
             stream = new Dt295Stream(usb, new BridgeMemory(usb), capture.Writer, reader, pacing);
             stream.Start();
             streaming = true;
+            stages?.Mark("copying start");
 
             return stream;
         }
@@ -195,17 +222,22 @@ public sealed class Dt295Bridge
         Quietly("closing the device", usb.Dispose);
     }
 
-    private void Start(string knownHandler)
+    private void Start(string knownHandler, StageTimes? stages)
     {
         Dt295Startup.RequirePowerOnState(memory);
         Dt295Startup.RequireTheKnownHandler(memory, knownHandler);
         started = true;
-        Dt295Startup.ResetTheDemodulator(memory, pacing);
+        stages?.Mark("handler check");
+        Dt295Startup.ResetTheDemodulator(memory, Frontend.Pacing);
+        stages?.Mark("demodulator reset");
         Dt295Startup.StartClocks(memory);
         Dt295Startup.StartI2cMaster(memory);
+        stages?.Mark("clocks and I2C");
         Frontend.Identify(usb.Path);
         Frontend.Initialise();
+        stages?.Mark("chip initialisation");
         CopyProgram.Install(memory, program, () => Dt295Stream.Instruct(usb, memory, 0, CopyCommand.Answer, 0, 0));
+        stages?.Mark("copy program");
     }
 
     private bool Quietly(string step, Action action)

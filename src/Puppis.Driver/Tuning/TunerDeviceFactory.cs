@@ -424,11 +424,12 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
     {
         RequireTheDeclaredKind(device, channel);
         string deviceId = device.Id ?? path;
+        var stages = new StageTimes(pacing.Clock);
         Dt295Bridge bridge;
 
         lock (opening)
         {
-            bridge = keeper.Take(deviceId, path) ?? OpenAfresh(deviceId, path);
+            bridge = keeper.Take(deviceId, path, stages) ?? OpenAfresh(deviceId, path, stages);
         }
 
         Dt295TunerDevice Start() =>
@@ -438,7 +439,9 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                 pacing,
                 settings.BytePatience,
                 logger,
-                rested => keeper.Keep(deviceId, rested)
+                rested => keeper.Keep(deviceId, rested),
+                stages,
+                new TunerOpening(deviceId, device.Kind, channel, purpose)
             );
 
         if (descramblers.Unscrambles && descramblers is not SlotCards)
@@ -464,14 +467,16 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             throw;
         }
 
+        stages.Mark("card slot");
+
         return ThroughTheCard(Start, hold, slot);
     }
 
-    private Dt295Bridge OpenAfresh(string deviceId, string path)
+    private Dt295Bridge OpenAfresh(string deviceId, string path, StageTimes? stages = null)
     {
         keeper.Admit(deviceId);
 
-        return Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler);
+        return Dt295Bridge.Open(usbHost.Value, path, pacing, logger, dt295Handler, stages);
     }
 
     private static void RequireTheDeclaredKind(DeviceSettings device, DvbChannel channel)
