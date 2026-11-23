@@ -83,7 +83,6 @@ public sealed partial class Dt295OpeningStagesTests
                     "error-free packets",
                     "intake",
                     "copying start",
-                    "signal report",
                 ],
                 StageNames(line)
             );
@@ -91,7 +90,7 @@ public sealed partial class Dt295OpeningStagesTests
             Assert.Matches(@"tune registers 140\.0 ms/\d+ requests/140\.0 ms in 3 sleeps", line);
             Assert.Matches(@"lock 10\.0 ms/\d+ requests/10\.0 ms in 1 sleeps/1 looks", line);
             Assert.Matches(@"error-free packets 0\.0 ms/0 requests/0\.0 ms in 0 sleeps/0 looks", line);
-            Assert.Matches($@"signal report {Counted}\)\.$", line);
+            Assert.Matches($@"copying start {Counted}\)\.$", line);
         }
 
         factory.Dispose();
@@ -120,7 +119,6 @@ public sealed partial class Dt295OpeningStagesTests
                     "error-free packets",
                     "intake",
                     "copying start",
-                    "signal report",
                 ],
                 StageNames(lines[1])
             );
@@ -131,12 +129,17 @@ public sealed partial class Dt295OpeningStagesTests
     }
 
     [Fact]
-    public void TheExistingSummaryLineIsStillWrittenAsItWas()
+    public void TheSummaryLineIsWrittenAsItWasOnceTheSignalIsFirstRead()
     {
         (TunerDeviceFactory factory, _, CapturingLogger<TunerDeviceFactory> log) = Factory();
 
-        using (Live(factory, 22))
+        using (ITunerDevice device = Live(factory, 22))
         {
+            Assert.DoesNotContain(log.Lines, line => Summary().IsMatch(line));
+
+            device.Quality!.Measure();
+            device.Quality!.Measure();
+
             Assert.Single(
                 log.Lines,
                 line => Summary().IsMatch(line)

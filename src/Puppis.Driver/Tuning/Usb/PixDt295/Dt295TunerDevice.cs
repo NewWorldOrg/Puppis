@@ -28,6 +28,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
     private readonly Lock gate = new();
     private bool closed;
     private bool faulted;
+    private Action<SignalQuality>? summary;
 
     private Dt295TunerDevice(
         Dt295Bridge bridge,
@@ -100,7 +101,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             bridge.Frontend.AwaitErrorFreePackets(marked);
             Dt295Stream stream = bridge.StartStream(marked);
             var device = new Dt295TunerDevice(bridge, stream, pacing, bytePatience, Describe(channel), keep, logger);
-            device.Report(logger, Stopwatch.GetElapsedTime(started), marked, what);
+            device.SayItOpened(Stopwatch.GetElapsedTime(started), marked, what);
 
             return device;
         }
@@ -190,6 +191,14 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
     }
 
     public SignalQuality Measure()
+    {
+        SignalQuality quality = Measured();
+        Interlocked.Exchange(ref summary, null)?.Invoke(quality);
+
+        return quality;
+    }
+
+    private SignalQuality Measured()
     {
         lock (gate)
         {
@@ -299,23 +308,22 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             : DvbFailure.NoLock($"{bridge.Path}: no transport stream arrived on {channel} within {waited}, and the demodulator is no longer locked.");
     }
 
-    private void Report(ILogger? logger, TimeSpan took, StageTimes stages, string what)
+    private void SayItOpened(TimeSpan took, StageTimes stages, string what)
     {
         if (logger is null)
         {
             return;
         }
 
-        SignalQuality quality = Measure();
-        stages.Mark("signal report");
-        logger.LogInformation(
-            "{Path}: started, tuned to {Channel} and streaming after {Milliseconds:0} ms; locked {Locked}, C/N {Ratio}.",
-            bridge.Path,
-            channel,
-            took.TotalMilliseconds,
-            quality.HasLock,
-            quality.CarrierToNoise.TryGetDecibels(out double decibels) ? $"{decibels:0.0} dB" : "not measured"
-        );
         logger.LogInformation("{Opening}: opened and streaming in {Stages}.", what, stages);
+        summary = quality =>
+            logger.LogInformation(
+                "{Path}: started, tuned to {Channel} and streaming after {Milliseconds:0} ms; locked {Locked}, C/N {Ratio}.",
+                bridge.Path,
+                channel,
+                took.TotalMilliseconds,
+                quality.HasLock,
+                quality.CarrierToNoise.TryGetDecibels(out double decibels) ? $"{decibels:0.0} dB" : "not measured"
+            );
     }
 }

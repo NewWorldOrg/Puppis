@@ -409,6 +409,73 @@ public sealed class Dt295TunerDeviceTests
         device.Dispose();
     }
 
+    private static (Dt295TunerDevice Device, FakeDt295 Fake, CapturingLogger<Dt295TunerDevice> Log) OpenedSayingSo()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        fake.Broadcasting = true;
+        (DevicePacing pacing, _) = PixDt295Support.Pacing(fake);
+        var log = new CapturingLogger<Dt295TunerDevice>();
+        Dt295TunerDevice device = Dt295TunerDevice.Open(
+            new FakeDt295Host(fake),
+            Path,
+            Channel22,
+            pacing,
+            TimeSpan.FromSeconds(5),
+            log,
+            fake.HandlerHash()
+        );
+
+        return (device, fake, log);
+    }
+
+    private static IEnumerable<string> Summaries(CapturingLogger<Dt295TunerDevice> log) =>
+        log.Lines.Where(line => line.Contains(": started, tuned to terrestrial channel 22 and streaming after ", StringComparison.Ordinal));
+
+    [Fact]
+    public void TheTunerIsHandedOverWithoutItsSignalBeingRead()
+    {
+        (Dt295TunerDevice device, FakeDt295 fake, CapturingLogger<Dt295TunerDevice> log) = OpenedSayingSo();
+
+        Assert.Equal(1, fake.Transfers.Count(transfer => transfer.Written is [0x80]));
+        Assert.DoesNotContain(fake.Transfers, transfer => transfer.Written is [0x8B]);
+        Assert.Empty(Summaries(log));
+        Assert.Single(log.Lines, line => line.Contains("opened and streaming in ", StringComparison.Ordinal));
+        device.Dispose();
+    }
+
+    [Fact]
+    public void TheFirstReadingOfTheSignalAfterwardsIsWrittenDownOnceAsHowTheTunerStarted()
+    {
+        (Dt295TunerDevice device, FakeDt295 fake, CapturingLogger<Dt295TunerDevice> log) = OpenedSayingSo();
+        fake.Demodulator[0x8C] = 0x13;
+        fake.Demodulator[0x8D] = 0x3F;
+
+        SignalQuality first = device.Measure();
+        fake.Demodulator[0x8C] = 0x51;
+        fake.Demodulator[0x8D] = 0x44;
+        device.Measure();
+
+        Assert.True(first.CarrierToNoise.TryGetDecibels(out double decibels));
+        Assert.Equal(32.2, decibels, 0.05);
+        Assert.EndsWith("; locked True, C/N 32.2 dB.", Assert.Single(Summaries(log)), StringComparison.Ordinal);
+        device.Dispose();
+    }
+
+    [Fact]
+    public void AReadingThatFailsLeavesTheSummaryToTheNextOne()
+    {
+        (Dt295TunerDevice device, FakeDt295 fake, CapturingLogger<Dt295TunerDevice> log) = OpenedSayingSo();
+        fake.Acknowledging = false;
+
+        Assert.Throws<DvbDeviceException>(() => device.Measure());
+        Assert.Empty(Summaries(log));
+        fake.Acknowledging = true;
+        device.Measure();
+
+        Assert.Single(Summaries(log));
+        device.Dispose();
+    }
+
     [Fact]
     public void TheCardInTheSlotAnswersWhileTheStreamFlows()
     {
