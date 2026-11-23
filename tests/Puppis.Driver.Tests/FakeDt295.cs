@@ -74,6 +74,8 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 
     public Queue<byte> SatelliteTunerReads { get; } = new();
 
+    public Queue<byte> TerrestrialStatusReads { get; } = new();
+
     public List<I2cTransfer> Transfers { get; } = [];
 
     public List<string> Log { get; } = [];
@@ -120,13 +122,11 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
 
     public long Instructions { get; private set; }
 
-    public Action<string>? Sleeping { get; set; }
-
     public static FakeDt295 Locking()
     {
         var device = new FakeDt295();
         device.AnswerToReset[^1] = Tuning.Usb.PixDt295.AnswerToReset.Check(device.AnswerToReset.AsSpan(1, device.AnswerToReset.Length - 2));
-        device.Demodulator[0x80] = 0x06;
+        device.Demodulator[0x80] = 0x04;
         device.Demodulator[0xB0] = 0xA9;
         device.Demodulator[0x8B] = 0x00;
         device.Demodulator[0x8C] = 0x07;
@@ -333,6 +333,7 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
         {
             BulkOpened = (endpoint, transferBytes, transfersInFlight);
             BulkClosed = false;
+            Log.Add("bulk reads");
             bulk.Clear();
             fifo.Clear();
         }
@@ -515,6 +516,11 @@ internal sealed class FakeDt295 : IUsbConnection, IFr30Memory
     {
         bool gateway = sent.Count >= 2 && sent[0] is Dt295Chips.Gateway && sent[1] is Dt295Chips.TunerRead;
         int at = readPointer++;
+
+        if (busAddress is Dt295Chips.Terrestrial && !gateway && sent[0] is 0x80 && at is 0 && TerrestrialStatusReads.TryDequeue(out byte status))
+        {
+            return status;
+        }
 
         if (busAddress is Dt295Chips.Terrestrial)
         {

@@ -76,20 +76,21 @@ public sealed partial class Dt295OpeningStagesTests
                     "chip initialisation",
                     "copy program",
                     "tune registers",
-                    "lock",
                     "capture set-up",
                     "endpoint set-up",
                     "bulk reads",
+                    "lock",
+                    "error-free packets",
                     "intake",
                     "copying start",
-                    "signal report",
                 ],
                 StageNames(line)
             );
             Assert.Matches(@"demodulator reset 25\.0 ms/\d+ requests/25\.0 ms in 2 sleeps", line);
             Assert.Matches(@"tune registers 140\.0 ms/\d+ requests/140\.0 ms in 3 sleeps", line);
-            Assert.Matches(@"lock 100\.0 ms/\d+ requests/100\.0 ms in 1 sleeps/1 looks", line);
-            Assert.Matches($@"signal report {Counted}\)\.$", line);
+            Assert.Matches(@"lock 10\.0 ms/\d+ requests/10\.0 ms in 1 sleeps/1 looks", line);
+            Assert.Matches(@"error-free packets 0\.0 ms/0 requests/0\.0 ms in 0 sleeps/0 looks", line);
+            Assert.Matches($@"copying start {Counted}\)\.$", line);
         }
 
         factory.Dispose();
@@ -111,13 +112,13 @@ public sealed partial class Dt295OpeningStagesTests
                 [
                     "kept bridge check",
                     "tune registers",
-                    "lock",
                     "capture set-up",
                     "endpoint set-up",
                     "bulk reads",
+                    "lock",
+                    "error-free packets",
                     "intake",
                     "copying start",
-                    "signal report",
                 ],
                 StageNames(lines[1])
             );
@@ -128,12 +129,17 @@ public sealed partial class Dt295OpeningStagesTests
     }
 
     [Fact]
-    public void TheExistingSummaryLineIsStillWrittenAsItWas()
+    public void TheSummaryLineIsWrittenAsItWasOnceTheSignalIsFirstRead()
     {
         (TunerDeviceFactory factory, _, CapturingLogger<TunerDeviceFactory> log) = Factory();
 
-        using (Live(factory, 22))
+        using (ITunerDevice device = Live(factory, 22))
         {
+            Assert.DoesNotContain(log.Lines, line => Summary().IsMatch(line));
+
+            device.Quality!.Measure();
+            device.Quality!.Measure();
+
             Assert.Single(
                 log.Lines,
                 line => Summary().IsMatch(line)
@@ -153,7 +159,11 @@ public sealed partial class Dt295OpeningStagesTests
         string line = Assert.Single(StagesLines(log));
 
         Assert.Contains("for live on physical channel 22: gave up without a lock after ", line, StringComparison.Ordinal);
-        Assert.Matches(@"lock 3000\.0 ms/\d+ requests/3000\.0 ms in 30 sleeps/30 looks\)\.$", line);
+        Assert.Matches(@"lock 3000\.0 ms/\d+ requests/3000\.0 ms in 300 sleeps/300 looks\)\.$", line);
+        Assert.Equal(
+            ["USB open", "handler check", "demodulator reset", "clocks and I2C", "chip initialisation", "copy program", "tune registers", "capture set-up", "endpoint set-up", "bulk reads", "lock"],
+            StageNames(line)
+        );
         factory.Dispose();
     }
 

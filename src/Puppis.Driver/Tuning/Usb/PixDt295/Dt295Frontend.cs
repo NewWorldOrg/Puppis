@@ -11,6 +11,8 @@ public enum Dt295Side
     Satellite = 2,
 }
 
+public sealed record TuneWaits(Action WhileSettling, Action BeforeTheFirstLook);
+
 public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 {
     public const byte DemodulatorIdentity = 0x77;
@@ -21,7 +23,13 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
     public static readonly TimeSpan SatelliteLockPatience = TimeSpan.FromSeconds(4);
 
-    private static readonly TimeSpan BetweenLooks = TimeSpan.FromMilliseconds(100);
+    public static readonly TimeSpan ErrorFreePatience = TimeSpan.FromMilliseconds(300);
+
+    private static readonly TimeSpan BetweenTerrestrialLooks = TimeSpan.FromMilliseconds(10);
+
+    private static readonly TimeSpan BetweenSatelliteLooks = TimeSpan.FromMilliseconds(100);
+
+    private static readonly TimeSpan Settling = TimeSpan.FromMilliseconds(100);
 
     private const int TerrestrialStatus = 0x80;
     private const int TerrestrialLayers = 0xB0;
@@ -32,6 +40,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
     private const int SatelliteNoise = 0xBC;
 
     private readonly DevicePacing pacing = pacing.CountedOnItsOwn();
+    private byte terrestrialStatusAtTheLastLook;
 
     public Dt295Side Tuned { get; private set; }
 
@@ -70,7 +79,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
     public static ushort TerrestrialDivider(long hertz) => (ushort)(hertz * 64 / 1_000_000);
 
-    public bool TuneTerrestrial(long hertz, StageTimes? stages = null)
+    public bool TuneTerrestrial(long hertz, StageTimes? stages = null, TuneWaits? waits = null)
     {
         if (Tuned is Dt295Side.Satellite)
         {
@@ -107,16 +116,44 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         chips.WriteT(0x0F, 0x10);
         chips.WriteT(0x01, 0x40);
         chips.WriteT(0x23, 0x4C);
-        pacing.SleepMilliseconds(100);
+        Settle(waits?.WhileSettling, stages);
         chips.WriteT(0x1D, 0x02);
         chips.WriteT(0x1E, 0x2A);
         chips.WriteT(0x1F, 0x8A);
         Tuned = Dt295Side.Terrestrial;
         stages?.Mark("tune registers");
-        bool locked = Await(TerrestrialLockPatience, TerrestrialLocked, out int looks);
+        bool locked = Await(
+            TerrestrialLockPatience,
+            BetweenTerrestrialLooks,
+            TerrestrialLocked,
+            out int looks,
+            waits?.BeforeTheFirstLook
+        );
         stages?.Mark("lock", $"{looks} looks");
 
         return locked;
+    }
+
+    public void AwaitErrorFreePackets(StageTimes? stages = null)
+    {
+        if (Tuned is not Dt295Side.Terrestrial)
+        {
+            return;
+        }
+
+        long started = pacing.Timestamp;
+        int looks = 0;
+        bool errorFree = Dt295Signal.TerrestrialErrorFree(terrestrialStatusAtTheLastLook);
+
+        while (!errorFree && pacing.Since(started) < ErrorFreePatience)
+        {
+            pacing.Sleep(BetweenTerrestrialLooks);
+            looks++;
+            terrestrialStatusAtTheLastLook = chips.ReadT(TerrestrialStatus, 1)[0];
+            errorFree = Dt295Signal.TerrestrialErrorFree(terrestrialStatusAtTheLastLook);
+        }
+
+        stages?.Mark("error-free packets", errorFree ? $"{looks} looks" : $"{looks} looks, errors still flagged");
     }
 
     public bool TuneSatellite(long kilohertz, int? transportStreamId, string path, StageTimes? stages = null)
@@ -175,6 +212,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         {
             bool locked = Await(
                 SatelliteLockPatience,
+                BetweenSatelliteLooks,
                 () => SatelliteLock(chips.ReadS(SatelliteStatus, 1)[0]),
                 out int looks
             );
@@ -192,6 +230,7 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         chips.WriteS(0x90, (byte)wanted);
         bool onTheStream = Await(
             SatelliteLockPatience - pacing.Since(started),
+            BetweenSatelliteLooks,
             () => SatelliteLockedOn(wanted),
             out int looksAtTheStream
         );
@@ -253,8 +292,13 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
         Tuned = Dt295Side.Neither;
     }
 
-    private bool TerrestrialLocked() =>
-        Dt295Signal.TerrestrialLock(chips.ReadT(TerrestrialStatus, 4), chips.ReadT(TerrestrialLayers, 1)[0]);
+    private bool TerrestrialLocked()
+    {
+        byte[] status = chips.ReadT(TerrestrialStatus, 4);
+        terrestrialStatusAtTheLastLook = status[0];
+
+        return Dt295Signal.TerrestrialLock(status, chips.ReadT(TerrestrialLayers, 1)[0]);
+    }
 
     private bool SatelliteLockedOn(int transportStreamId)
     {
@@ -283,14 +327,46 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
 
     private static bool SatelliteLock(byte status) => Dt295Signal.SatelliteLock(status);
 
-    private bool Await(TimeSpan patience, Func<bool> locked, out int looks)
+    private void Settle(Action? meanwhile, StageTimes? stages)
+    {
+        if (meanwhile is null)
+        {
+            pacing.Sleep(Settling);
+
+            return;
+        }
+
+        stages?.Mark("tune registers");
+        long began = pacing.Timestamp;
+        meanwhile();
+        SleepWhatIsLeftOf(Settling, began);
+    }
+
+    private void SleepWhatIsLeftOf(TimeSpan wait, long began)
+    {
+        TimeSpan left = wait - pacing.Since(began);
+
+        if (left > TimeSpan.Zero)
+        {
+            pacing.Sleep(left);
+        }
+    }
+
+    private bool Await(
+        TimeSpan patience,
+        TimeSpan betweenLooks,
+        Func<bool> locked,
+        out int looks,
+        Action? beforeTheFirstLook = null
+    )
     {
         long started = pacing.Timestamp;
         looks = 0;
+        beforeTheFirstLook?.Invoke();
+        SleepWhatIsLeftOf(betweenLooks, started);
 
         while (true)
         {
-            pacing.Sleep(BetweenLooks);
             looks++;
 
             if (locked())
@@ -302,6 +378,8 @@ public sealed class Dt295Frontend(Dt295Chips chips, DevicePacing pacing)
             {
                 return false;
             }
+
+            pacing.Sleep(betweenLooks);
         }
     }
 }

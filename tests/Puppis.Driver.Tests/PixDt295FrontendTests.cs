@@ -1,4 +1,5 @@
 using Puppis.Contracts;
+using Puppis.Driver.Tuning;
 using Puppis.Driver.Tuning.Dvb;
 using Puppis.Driver.Tuning.Usb;
 using Puppis.Driver.Tuning.Usb.PixDt295;
@@ -39,7 +40,7 @@ public sealed class Dt295TerrestrialTests
         T 1D 02
         T 1E 2A
         T 1F 8A
-        wait 100
+        wait 10
         TR 80
         TR B0
         """;
@@ -60,7 +61,7 @@ public sealed class Dt295TerrestrialTests
     }
 
     [Fact]
-    public void TuningFollowsTheTableAndLooksForTheLockAfterATenthOfASecond()
+    public void TuningFollowsTheTableAndLooksForTheLockAfterAHundredthOfASecond()
     {
         (Dt295Frontend frontend, FakeDt295 device, _) = Frontend();
 
@@ -83,7 +84,144 @@ public sealed class Dt295TerrestrialTests
 
         Assert.False(locked);
         Assert.Equal(TimeSpan.FromMilliseconds(140) + TimeSpan.FromSeconds(3), clock.GetUtcNow() - started);
-        Assert.Equal(30, device.Transfers.Count(transfer => transfer.Written is [0x80]));
+        Assert.Equal(300, device.Transfers.Count(transfer => transfer.Written is [0x80]));
+    }
+
+    private static IEnumerable<string> Waits(FakeDt295 device) =>
+        device.Log.Where(line => line.StartsWith("wait", StringComparison.Ordinal));
+
+    [Fact]
+    public void WhatIsDoneMeanwhileRunsInsideTheSettlingWaitAndThenBeforeTheFirstLookAtTheLock()
+    {
+        (Dt295Frontend frontend, FakeDt295 device, _) = Frontend();
+        var waits = new TuneWaits(() => device.Log.Add("while settling"), () => device.Log.Add("before the first look"));
+        List<string> expected = [.. PixDt295Support.Expected(Channel27)];
+        expected.Insert(expected.LastIndexOf("wait 10"), "before the first look");
+        expected.Insert(expected.IndexOf("wait 100"), "while settling");
+
+        bool locked = frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(27), null, waits);
+
+        Assert.True(locked);
+        Assert.Equal(expected, PixDt295Support.Written(device));
+    }
+
+    [Fact]
+    public void TheTimeSpentMeanwhileComesOutOfTheWaitItWasSpentIn()
+    {
+        (Dt295Frontend frontend, FakeDt295 device, SteppedClock clock) = Frontend();
+        var waits = new TuneWaits(
+            () => clock.Advance(TimeSpan.FromMilliseconds(30)),
+            () => clock.Advance(TimeSpan.FromMilliseconds(4))
+        );
+        DateTimeOffset started = clock.GetUtcNow();
+
+        frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(27), null, waits);
+
+        Assert.Equal(["wait 20", "wait 20", "wait 70", "wait 6"], Waits(device));
+        Assert.Equal(TimeSpan.FromMilliseconds(150), clock.GetUtcNow() - started);
+    }
+
+    [Fact]
+    public void WorkThatOutlastsItsWaitIsFollowedByNoSleep()
+    {
+        (Dt295Frontend frontend, FakeDt295 device, SteppedClock clock) = Frontend();
+        var waits = new TuneWaits(
+            () => clock.Advance(TimeSpan.FromMilliseconds(130)),
+            () => clock.Advance(TimeSpan.FromMilliseconds(150))
+        );
+
+        bool locked = frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(27), null, waits);
+
+        Assert.True(locked);
+        Assert.Equal(["wait 20", "wait 20"], Waits(device));
+        Assert.Equal(1, device.Transfers.Count(transfer => transfer.Written is [0x80]));
+    }
+
+    [Fact]
+    public void TheTimeSpentBeforeTheFirstLookCountsTowardsThePatienceForTheLock()
+    {
+        (Dt295Frontend frontend, FakeDt295 device, SteppedClock clock) = Frontend();
+        device.Demodulator[0x80] = 0xAF;
+        var waits = new TuneWaits(() => { }, () => clock.Advance(TimeSpan.FromMilliseconds(500)));
+        DateTimeOffset started = clock.GetUtcNow();
+
+        bool locked = frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(60), null, waits);
+
+        Assert.False(locked);
+        Assert.Equal(TimeSpan.FromMilliseconds(140) + TimeSpan.FromSeconds(3), clock.GetUtcNow() - started);
+        Assert.Equal(251, device.Transfers.Count(transfer => transfer.Written is [0x80]));
+    }
+
+    [Theory]
+    [InlineData(0x04, true)]
+    [InlineData(0x00, true)]
+    [InlineData(0x05, true)]
+    [InlineData(0x06, false)]
+    [InlineData(0x07, false)]
+    [InlineData(0x0C, false)]
+    [InlineData(0x24, false)]
+    [InlineData(0x2E, false)]
+    public void PacketsAreFreeOfErrorsOnceBitOneIsClearBesideTheLockBits(byte status, bool errorFree)
+    {
+        Assert.Equal(errorFree, Dt295Signal.TerrestrialErrorFree(status));
+    }
+
+    [Fact]
+    public void ErrorFreePacketsAreAwaitedByReadingTheStatusAloneUntilItsErrorBitClears()
+    {
+        (Dt295Frontend frontend, FakeDt295 device, _) = Frontend();
+        device.TerrestrialStatusReads.Enqueue(0x06);
+        device.TerrestrialStatusReads.Enqueue(0x06);
+        device.TerrestrialStatusReads.Enqueue(0x06);
+        frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(27));
+        device.Log.Clear();
+        device.Transfers.Clear();
+
+        frontend.AwaitErrorFreePackets();
+
+        Assert.Equal(["wait 10", "20 w[80]", "wait 10", "20 w[80]", "wait 10", "20 w[80]"], PixDt295Support.Written(device));
+        Assert.All(device.Transfers, transfer => Assert.Single(transfer.Read));
+    }
+
+    [Fact]
+    public void ADemodulatorThatFlaggedNoErrorWhenItLockedIsNotAskedAgain()
+    {
+        (Dt295Frontend frontend, FakeDt295 device, _) = Frontend();
+        frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(27));
+        device.Log.Clear();
+
+        frontend.AwaitErrorFreePackets();
+
+        Assert.Empty(device.Log);
+    }
+
+    [Fact]
+    public void ErrorsThatStayFlaggedAreWaitedOnNoLongerThanThePatienceForThem()
+    {
+        (Dt295Frontend frontend, FakeDt295 device, SteppedClock clock) = Frontend();
+        device.Demodulator[0x80] = 0x06;
+        frontend.TuneTerrestrial(BroadcastStandards.TerrestrialCentreHz(27));
+        DateTimeOffset tuned = clock.GetUtcNow();
+        var stages = new StageTimes(clock);
+
+        frontend.AwaitErrorFreePackets(stages);
+
+        Assert.Equal(Dt295Frontend.ErrorFreePatience, clock.GetUtcNow() - tuned);
+        Assert.Equal("300.0 ms in all (error-free packets 300.0 ms/30 looks, errors still flagged)", stages.ToString());
+    }
+
+    [Fact]
+    public void NothingIsAwaitedOnTheSatelliteSide()
+    {
+        (Dt295Frontend frontend, FakeDt295 device, _) = Frontend();
+        device.Satellite[0xE6] = 0x40;
+        device.Satellite[0xE7] = 0x10;
+        frontend.TuneSatellite(BroadcastStandards.BsCentreKHz(1), 0x4010, "/dev/x");
+        device.Log.Clear();
+
+        frontend.AwaitErrorFreePackets();
+
+        Assert.Empty(device.Log);
     }
 
     [Theory]

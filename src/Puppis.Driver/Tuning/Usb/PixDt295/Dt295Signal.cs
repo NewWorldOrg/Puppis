@@ -14,6 +14,8 @@ public static class Dt295Signal
     public static bool TerrestrialLock(ReadOnlySpan<byte> status, byte layers) =>
         (status[0] & 0x28) is 0 && (layers & 0x0F) >= 8;
 
+    public static bool TerrestrialErrorFree(byte status) => (status & 0x2A) is 0;
+
     public static bool SatelliteLock(byte status) => (status & 0x10) is 0;
 
     public static FrontendStatus StatusOf(bool locked) => locked ? Locked : FrontendStatus.None;

@@ -167,8 +167,16 @@ public sealed class Dt295KeptTests
 
         Assert.False(fake.Disposed);
         Assert.True(CopyProgram.IsOurHook(fake.Word(CopyProgram.HookAt), fake.Word(CopyProgram.HookAt + 4)));
+        Assert.True(fake.BulkClosed);
+        Assert.Equal(0x000403FAu, fake.Word(0xFDBC14));
         fake.Demodulator[0x80] = 0x06;
-        Session(factory).Dispose();
+
+        using (ITunerDevice next = Session(factory))
+        {
+            Assert.False(fake.BulkClosed);
+            Assert.NotEmpty(next.Read(188 * 10, CancellationToken.None));
+        }
+
         Assert.Equal(1, fake.WritesSoFar().Count(write => FakeDt295.AddressOf(write.Setup) == CopyProgram.HookAt));
         factory.Dispose();
         AssertGivenBack(fake);
