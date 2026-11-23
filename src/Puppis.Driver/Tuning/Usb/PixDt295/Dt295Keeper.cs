@@ -15,7 +15,7 @@ public sealed class Dt295Keeper : IDisposable
         }
     }
 
-    public Dt295Bridge? Take(string deviceId, string path)
+    public Dt295Bridge? Take(string deviceId, string path, StageTimes? stages = null)
     {
         Dt295Bridge? taken;
 
@@ -29,7 +29,7 @@ public sealed class Dt295Keeper : IDisposable
             return null;
         }
 
-        if (taken.Path == path && taken.IsOpen && taken.StillAsLeft())
+        if (taken.Path == path && taken.IsOpen && taken.StillAsLeft(stages))
         {
             return taken;
         }

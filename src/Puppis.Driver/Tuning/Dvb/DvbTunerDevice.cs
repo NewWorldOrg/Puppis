@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 using Puppis.Driver.Configuration;
 
 namespace Puppis.Driver.Tuning.Dvb;
@@ -33,6 +35,8 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
     private const int SpillBytes = 188 * 1024;
 
     private const int MostSpills = 1024;
+
+    private const string Hardware = "DVB";
 
     private readonly IDvbSystemCalls calls;
     private readonly TimeProvider time;
@@ -80,10 +84,15 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         DvbChannel channel,
         LnbVoltage voltage,
         DvbTunerSettings settings,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        ILogger? logger = null,
+        TunerOpening? opening = null
     )
     {
+        var stages = new StageTimes(time);
+        string what = opening?.On(Hardware) ?? $"{paths.Frontend} on {TunerOpening.ChannelName(channel)}";
         DvbFrontend frontend = DvbFrontend.Open(calls, paths.Frontend, DvbAccess.Control);
+        stages.Mark("frontend");
         int demux = -1;
         int dvr = -1;
 
@@ -91,26 +100,31 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         {
             if (settings.ReadsFromTheLock)
             {
-                (demux, dvr) = OpenTheStream(calls, paths, settings);
+                (demux, dvr) = OpenTheStream(calls, paths, settings, stages);
             }
 
             if (channel.NeedsSatelliteAerial)
             {
                 frontend.SetLnbVoltage(voltage);
+                stages.Mark("aerial supply");
             }
 
             frontend.Tune(channel);
+            stages.Mark("tune");
+            bool locked = frontend.WaitForLock(
+                time,
+                settings.LockPatience,
+                settings.LockPollInterval,
+                cancellationToken,
+                out FrontendStatus lastSeen,
+                out int polls
+            );
+            stages.Mark("lock", $"{polls} polls");
 
-            if (
-                !frontend.WaitForLock(
-                    time,
-                    settings.LockPatience,
-                    settings.LockPollInterval,
-                    cancellationToken,
-                    out FrontendStatus lastSeen
-                )
-            )
+            if (!locked)
             {
+                logger?.LogInformation("{Opening}: gave up without a lock after {Stages}.", what, stages);
+
                 throw DvbFailure.NoLock(
                     $"{paths.Frontend}: the frontend did not lock onto {channel} within {settings.LockPatience.TotalSeconds:0.#} seconds, and the last status it reported while waiting was {lastSeen}. Nothing was received, so no bytes will follow."
                 );
@@ -118,12 +132,15 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
 
             if (settings.ReadsFromTheLock)
             {
-                ThrowAwayWhatCameBeforeTheLock(calls, dvr);
+                long discarded = ThrowAwayWhatCameBeforeTheLock(calls, dvr);
+                stages.Mark("discard", $"{discarded} bytes");
             }
             else
             {
-                (demux, dvr) = OpenTheStream(calls, paths, settings);
+                (demux, dvr) = OpenTheStream(calls, paths, settings, stages);
             }
+
+            logger?.LogInformation("{Opening}: opened and locked in {Stages}.", what, stages);
 
             return new DvbTunerDevice(calls, time, paths, settings, channel, frontend, demux, dvr);
         }
@@ -318,16 +335,25 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    private static (int Demux, int Dvr) OpenTheStream(IDvbSystemCalls calls, DvbDevicePaths paths, DvbTunerSettings settings)
+    private static (int Demux, int Dvr) OpenTheStream(
+        IDvbSystemCalls calls,
+        DvbDevicePaths paths,
+        DvbTunerSettings settings,
+        StageTimes stages
+    )
     {
         int demux = OpenNode(calls, paths.Demux, DvbAccess.Control, "the demux");
+        stages.Mark("demux");
         int dvr = -1;
 
         try
         {
             SetBufferSize(calls, paths.Demux, demux, settings.DemuxBufferBytes);
+            stages.Mark("demux buffer");
             StartFilter(calls, paths.Demux, demux);
+            stages.Mark("filter");
             dvr = OpenNode(calls, paths.Dvr, DvbAccess.Stream, "the transport stream reader");
+            stages.Mark("dvr");
 
             return (demux, dvr);
         }
@@ -339,9 +365,10 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    private static void ThrowAwayWhatCameBeforeTheLock(IDvbSystemCalls calls, int dvr)
+    private static long ThrowAwayWhatCameBeforeTheLock(IDvbSystemCalls calls, int dvr)
     {
         byte[] spilt = new byte[SpillBytes];
+        long discarded = 0;
 
         for (int read = 0; read < MostSpills; read++)
         {
@@ -349,9 +376,13 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
 
             if (taken.Refused ? taken.Error is not Errno.Overflowed : taken.Value is 0)
             {
-                return;
+                return discarded;
             }
+
+            discarded += taken.Refused ? 0 : taken.Value;
         }
+
+        return discarded;
     }
 
     private static void CloseQuietly(IDvbSystemCalls calls, int descriptor)

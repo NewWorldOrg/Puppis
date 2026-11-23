@@ -52,6 +52,7 @@ public sealed class TunerSession : IDisposable
     private readonly ILogger? logger;
     private readonly DiagnosticsStore? diagnostics;
     private readonly TsPacketReader packetReader = new();
+    private readonly long createdAt;
     private readonly int chunkSize;
     private readonly Lock gate = new();
     private readonly CancellationTokenSource stopping = new();
@@ -78,6 +79,8 @@ public sealed class TunerSession : IDisposable
     private long discardedBytes;
     private long resyncs;
     private int finished;
+    private long headHandedOnAt;
+    private volatile bool headHandedOn;
 
     public TunerSession(
         SessionId sessionId,
@@ -123,6 +126,7 @@ public sealed class TunerSession : IDisposable
         overflowsBefore = device.Overflows;
         this.recordingWriter = recordingWriter;
         this.timeProvider = timeProvider;
+        createdAt = timeProvider.GetTimestamp();
         this.chunkSize = chunkSize;
         this.logger = logger;
         this.diagnostics = diagnostics;
@@ -167,6 +171,11 @@ public sealed class TunerSession : IDisposable
     public TuneParams? Tune { get; }
 
     public DateTimeOffset StartedAt { get; }
+
+    public TimeSpan SinceCreated => timeProvider.GetElapsedTime(createdAt);
+
+    public TimeSpan? SinceTheHeadWasHandedOn =>
+        headHandedOn ? timeProvider.GetElapsedTime(Volatile.Read(ref headHandedOnAt)) : null;
 
     public DateTimeOffset EndsAt => new(Interlocked.Read(ref endsAtTicks), TimeSpan.Zero);
 
@@ -495,6 +504,8 @@ public sealed class TunerSession : IDisposable
 
                 WriteOut(chunk);
 
+                NoteTheHead();
+
                 Measure(chunk);
 
                 quality?.ReadIfDue();
@@ -540,6 +551,17 @@ public sealed class TunerSession : IDisposable
         {
             Finish(SessionState.Failed, SessionStopReason.DeviceFailed, error);
         }
+    }
+
+    private void NoteTheHead()
+    {
+        if (headHandedOn)
+        {
+            return;
+        }
+
+        Volatile.Write(ref headHandedOnAt, timeProvider.GetTimestamp());
+        headHandedOn = true;
     }
 
     private ITunerDevice Reading(bool afterACut)

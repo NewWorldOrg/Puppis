@@ -841,7 +841,13 @@ public sealed class TunerSessionManager(
             DeviceSettings settings = DeviceNamed(deviceId)
                 ?? throw new InvalidOperationException($"No device is called '{deviceId}'.");
 
-            opened = deviceFactory.Create(settings, request.Tuning, request.Tune, HeadHolds.For(request.Purpose));
+            opened = deviceFactory.Create(
+                settings,
+                request.Tuning,
+                request.Tune,
+                HeadHolds.For(request.Purpose),
+                request.Purpose
+            );
         }
         catch (Exception error)
         {

@@ -34,6 +34,9 @@ public sealed class ProgramMap(int caSystemId)
 
     public IEnumerable<int> PmtPids => pmtPids.Values.Distinct();
 
+    public IReadOnlyList<int> PmtPidsNotRead =>
+        [.. pmtPids.Where(listed => !programs.ContainsKey(listed.Key)).Select(listed => listed.Value).Distinct().Order()];
+
     public bool IsPmt(int pid) => pmtPids.ContainsValue(pid);
 
     public bool IsEcm(int pid) => ecmPids.Contains(pid);

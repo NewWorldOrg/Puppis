@@ -16,6 +16,8 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
     public const byte Interface = 0;
 
+    private const string Hardware = "PIX-DT295";
+
     private readonly Dt295Bridge bridge;
     private readonly Dt295Stream stream;
     private readonly DevicePacing pacing;
@@ -62,7 +64,20 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         TimeSpan bytePatience,
         ILogger? logger = null,
         string knownHandler = Dt295Startup.HandlerAtPowerOn
-    ) => Start(Dt295Bridge.Open(host, path, pacing, logger, knownHandler), channel, pacing, bytePatience, logger, null);
+    )
+    {
+        var stages = new StageTimes(pacing.Clock);
+
+        return Start(
+            Dt295Bridge.Open(host, path, pacing, logger, knownHandler, stages),
+            channel,
+            pacing,
+            bytePatience,
+            logger,
+            null,
+            stages
+        );
+    }
 
     public static Dt295TunerDevice Start(
         Dt295Bridge bridge,
@@ -70,32 +85,46 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         DevicePacing pacing,
         TimeSpan bytePatience,
         ILogger? logger,
-        Action<Dt295Bridge>? keep
+        Action<Dt295Bridge>? keep,
+        StageTimes? stages = null,
+        TunerOpening? opening = null
     )
     {
         long started = Stopwatch.GetTimestamp();
+        StageTimes marked = stages ?? Counting(bridge, pacing);
+        string what = opening?.On(Hardware) ?? $"{bridge.Path} on {TunerOpening.ChannelName(channel)}";
 
         try
         {
-            Tune(bridge, channel);
-            Dt295Stream stream = bridge.StartStream();
+            Tune(bridge, channel, marked);
+            Dt295Stream stream = bridge.StartStream(marked);
             var device = new Dt295TunerDevice(bridge, stream, pacing, bytePatience, Describe(channel), keep, logger);
-            device.Report(logger, Stopwatch.GetElapsedTime(started));
+            device.Report(logger, Stopwatch.GetElapsedTime(started), marked, what);
 
             return device;
         }
         catch (DvbDeviceException failed) when (failed.Failure is TuningFailure.NoLock)
         {
+            logger?.LogInformation("{Opening}: gave up without a lock after {Stages}.", what, marked);
             LetGo(bridge, keep, faulted: false, logger);
 
             throw;
         }
         catch
         {
+            logger?.LogInformation("{Opening}: gave up after {Stages}.", what, marked);
             LetGo(bridge, keep, faulted: true, logger);
 
             throw;
         }
+    }
+
+    private static StageTimes Counting(Dt295Bridge bridge, DevicePacing pacing)
+    {
+        var stages = new StageTimes(pacing.Clock);
+        bridge.Count(stages);
+
+        return stages;
     }
 
     internal static void LetGo(Dt295Bridge bridge, Action<Dt295Bridge>? keep, bool faulted, ILogger? logger)
@@ -126,21 +155,26 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    internal static void Tune(Dt295Bridge bridge, DvbChannel channel)
+    internal static void Tune(Dt295Bridge bridge, DvbChannel channel, StageTimes? stages = null)
     {
         Dt295Frontend frontend = bridge.Frontend;
         bool locked = channel switch
         {
-            TerrestrialChannel terrestrial => frontend.TuneTerrestrial(DvbFrequency.TerrestrialHertz(terrestrial.PhysicalChannel)),
+            TerrestrialChannel terrestrial => frontend.TuneTerrestrial(
+                DvbFrequency.TerrestrialHertz(terrestrial.PhysicalChannel),
+                stages
+            ),
             BroadcastSatelliteChannel broadcast => frontend.TuneSatellite(
                 DvbFrequency.BroadcastSatelliteKilohertz(broadcast.Slot),
                 broadcast.TransportStreamId,
-                bridge.Path
+                bridge.Path,
+                stages
             ),
             CommunicationSatelliteChannel communication => frontend.TuneSatellite(
                 DvbFrequency.CommunicationSatelliteKilohertz(communication.Slot),
                 null,
-                bridge.Path
+                bridge.Path,
+                stages
             ),
             _ => throw DvbFailure.Refused($"{bridge.Path}: {channel} is not a channel this tuner receives."),
         };
@@ -263,7 +297,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             : DvbFailure.NoLock($"{bridge.Path}: no transport stream arrived on {channel} within {waited}, and the demodulator is no longer locked.");
     }
 
-    private void Report(ILogger? logger, TimeSpan took)
+    private void Report(ILogger? logger, TimeSpan took, StageTimes stages, string what)
     {
         if (logger is null)
         {
@@ -271,6 +305,7 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         }
 
         SignalQuality quality = Measure();
+        stages.Mark("signal report");
         logger.LogInformation(
             "{Path}: started, tuned to {Channel} and streaming after {Milliseconds:0} ms; locked {Locked}, C/N {Ratio}.",
             bridge.Path,
@@ -279,5 +314,6 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
             quality.HasLock,
             quality.CarrierToNoise.TryGetDecibels(out double decibels) ? $"{decibels:0.0} dB" : "not measured"
         );
+        logger.LogInformation("{Opening}: opened and streaming in {Stages}.", what, stages);
     }
 }

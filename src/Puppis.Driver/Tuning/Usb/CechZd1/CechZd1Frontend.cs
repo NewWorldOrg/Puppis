@@ -67,11 +67,13 @@ public sealed class CechZd1Frontend
     public CechZd1Frontend(IRegisterBus demodulatorBus, IRegisterBus tunerBus, DevicePacing pacing, string path)
     {
         d = demodulatorBus;
-        this.pacing = pacing;
+        this.pacing = pacing.CountedOnItsOwn();
         this.path = path;
-        Demodulator = new Dib8000(demodulatorBus, pacing);
-        Tuner = new Dib0090(tunerBus, pacing);
+        Demodulator = new Dib8000(demodulatorBus, this.pacing);
+        Tuner = new Dib0090(tunerBus, this.pacing);
     }
+
+    public DevicePacing Pacing => pacing;
 
     public Dib8000 Demodulator { get; }
 
@@ -126,7 +128,7 @@ public sealed class CechZd1Frontend
         Demodulator.TransportOutput(on: true);
     }
 
-    public SearchOutcome Tune(long hertz)
+    public SearchOutcome Tune(long hertz, StageTimes? stages = null)
     {
         int kilohertz = (int)(hertz / 1000);
 
@@ -140,17 +142,20 @@ public sealed class CechZd1Frontend
         if (asleep)
         {
             Wake();
+            stages?.Mark("wake");
         }
 
         Demodulator.SetDiversity(Diversity.Both);
         Demodulator.TransportOutput(on: false);
         Tuner.RequestTemperature();
-        uint timing = ConfigureTheTuner(kilohertz);
+        uint timing = ConfigureTheTuner(kilohertz, stages);
         Demodulator.SetDiversity(Diversity.InternalOnly);
+        stages?.Mark("diversity inside only");
         StartTheAgc();
+        stages?.Mark("AGC start-up");
 
         var search = new DemodulatorSearch(d, Demodulator, pacing);
-        SearchOutcome outcome = search.Run(new SearchTiming(timing, Tuner.RequestedKilohertz, kilohertz), path);
+        SearchOutcome outcome = search.Run(new SearchTiming(timing, Tuner.RequestedKilohertz, kilohertz), path, stages);
         Channel = search.Written;
         Demodulator.TransportOutput(on: true);
 
@@ -158,6 +163,8 @@ public sealed class CechZd1Frontend
         {
             Demodulator.LedRed();
         }
+
+        stages?.Mark("output on and LED");
 
         return outcome;
     }
@@ -217,10 +224,11 @@ public sealed class CechZd1Frontend
         asleep = false;
     }
 
-    private uint ConfigureTheTuner(int kilohertz)
+    private uint ConfigureTheTuner(int kilohertz, StageTimes? stages)
     {
         Demodulator.Gpio(3, high: false);
-        Tuner.Tune(kilohertz, path);
+        stages?.Mark("diversity both and output off");
+        Tuner.Tune(kilohertz, path, stages);
 
         ushort clock = d.Read(1856);
         int ratio = RatioAtStart;
@@ -236,6 +244,7 @@ public sealed class CechZd1Frontend
         AgcReference = AgcReferenceFor(Tuner.WidebandTarget(kilohertz / 1000));
         d.Write(106, (ushort)AgcReference);
         Tuner.WritePwmRamps();
+        stages?.Mark("band, timing and PWM");
 
         return timing;
     }

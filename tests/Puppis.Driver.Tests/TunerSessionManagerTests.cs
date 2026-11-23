@@ -167,6 +167,35 @@ public sealed class TunerSessionManagerTests : IDisposable
     }
 
     [Fact]
+    public void TheTunerIsOpenedKnowingWhatTheSessionIsFor()
+    {
+        PurposeNotingDeviceFactory factory = new(Configuration);
+        TunerSessionManager manager = Manager(Configuration, factory);
+
+        StopAndWait(Begin(manager, "live-1", "adapter0", SessionPurpose.Live));
+        StopAndWait(Begin(manager, "s-1", "adapter3"));
+
+        Assert.Equal([SessionPurpose.Live, SessionPurpose.Recording], factory.Purposes);
+    }
+
+    [Fact]
+    public void AFactoryThatDoesNotLookAtThePurposeIsStillOpenedTheWayItWas()
+    {
+        HoldNotingDeviceFactory factory = new(Configuration);
+        ITunerDeviceFactory asked = factory;
+
+        asked.Create(
+            Configuration.Devices![0],
+            new TuningRequest(TunerKind.Terrestrial, 55, 50001),
+            null,
+            HeadHold.WhatIsHeld,
+            SessionPurpose.Live
+        ).Dispose();
+
+        Assert.Equal([HeadHold.WhatIsHeld], factory.Holds);
+    }
+
+    [Fact]
     public void ARecordingSessionWritesUnderTheNamedOutputRoot()
     {
         TunerSessionManager manager = Manager();
@@ -1501,5 +1530,28 @@ internal sealed class HoldNotingDeviceFactory(DriverConfiguration configuration)
         Holds.Add(hold);
 
         return synthetic.Create(device, tuning, tune, hold);
+    }
+}
+
+internal sealed class PurposeNotingDeviceFactory(DriverConfiguration configuration) : ITunerDeviceFactory
+{
+    private readonly TunerDeviceFactory synthetic = new(configuration, TimeProvider.System);
+
+    public List<SessionPurpose?> Purposes { get; } = [];
+
+    public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, HeadHold hold) =>
+        synthetic.Create(device, tuning, tune, hold);
+
+    public ITunerDevice Create(
+        DeviceSettings device,
+        TuningRequest tuning,
+        TuneParams? tune,
+        HeadHold hold,
+        SessionPurpose? purpose
+    )
+    {
+        Purposes.Add(purpose);
+
+        return synthetic.Create(device, tuning, tune, hold, purpose);
     }
 }
