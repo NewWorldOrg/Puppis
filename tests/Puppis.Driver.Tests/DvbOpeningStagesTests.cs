@@ -68,7 +68,8 @@ public sealed partial class DvbOpeningStagesTests
 
         Assert.Matches(
             @"^Information devices\['tuner-a'\] \(DVB, terrestrial\) for live on physical channel 27: opened and locked in "
-                + @"\d+\.\d ms in all \(frontend \d+\.\d ms, stream \d+\.\d ms, tune \d+\.\d ms, "
+                + @"\d+\.\d ms in all \(frontend \d+\.\d ms, demux \d+\.\d ms, demux buffer \d+\.\d ms, "
+                + @"filter \d+\.\d ms, dvr \d+\.\d ms, tune \d+\.\d ms, "
                 + @"lock \d+\.\d ms/3 polls, discard \d+\.\d ms/940 bytes\)\.$",
             line
         );
@@ -91,7 +92,8 @@ public sealed partial class DvbOpeningStagesTests
 
         Assert.Matches(
             @"for recording on physical channel 22: opened and locked in \d+\.\d ms in all "
-                + @"\(frontend \d+\.\d ms, tune \d+\.\d ms, lock \d+\.\d ms/1 polls, stream \d+\.\d ms\)\.$",
+                + @"\(frontend \d+\.\d ms, tune \d+\.\d ms, lock \d+\.\d ms/1 polls, "
+                + @"demux \d+\.\d ms, demux buffer \d+\.\d ms, filter \d+\.\d ms, dvr \d+\.\d ms\)\.$",
             line
         );
         Assert.DoesNotContain("discard", line, StringComparison.Ordinal);

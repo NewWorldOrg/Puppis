@@ -100,8 +100,7 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         {
             if (settings.ReadsFromTheLock)
             {
-                (demux, dvr) = OpenTheStream(calls, paths, settings);
-                stages.Mark("stream");
+                (demux, dvr) = OpenTheStream(calls, paths, settings, stages);
             }
 
             if (channel.NeedsSatelliteAerial)
@@ -138,8 +137,7 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
             }
             else
             {
-                (demux, dvr) = OpenTheStream(calls, paths, settings);
-                stages.Mark("stream");
+                (demux, dvr) = OpenTheStream(calls, paths, settings, stages);
             }
 
             logger?.LogInformation("{Opening}: opened and locked in {Stages}.", what, stages);
@@ -337,16 +335,25 @@ public sealed class DvbTunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    private static (int Demux, int Dvr) OpenTheStream(IDvbSystemCalls calls, DvbDevicePaths paths, DvbTunerSettings settings)
+    private static (int Demux, int Dvr) OpenTheStream(
+        IDvbSystemCalls calls,
+        DvbDevicePaths paths,
+        DvbTunerSettings settings,
+        StageTimes stages
+    )
     {
         int demux = OpenNode(calls, paths.Demux, DvbAccess.Control, "the demux");
+        stages.Mark("demux");
         int dvr = -1;
 
         try
         {
             SetBufferSize(calls, paths.Demux, demux, settings.DemuxBufferBytes);
+            stages.Mark("demux buffer");
             StartFilter(calls, paths.Demux, demux);
+            stages.Mark("filter");
             dvr = OpenNode(calls, paths.Dvr, DvbAccess.Stream, "the transport stream reader");
+            stages.Mark("dvr");
 
             return (demux, dvr);
         }
