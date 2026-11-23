@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 using Puppis.Contracts;
 using Puppis.Driver.CardLending;
@@ -101,11 +102,14 @@ public static class DriverApi
 
         DriverLifecycle lifecycle = app.Services.GetRequiredService<DriverLifecycle>();
 
+        ILogger streams = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(typeof(SessionStreamHandler));
+
         RequestDelegate stream = context =>
             SessionStreamHandler.Invoke(
                 context,
                 manager,
-                streamsDetaching: lifecycle.StreamsDetaching
+                streamsDetaching: lifecycle.StreamsDetaching,
+                logger: streams
             );
 
         IHostApplicationLifetime lifetime = app.Services.GetRequiredService<IHostApplicationLifetime>();

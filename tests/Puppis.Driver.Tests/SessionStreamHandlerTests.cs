@@ -242,16 +242,42 @@ public sealed class SessionStreamHandlerTests : IDisposable
             [new DeviceSettings("adapter0", DeviceKind.Terrestrial)]
         );
 
-    private TunerSessionManager Manager()
+    private TunerSessionManager Manager(ITunerDeviceFactory? devices = null)
     {
         DriverConfiguration configuration = Configuration;
 
         return new TunerSessionManager(
             configuration,
-            new TunerDeviceFactory(configuration, TimeProvider.System),
+            devices ?? new TunerDeviceFactory(configuration, TimeProvider.System),
             clock,
             NullLogger<TunerSessionManager>.Instance
         );
+    }
+
+    private sealed class HeldBackDevices : ITunerDeviceFactory, IDisposable
+    {
+        private readonly ManualResetEventSlim letGo = new();
+
+        public void LetGo() => letGo.Set();
+
+        public ITunerDevice Create(DeviceSettings device, TuningRequest tuning, TuneParams? tune, Descrambling.HeadHold hold) =>
+            new HeldBack(new FakeTunerDevice(tuning.PhysicalChannel, tuning.ServiceId), letGo);
+
+        public void Dispose() => letGo.Dispose();
+
+        private sealed class HeldBack(FakeTunerDevice inner, ManualResetEventSlim letGo) : ITunerDevice
+        {
+            public long Overflows => inner.Overflows;
+
+            public byte[] Read(int count, CancellationToken cancellationToken)
+            {
+                letGo.Wait(cancellationToken);
+
+                return inner.Read(count, cancellationToken);
+            }
+
+            public void Dispose() => inner.Dispose();
+        }
     }
 
     private TunerSession Begin(TunerSessionManager manager, string sessionId)
@@ -284,6 +310,73 @@ public sealed class SessionStreamHandlerTests : IDisposable
 
             await Task.Delay(TimeSpan.FromMilliseconds(10));
         }
+    }
+
+    [Fact]
+    public async Task AReaderThatAttachesBeforeTheHeadIsHandedOnIsSaidToHaveComeBeforeIt()
+    {
+        using var heldBack = new HeldBackDevices();
+        TunerSessionManager manager = Manager(heldBack);
+        TunerSession session = Begin(manager, "early-one");
+        (HttpContext? context, RecordedLifetime _, RecordedBody? body) = Ask("early-one");
+        var log = new CapturingLogger<TunerSessionManager>();
+
+        Task streaming = SessionStreamHandler.Invoke(context, manager, logger: log);
+
+        Assert.Matches(
+            @"^Information A viewer reader attached to the stream of session early-one \(live\) on adapter0 \d+\.\d ms after the session was created; the head of the stream had not been handed on yet\.$",
+            Assert.Single(log.Lines)
+        );
+        Assert.Null(session.SinceTheHeadWasHandedOn);
+
+        heldBack.LetGo();
+        await WaitForBytes(body);
+        session.Stop();
+        await streaming.WaitAsync(Patience);
+
+        Assert.NotNull(session.SinceTheHeadWasHandedOn);
+        Assert.Single(log.Lines);
+    }
+
+    [Fact]
+    public async Task AReaderThatAttachesAfterTheHeadWasHandedOnIsToldHowLongBefore()
+    {
+        TunerSessionManager manager = Manager();
+        TunerSession session = Begin(manager, "late-one");
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + Patience;
+
+        while (session.SinceTheHeadWasHandedOn is null)
+        {
+            Assert.True(DateTimeOffset.UtcNow < deadline, "The session never handed its head on.");
+            await Task.Delay(TimeSpan.FromMilliseconds(5));
+        }
+
+        (HttpContext? context, RecordedLifetime _, RecordedBody? body) = Ask("late-one", DriverEndpoints.SurveySubscriber);
+        var log = new CapturingLogger<TunerSessionManager>();
+
+        Task streaming = SessionStreamHandler.Invoke(context, manager, logger: log);
+
+        await WaitForBytes(body);
+        session.Stop();
+        await streaming.WaitAsync(Patience);
+
+        Assert.Matches(
+            @"^Information A survey reader attached to the stream of session late-one \(live\) on adapter0 \d+\.\d ms after the session was created; the head of the stream had been handed on \d+\.\d ms before\.$",
+            Assert.Single(log.Lines)
+        );
+    }
+
+    [Fact]
+    public async Task ARequestThatNeverAttachesWritesNothingAboutAReader()
+    {
+        TunerSessionManager manager = Manager();
+        (HttpContext? context, RecordedLifetime _, RecordedBody _) = Ask("nobody-one");
+        var log = new CapturingLogger<TunerSessionManager>();
+
+        await SessionStreamHandler.Invoke(context, manager, logger: log);
+
+        Assert.Equal(StatusCodes.Status404NotFound, context.Response.StatusCode);
+        Assert.Empty(log.Lines);
     }
 
     [Fact]

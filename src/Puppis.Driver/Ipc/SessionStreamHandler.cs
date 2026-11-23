@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 using Puppis.Contracts;
 using Puppis.Driver.Sessions;
@@ -15,7 +16,8 @@ public static class SessionStreamHandler
         HttpContext context,
         TunerSessionManager manager,
         TimeSpan? conclusionGrace = null,
-        CancellationToken streamsDetaching = default
+        CancellationToken streamsDetaching = default,
+        ILogger? logger = null
     )
     {
         if (!SessionId.TryParse(context.Request.RouteValues["id"] as string, out SessionId sessionId))
@@ -90,6 +92,8 @@ public static class SessionStreamHandler
             return;
         }
 
+        ReportTheReader(logger, session, kind);
+
         try
         {
             await PumpAsync(
@@ -105,6 +109,27 @@ public static class SessionStreamHandler
             session.Broadcaster.Unsubscribe(subscription);
         }
     }
+
+    private static void ReportTheReader(ILogger? logger, TunerSession session, SubscriberKind kind) =>
+        logger?.LogInformation(
+            "A {Kind} reader attached to the stream of session {SessionId} ({Purpose}) on {DeviceId} {Milliseconds:0.0} ms after the session was created; the head of the stream {Head}.",
+            NameOf(kind),
+            session.SessionId.Value,
+            SessionPurposeConverter.WireName(session.Purpose),
+            session.DeviceId,
+            session.SinceCreated.TotalMilliseconds,
+            session.SinceTheHeadWasHandedOn is { } since
+                ? $"had been handed on {since.TotalMilliseconds:0.0} ms before"
+                : "had not been handed on yet"
+        );
+
+    private static string NameOf(SubscriberKind kind) =>
+        kind switch
+        {
+            SubscriberKind.Survey => DriverEndpoints.SurveySubscriber,
+            SubscriberKind.Piggyback => DriverEndpoints.PiggybackSubscriber,
+            _ => DriverEndpoints.ViewerSubscriber,
+        };
 
     private static async Task PumpAsync(
         HttpContext context,
