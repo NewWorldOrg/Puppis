@@ -142,13 +142,16 @@ public sealed class Dib0090(IRegisterBus t, DevicePacing pacing)
             );
     }
 
-    public void Wake()
+    public bool Wake()
     {
         t.Modify(0x23, 0, Awake);
-        dcPending = !HoldsItsDcOffsets();
+        bool held = HoldsItsDcOffsets();
+        dcPending = !held;
         widebandPending = true;
         temperaturePending = true;
         RequestedKilohertz = 0;
+
+        return held;
     }
 
     public void RequestTemperature() => temperaturePending = true;

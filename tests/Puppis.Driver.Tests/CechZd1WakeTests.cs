@@ -15,6 +15,8 @@ public sealed class CechZd1WakeTests
 
     private const int DcSwitch = 0x1F;
 
+    private const int SearchSequence = 355;
+
     private static readonly long Channel22 = BroadcastStandards.TerrestrialCentreHz(22);
 
     private static readonly long Channel27 = BroadcastStandards.TerrestrialCentreHz(27);
@@ -29,11 +31,29 @@ public sealed class CechZd1WakeTests
         return (frontend, tuner, clock);
     }
 
+    private static (CechZd1Frontend Frontend, FakeChip Demodulator, FakeChip Tuner) InitialisedWithBothChips()
+    {
+        (FakeChip demodulator, FakeChip tuner) = UsbTestSupport.LockingChips();
+        (DevicePacing pacing, _, _) = UsbTestSupport.Pacing();
+        var frontend = new CechZd1Frontend(demodulator, tuner, pacing, Device);
+        frontend.Initialise();
+
+        return (frontend, demodulator, tuner);
+    }
+
     private static void Forget(FakeChip chip)
     {
         chip.Written.Clear();
         chip.ReadFrom.Clear();
     }
+
+    private static void LoseADcOffset(FakeChip tuner, int lost) =>
+        tuner.Registers[lost] = (ushort)(tuner.Registers[lost] ^ 0x0020);
+
+    private static IReadOnlyList<int> Tables(FakeChip chip, IReadOnlySet<int> tables) =>
+        [.. chip.Written.Select(write => write.Register).Where(tables.Contains).Distinct().Order()];
+
+    private static bool Searched(FakeChip demodulator) => demodulator.WritesTo(SearchSequence).Count > 0;
 
     private static bool Calibrated(FakeChip tuner) =>
         tuner.Written.Any(write => write.Register is SixthBaseband or SeventhBaseband or DcSwitch);
@@ -83,7 +103,7 @@ public sealed class CechZd1WakeTests
         (CechZd1Frontend frontend, FakeChip tuner, _) = Initialised();
         frontend.Tune(Channel22);
         frontend.Sleep();
-        tuner.Registers[lost] = (ushort)(tuner.Registers[lost] ^ 0x0020);
+        LoseADcOffset(tuner, lost);
         Forget(tuner);
 
         SearchOutcome outcome = frontend.Tune(Channel27);
@@ -91,6 +111,77 @@ public sealed class CechZd1WakeTests
         Assert.Equal(SearchOutcome.DataFlowing, outcome);
         Assert.True(Calibrated(tuner));
         Assert.Equal(7, tuner.Last(DcSwitch));
+    }
+
+    [Theory]
+    [InlineData(SixthBaseband)]
+    [InlineData(SeventhBaseband)]
+    public void AWokenTunerThatNoLongerHoldsItsDcOffsetsHasItsGainRampsWrittenAgain(int lost)
+    {
+        (CechZd1Frontend frontend, _, FakeChip tuner) = InitialisedWithBothChips();
+        frontend.Tune(Channel22);
+        frontend.Sleep();
+        LoseADcOffset(tuner, lost);
+        Forget(tuner);
+
+        frontend.Tune(Channel22);
+
+        Assert.Equal(Dib0090.GainRamps.Order(), Tables(tuner, Dib0090.GainRamps));
+    }
+
+    [Theory]
+    [InlineData(SixthBaseband)]
+    [InlineData(SeventhBaseband)]
+    public void AWokenTunerThatNoLongerHoldsItsDcOffsetsHasTheTablesOfTheChannelWrittenAgain(int lost)
+    {
+        (CechZd1Frontend frontend, FakeChip demodulator, FakeChip tuner) = InitialisedWithBothChips();
+        frontend.Tune(Channel22);
+        frontend.Sleep();
+        LoseADcOffset(tuner, lost);
+        Forget(demodulator);
+
+        frontend.Tune(Channel22);
+
+        Assert.Equal(Dib8000.TablesOfAChannel.Order(), Tables(demodulator, Dib8000.TablesOfAChannel));
+    }
+
+    [Theory]
+    [InlineData(SixthBaseband)]
+    [InlineData(SeventhBaseband)]
+    public void AWokenTunerThatNoLongerHoldsItsDcOffsetsSearchesForEveryChannelThatLockedBefore(int lost)
+    {
+        (CechZd1Frontend frontend, FakeChip demodulator, FakeChip tuner) = InitialisedWithBothChips();
+        frontend.Tune(Channel22);
+        frontend.Tune(Channel27);
+        frontend.Sleep();
+        LoseADcOffset(tuner, lost);
+        Forget(demodulator);
+
+        SearchOutcome outcome = frontend.Tune(Channel22);
+
+        Assert.Equal(SearchOutcome.DataFlowing, outcome);
+        Assert.True(Searched(demodulator));
+        Forget(demodulator);
+
+        frontend.Tune(Channel27);
+
+        Assert.True(Searched(demodulator));
+    }
+
+    [Fact]
+    public void AWokenTunerThatHoldsItsDcOffsetsKeepsWhatWasWrittenAndTheChannelsThatLockedBefore()
+    {
+        (CechZd1Frontend frontend, FakeChip demodulator, FakeChip tuner) = InitialisedWithBothChips();
+        frontend.Tune(Channel22);
+        frontend.Sleep();
+        Forget(demodulator);
+        Forget(tuner);
+
+        frontend.Tune(Channel22);
+
+        Assert.Empty(Tables(tuner, Dib0090.GainRamps));
+        Assert.Empty(Tables(demodulator, Dib8000.TablesOfAChannel));
+        Assert.False(Searched(demodulator));
     }
 
     [Fact]

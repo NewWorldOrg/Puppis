@@ -88,8 +88,7 @@ public sealed class CechZd1Frontend
 
     public void Initialise()
     {
-        d.Forget();
-        t.Forget();
+        ForgetWhatWasWrittenAndLocked();
         Demodulator.Identify(path);
         d.Write(1025, 0x0100);
         d.Write(1287, 0x0003);
@@ -146,7 +145,7 @@ public sealed class CechZd1Frontend
 
         if (asleep)
         {
-            Wake();
+            WakeFromSleep();
             stages?.Mark("wake");
         }
 
@@ -226,14 +225,33 @@ public sealed class CechZd1Frontend
     public static int AgcReferenceFor(int widebandTarget) =>
         Math.Min(4095, ((widebandTarget * 8 * 18 / 33) + 1) / 2);
 
-    private void Wake()
+    private void WakeFromSleep()
+    {
+        bool tunerHeldItsRegisters = Wake();
+
+        if (!tunerHeldItsRegisters)
+        {
+            ForgetWhatWasWrittenAndLocked();
+        }
+    }
+
+    private bool Wake()
     {
         Demodulator.PowerAll();
         Demodulator.AdcOn();
         Demodulator.AdcSlowOn();
         Demodulator.Gpio(0, high: false);
-        Tuner.Wake();
+        bool tunerHeldItsRegisters = Tuner.Wake();
         asleep = false;
+
+        return tunerHeldItsRegisters;
+    }
+
+    private void ForgetWhatWasWrittenAndLocked()
+    {
+        d.Forget();
+        t.Forget();
+        lockedBefore.Clear();
     }
 
     private uint ConfigureTheTuner(int kilohertz, StageTimes? stages)

@@ -185,6 +185,20 @@ public sealed class CechZd1RememberedChannelTests
     }
 
     [Fact]
+    public void InitialisingAgainForgetsTheChannelsThatLockedBefore()
+    {
+        (CechZd1Frontend frontend, FakeChip demodulator, _) = Initialised();
+        frontend.Tune(Channel22);
+        frontend.Initialise();
+        Forget(demodulator);
+
+        SearchOutcome outcome = frontend.Tune(Channel22);
+
+        Assert.Equal(SearchOutcome.DataFlowing, outcome);
+        Assert.True(Searched(demodulator));
+    }
+
+    [Fact]
     public void ARememberedChannelIsGivenItsOwnPatienceToSynchroniseAndNoMore()
     {
         (CechZd1Frontend frontend, FakeChip demodulator, ManualTimeProvider clock) = Initialised();
