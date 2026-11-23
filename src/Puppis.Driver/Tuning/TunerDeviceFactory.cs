@@ -446,7 +446,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
         if (descramblers.Unscrambles && descramblers is not SlotCards)
         {
-            return ThroughTheCard(Start, hold, descramblers);
+            return ThroughTheCard(Start, hold, descramblers, deviceId);
         }
 
         IDescramblerFactory slot;
@@ -469,7 +469,7 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
 
         stages.Mark("card slot");
 
-        return ThroughTheCard(Start, hold, slot);
+        return ThroughTheCard(Start, hold, slot, deviceId);
     }
 
     private Dt295Bridge OpenAfresh(string deviceId, string path, StageTimes? stages = null)
@@ -527,7 +527,8 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                     new TunerOpening(device.Id ?? path, device.Kind, channel, purpose)
                 ),
             hold,
-            Shared
+            Shared,
+            device.Id ?? path
         );
     }
 
@@ -605,14 +606,29 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
                 );
             },
             hold,
-            Shared
+            Shared,
+            device.Id ?? paths.Frontend
         );
     }
 
-    private ITunerDevice ThroughTheCard(Func<ITunerDevice> open, HeadHold hold, IDescramblerFactory cards)
+    private ITunerDevice ThroughTheCard(
+        Func<ITunerDevice> open,
+        HeadHold hold,
+        IDescramblerFactory cards,
+        string deviceId
+    )
     {
         long started = Stopwatch.GetTimestamp();
-        Task<IDescrambler?>? asking = cards.Unscrambles ? Task.Run(() => cards.Open(hold)) : null;
+        long cardAnswered = started;
+        Task<IDescrambler?>? asking = cards.Unscrambles
+            ? Task.Run(() =>
+            {
+                IDescrambler? answered = cards.Open(hold);
+                Volatile.Write(ref cardAnswered, Stopwatch.GetTimestamp());
+
+                return answered;
+            })
+            : null;
         ITunerDevice opened;
 
         try
@@ -650,9 +666,20 @@ public sealed class TunerDeviceFactory : ITunerDeviceFactory, ITunerDeviceCheck,
             tuned.TotalSeconds,
             Stopwatch.GetElapsedTime(started).TotalSeconds
         );
+        ReportTheCard(deviceId, tuned, Stopwatch.GetElapsedTime(started, Volatile.Read(ref cardAnswered)), descrambler);
 
         return Unscrambling(opened, descrambler, cards, hold);
     }
+
+    private void ReportTheCard(string deviceId, TimeSpan tuned, TimeSpan card, IDescrambler? descrambler) =>
+        logger?.LogInformation(
+            "devices['{DeviceId}']: asking for the card ended {Card:0.0} ms after the opening began, {Apart:0.0} ms {Order} the tuner was open, and {Answer}.",
+            deviceId,
+            card.TotalMilliseconds,
+            (tuned - card).Duration().TotalMilliseconds,
+            card <= tuned ? "before" : "after",
+            descrambler is null ? "no card answered" : "a card answered"
+        );
 
     private static void LetGoOnceAnswered(Task<IDescrambler?>? asking) =>
         asking?.ContinueWith(
