@@ -96,7 +96,8 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
 
         try
         {
-            Tune(bridge, channel, marked);
+            Tune(bridge, channel, marked, bridge.ReadyingTheStream(marked));
+            bridge.Frontend.AwaitErrorFreePackets(marked);
             Dt295Stream stream = bridge.StartStream(marked);
             var device = new Dt295TunerDevice(bridge, stream, pacing, bytePatience, Describe(channel), keep, logger);
             device.Report(logger, Stopwatch.GetElapsedTime(started), marked, what);
@@ -155,14 +156,15 @@ public sealed class Dt295TunerDevice : ITunerDevice, ISignalQualitySource
         }
     }
 
-    internal static void Tune(Dt295Bridge bridge, DvbChannel channel, StageTimes? stages = null)
+    internal static void Tune(Dt295Bridge bridge, DvbChannel channel, StageTimes? stages = null, TuneWaits? waits = null)
     {
         Dt295Frontend frontend = bridge.Frontend;
         bool locked = channel switch
         {
             TerrestrialChannel terrestrial => frontend.TuneTerrestrial(
                 DvbFrequency.TerrestrialHertz(terrestrial.PhysicalChannel),
-                stages
+                stages,
+                waits
             ),
             BroadcastSatelliteChannel broadcast => frontend.TuneSatellite(
                 DvbFrequency.BroadcastSatelliteKilohertz(broadcast.Slot),

@@ -68,6 +68,117 @@ public sealed class Dt295TunerDeviceTests
         device.Dispose();
     }
 
+    private static void NoteTheStreamBeingReadied(FakeDt295 fake) =>
+        fake.BeforeWrite = reached =>
+        {
+            string? step = reached switch
+            {
+                Dt295Capture.Clocked => "capture set-up begins",
+                0x01902000 => "capture set-up ends",
+                0xFDBC04 => "endpoint set-up",
+                CopyProgram.CaptureRunning => "intake",
+                _ => null,
+            };
+
+            if (step is not null && !fake.Log.Contains(step))
+            {
+                fake.Log.Add(step);
+            }
+        };
+
+    [Fact]
+    public void TheStreamIsReadiedWhileTheTunerSettlesAndLocksSoOnlyTheIntakeFollowsTheLock()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        NoteTheStreamBeingReadied(fake);
+
+        (Dt295TunerDevice device, _, _) = Opened(fake);
+
+        IReadOnlyList<string> written = PixDt295Support.Written(fake);
+        int settling = written.ToList().LastIndexOf("20 w[234C]");
+        Assert.Equal(
+            [
+                "20 w[234C]",
+                "capture set-up begins",
+                "capture set-up ends",
+                "wait 100",
+                "20 w[1D02]",
+                "20 w[1E2A]",
+                "20 w[1F8A]",
+                "endpoint set-up",
+                "bulk reads",
+                "wait 100",
+                "20 w[80]",
+                "20 w[B0]",
+                "intake",
+            ],
+            written.Skip(settling).Take(13)
+        );
+        device.Dispose();
+    }
+
+    [Fact]
+    public void TheIntakeIsOpenedOnlyOnceTheDemodulatorNoLongerFlagsErrors()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        fake.TerrestrialStatusReads.Enqueue(0x2E);
+        fake.TerrestrialStatusReads.Enqueue(0x06);
+        fake.TerrestrialStatusReads.Enqueue(0x06);
+        fake.TerrestrialStatusReads.Enqueue(0x04);
+        NoteTheStreamBeingReadied(fake);
+
+        (Dt295TunerDevice device, _, _) = Opened(fake);
+
+        IReadOnlyList<string> written = PixDt295Support.Written(fake);
+        Assert.Equal(
+            [
+                "bulk reads",
+                "wait 100",
+                "20 w[80]",
+                "20 w[B0]",
+                "wait 100",
+                "20 w[80]",
+                "20 w[B0]",
+                "wait 100",
+                "20 w[80]",
+                "wait 100",
+                "20 w[80]",
+                "intake",
+            ],
+            written.Skip(written.ToList().IndexOf("bulk reads")).Take(12)
+        );
+        Assert.Empty(fake.TerrestrialStatusReads);
+        device.Dispose();
+    }
+
+    [Fact]
+    public void ASatelliteTuneReadiesItsStreamOnlyAfterItsLockAsItAlwaysDid()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        fake.Broadcasting = true;
+        fake.Satellite[0xE6] = 0x40;
+        fake.Satellite[0xE7] = 0x10;
+        NoteTheStreamBeingReadied(fake);
+        (DevicePacing pacing, _) = PixDt295Support.Pacing(fake);
+
+        Dt295TunerDevice device = Dt295TunerDevice.Open(
+            new FakeDt295Host(fake),
+            Path,
+            new BroadcastSatelliteChannel(1, 0x4010),
+            pacing,
+            TimeSpan.FromSeconds(5),
+            null,
+            fake.HandlerHash()
+        );
+
+        List<string> written = [.. PixDt295Support.Written(fake)];
+        Assert.Equal(
+            ["22 w[C3]", "22 w[E6]", "capture set-up begins", "capture set-up ends", "endpoint set-up", "bulk reads", "intake"],
+            written.Skip(written.LastIndexOf("22 w[C3]")).Take(7)
+        );
+        device.Dispose();
+    }
+
     [Fact]
     public void ReadsHandOnWholePacketsOutOfTheRing()
     {
@@ -191,7 +302,27 @@ public sealed class Dt295TunerDeviceTests
 
         Assert.Equal(TuningFailure.NoLock, refused.Failure);
         AssertLeftAsAtPowerOn(fake);
-        Assert.Null(fake.BulkOpened);
+    }
+
+    [Fact]
+    public void AChannelThatDoesNotLockHasWhatWasReadiedForItsStreamPutBack()
+    {
+        FakeDt295 fake = FakeDt295.Locking();
+        fake.Demodulator[0x80] = 0xAF;
+        NoteTheStreamBeingReadied(fake);
+
+        Refused(fake);
+
+        Assert.NotNull(fake.BulkOpened);
+        Assert.True(fake.BulkClosed);
+        Assert.Equal(0x85000000u, fake.Word(0xFDBC04));
+        Assert.Equal(0x000403FAu, fake.Word(0xFDBC14));
+        Assert.Equal(0x00FF6000u, fake.Word(0xFDBD08));
+        Assert.Equal(CopyProgram.UsbGroupAtRest, fake.Word(CopyProgram.UsbGroup));
+        Assert.Equal(0x02000000u, fake.Word(0x01901020));
+        Assert.Equal(0u, fake.Word(0x01901040));
+        Assert.DoesNotContain("intake", fake.Log);
+        Assert.NotEqual(CopyProgram.Running, fake.Word(CopyProgram.CaptureRunning));
     }
 
     [Fact]

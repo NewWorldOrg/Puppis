@@ -19,6 +19,7 @@ public sealed class Dt295Bridge
     private bool started;
     private bool closed;
     private volatile bool streaming;
+    private bool captureReady;
     private bool capturing;
     private EndpointState? endpoint;
     private IUsbBulkReader? reader;
@@ -128,27 +129,66 @@ public sealed class Dt295Bridge
         }
     }
 
+    public TuneWaits ReadyingTheStream(StageTimes? stages = null) =>
+        new(() => ReadyTheCapture(stages), () => ReadyTheEndpoint(stages));
+
+    public void ReadyTheCapture(StageTimes? stages = null)
+    {
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(closed, this);
+
+            if (captureReady)
+            {
+                return;
+            }
+
+            capture.Prepare();
+            captureReady = true;
+            stages?.Mark("capture set-up");
+        }
+    }
+
+    public void ReadyTheEndpoint(StageTimes? stages = null) => ReadsWaiting(stages);
+
     public Dt295Stream StartStream(StageTimes? stages = null)
     {
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(closed, this);
-            capture.Prepare();
-            stages?.Mark("capture set-up");
-            endpoint = capture.KeepTheEndpoint();
-            capture.ReadyTheEndpoint(endpoint);
-            stages?.Mark("endpoint set-up");
-            reader = usb.ReadBulk(Dt295Capture.Endpoint, Dt295Capture.TransferBytes, Dt295Capture.TransfersInFlight);
-            stages?.Mark("bulk reads");
+            ReadyTheCapture(stages);
+            IUsbBulkReader waiting = ReadsWaiting(stages);
             capturing = true;
             capture.Start();
             stages?.Mark("intake");
-            stream = new Dt295Stream(usb, new BridgeMemory(usb), capture.Writer, reader, pacing);
+            stream = new Dt295Stream(usb, new BridgeMemory(usb), capture.Writer, waiting, pacing);
             stream.Start();
             streaming = true;
             stages?.Mark("copying start");
 
             return stream;
+        }
+    }
+
+    private IUsbBulkReader ReadsWaiting(StageTimes? stages)
+    {
+        lock (gate)
+        {
+            ObjectDisposedException.ThrowIf(closed, this);
+
+            if (reader is not null)
+            {
+                return reader;
+            }
+
+            endpoint = capture.KeepTheEndpoint();
+            capture.ReadyTheEndpoint(endpoint);
+            stages?.Mark("endpoint set-up");
+            IUsbBulkReader waiting = usb.ReadBulk(Dt295Capture.Endpoint, Dt295Capture.TransferBytes, Dt295Capture.TransfersInFlight);
+            reader = waiting;
+            stages?.Mark("bulk reads");
+
+            return waiting;
         }
     }
 
@@ -175,6 +215,7 @@ public sealed class Dt295Bridge
             stream = null;
             reader = null;
             endpoint = null;
+            captureReady = false;
             capturing = false;
 
             return stopped;
