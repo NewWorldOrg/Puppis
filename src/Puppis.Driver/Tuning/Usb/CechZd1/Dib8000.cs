@@ -209,6 +209,8 @@ public sealed class Dib8000(IRegisterBus d, DevicePacing pacing)
         }
     }
 
+    public void ForgetTheDifferentialSegments() => DifferentialMask = 0;
+
     public void WriteLoopValues(int mode, bool afterLock)
     {
         d.Write(32, (ushort)(((afterLock ? 11 : 9) - mode) * 0x1000 + 0x0680));

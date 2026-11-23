@@ -17,6 +17,8 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 {
     public static readonly TimeSpan Patience = TimeSpan.FromSeconds(5);
 
+    public static readonly TimeSpan RememberedPatience = TimeSpan.FromMilliseconds(200);
+
     private const int SmallestGapMilliseconds = 10;
     private const ushort SearchFailed = 0x0001;
     private const ushort FftFound = 0x0002;
@@ -28,6 +30,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
     private const int FiveBits = 0b1_1111;
     private const int FourBits = 0b1111;
     private const int SixBits = 0b11_1111;
+    private const string RememberedChannel = "remembered channel";
     private const string FirstSearch = "first search";
     private const string SecondSearch = "second search";
 
@@ -51,6 +54,13 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
         Done,
     }
 
+    private enum Entry
+    {
+        Remembered,
+        GuardOnly,
+        FromTheFft,
+    }
+
     private enum Stage
     {
         Begin,
@@ -69,20 +79,54 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 
     public ChannelParameters Written { get; private set; } = ChannelParameters.Unknown;
 
-    public SearchOutcome Run(SearchTiming timing, string path, StageTimes? marked = null)
+    public SearchOutcome Run(
+        SearchTiming timing,
+        string path,
+        StageTimes? marked = null,
+        ChannelParameters? remembered = null
+    )
     {
         stages = marked;
         DateTimeOffset deadline = pacing.Now + Patience;
-        bool guardOnly = demodulator.Version is Dib8000.LatestVersion;
-        SearchOutcome first = Once(guardOnly, timing, deadline, path, FirstSearch);
 
-        return first is SearchOutcome.Failed && guardOnly ? Once(false, timing, deadline, path, SecondSearch) : first;
+        if (remembered is not null && Straight(remembered, timing, deadline, path) is { } locked)
+        {
+            return locked;
+        }
+
+        bool guardOnly = demodulator.Version is Dib8000.LatestVersion;
+        Entry entry = guardOnly ? Entry.GuardOnly : Entry.FromTheFft;
+        SearchOutcome first = Once(entry, ChannelParameters.Unknown, timing, deadline, path, FirstSearch);
+
+        return first is SearchOutcome.Failed && guardOnly
+            ? Once(Entry.FromTheFft, ChannelParameters.Unknown, timing, deadline, path, SecondSearch)
+            : first;
     }
 
-    private SearchOutcome Once(bool guardOnly, SearchTiming timing, DateTimeOffset deadline, string path, string which)
+    private SearchOutcome? Straight(ChannelParameters remembered, SearchTiming timing, DateTimeOffset deadline, string path)
     {
-        channel = guardOnly ? ChannelParameters.Unknown with { Fft = FftSize.EightK } : ChannelParameters.Unknown;
-        looking = guardOnly ? Looking.Guard : Looking.Fft;
+        demodulator.ForgetTheDifferentialSegments();
+        SearchOutcome straight = Once(Entry.Remembered, remembered, timing, deadline, path, RememberedChannel);
+
+        return straight is SearchOutcome.Failed ? null : straight;
+    }
+
+    private SearchOutcome Once(
+        Entry entry,
+        ChannelParameters known,
+        SearchTiming timing,
+        DateTimeOffset deadline,
+        string path,
+        string which
+    )
+    {
+        channel = entry is Entry.GuardOnly ? known with { Fft = FftSize.EightK } : known;
+        looking = entry switch
+        {
+            Entry.Remembered => Looking.Done,
+            Entry.GuardOnly => Looking.Guard,
+            _ => Looking.Fft,
+        };
         readBack = false;
         outcome = null;
         attempt = which;
@@ -131,12 +175,13 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 
     private static string Hex(ushort? register) => register is { } read ? $"0x{read:X4}" : "not read";
 
-    private static string PartOf(Stage stage) =>
+    private string PartOf(Stage stage) =>
         stage switch
         {
             Stage.Begin => "begin",
             Stage.SearchStart => "start",
             Stage.One or Stage.Two => "wait for the search",
+            Stage.Three when attempt is RememberedChannel => "configuration",
             Stage.Three => "second channel configuration",
             Stage.Four or Stage.Five => "sync",
             Stage.Seven or Stage.Eight => "lock",
@@ -169,7 +214,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
         demodulator.WriteDdsOffset(timing.TunerKilohertz, timing.AskedKilohertz);
         demodulator.WriteTimingFrequency(timing.TimingFrequency);
 
-        return (Stage.SearchStart, 0);
+        return (looking is Looking.Done ? Stage.Three : Stage.SearchStart, 0);
     }
 
     private (Stage, int) StartSearching()
@@ -365,7 +410,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
         demodulator.WriteSyncWait(channel);
         demodulator.SetDiversity(Diversity.InternalOnly);
         int symbols = 2 * ((d.Read(180) >> 6) & SixBits);
-        timeout = pacing.Now + (Symbol * symbols);
+        timeout = pacing.Now + PatienceOf(Symbol * symbols);
 
         return (Stage.Five, 0);
     }
@@ -387,7 +432,7 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
             return (Stage.Eight, 0);
         }
 
-        timeout = pacing.Now + (Symbol * (20 * ((d.Read(188) >> 5) & FiveBits)));
+        timeout = pacing.Now + PatienceOf(Symbol * (20 * ((d.Read(188) >> 5) & FiveBits)));
 
         return (Stage.Seven, 0);
     }
@@ -404,6 +449,9 @@ public sealed class DemodulatorSearch(IRegisterBus d, Dib8000 demodulator, Devic
 
         return (OrGiveUp(Stage.Seven, "lock"), 0);
     }
+
+    private TimeSpan PatienceOf(TimeSpan afterASearch) =>
+        attempt is RememberedChannel ? RememberedPatience : afterASearch;
 
     private Stage OrGiveUp(Stage waiting, string forWhat)
     {

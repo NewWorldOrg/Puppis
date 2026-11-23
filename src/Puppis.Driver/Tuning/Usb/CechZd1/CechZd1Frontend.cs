@@ -62,6 +62,7 @@ public sealed class CechZd1Frontend
     private readonly IRegisterBus d;
     private readonly DevicePacing pacing;
     private readonly string path;
+    private readonly Dictionary<int, ChannelParameters> lockedBefore = [];
     private bool asleep;
 
     public CechZd1Frontend(IRegisterBus demodulatorBus, IRegisterBus tunerBus, DevicePacing pacing, string path)
@@ -155,12 +156,19 @@ public sealed class CechZd1Frontend
         stages?.Mark("AGC start-up");
 
         var search = new DemodulatorSearch(d, Demodulator, pacing);
-        SearchOutcome outcome = search.Run(new SearchTiming(timing, Tuner.RequestedKilohertz, kilohertz), path, stages);
+        lockedBefore.Remove(kilohertz, out ChannelParameters? remembered);
+        SearchOutcome outcome = search.Run(
+            new SearchTiming(timing, Tuner.RequestedKilohertz, kilohertz),
+            path,
+            stages,
+            remembered
+        );
         Channel = search.Written;
         Demodulator.TransportOutput(on: true);
 
         if (outcome is not SearchOutcome.Failed)
         {
+            lockedBefore[kilohertz] = search.Written;
             Demodulator.LedRed();
         }
 
