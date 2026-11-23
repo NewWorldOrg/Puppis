@@ -115,7 +115,13 @@ public sealed class Descramblers : IDescramblerFactory, ICardReaderReport
     {
         try
         {
-            return new TransportStreamDescrambler(new NoticedCard(TheCard(), times.Answered), logger, hold: hold);
+            return new TransportStreamDescrambler(
+                new NoticedCard(TheCard(), times.Answered),
+                logger,
+                hold: hold,
+                time: clock,
+                cardKind: "local"
+            );
         }
         catch (DescramblingException error)
         {

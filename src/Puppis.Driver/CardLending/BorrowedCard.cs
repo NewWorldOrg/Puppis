@@ -305,7 +305,13 @@ public sealed class BorrowedCards : IDescramblerFactory, ICardReaderReport
 
         try
         {
-            return new TransportStreamDescrambler(new NoticedCard(card, times.Answered), logger, hold: hold);
+            return new TransportStreamDescrambler(
+                new NoticedCard(card, times.Answered),
+                logger,
+                hold: hold,
+                time: clock,
+                cardKind: "borrowed"
+            );
         }
         catch
         {
