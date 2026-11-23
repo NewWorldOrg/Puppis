@@ -41,9 +41,9 @@ public sealed partial class CardOpeningLogTests
     [Fact]
     public void ACardThatAnsweredBeforeTheTunerWasOpenIsSaidToHaveComeBeforeItAndByHowMuch()
     {
-        var clock = new ClockReadDifferentlyOffTheOpeningThread(tunerOpenAfter: 370, cardAnsweredAfter: 45.5);
+        var clock = new ClockTheCardReadsLater(tunerOpenAfter: 370, cardAnsweredAfter: 45.5);
 
-        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(new Cards(answers: true), clock);
+        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(new Cards(answers: true, clock), clock);
 
         using (device)
         {
@@ -57,9 +57,9 @@ public sealed partial class CardOpeningLogTests
     [Fact]
     public void ACardThatAnsweredAfterTheTunerWasOpenIsSaidToHaveComeAfterItAndByHowMuch()
     {
-        var clock = new ClockReadDifferentlyOffTheOpeningThread(tunerOpenAfter: 370, cardAnsweredAfter: 1526);
+        var clock = new ClockTheCardReadsLater(tunerOpenAfter: 370, cardAnsweredAfter: 1526);
 
-        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(new Cards(answers: true), clock);
+        (ITunerDevice device, CapturingLogger<TunerDeviceFactory> log) = Open(new Cards(answers: true, clock), clock);
 
         using (device)
         {
@@ -99,32 +99,41 @@ public sealed partial class CardOpeningLogTests
     [GeneratedRegex(@"^Information The tuner was open after \d+\.\d{3} s and the card was in hand after \d+\.\d{3} s\.$")]
     private static partial Regex InHand();
 
-    private sealed class Cards(bool answers) : IDescramblerFactory
+    private sealed class Cards(bool answers, ClockTheCardReadsLater? clock = null) : IDescramblerFactory
     {
         public bool Unscrambles => true;
 
         public CardIdentity? CardInHand => null;
 
-        public IDescrambler? Open(HeadHold hold) => answers ? new ScriptedDescrambler(stream => stream.ToArray()) : null;
+        public IDescrambler? Open(HeadHold hold)
+        {
+            clock?.TheCardAnsweredOnThisThread();
+
+            return answers ? new ScriptedDescrambler(stream => stream.ToArray()) : null;
+        }
     }
 
-    private sealed class ClockReadDifferentlyOffTheOpeningThread(double tunerOpenAfter, double cardAnsweredAfter) : TimeProvider
+    private sealed class ClockTheCardReadsLater(double tunerOpenAfter, double cardAnsweredAfter) : TimeProvider
     {
-        private readonly Thread opening = Thread.CurrentThread;
-        private int readsWhileOpening;
+        private readonly ThreadLocal<bool> theCardJustAnswered = new();
+        private int reads;
 
         public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 
         public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch;
 
+        public void TheCardAnsweredOnThisThread() => theCardJustAnswered.Value = true;
+
         public override long GetTimestamp()
         {
-            if (!ReferenceEquals(Thread.CurrentThread, opening))
+            if (theCardJustAnswered.Value)
             {
+                theCardJustAnswered.Value = false;
+
                 return TimeSpan.FromMilliseconds(cardAnsweredAfter).Ticks;
             }
 
-            return Interlocked.Increment(ref readsWhileOpening) is 1 ? 0 : TimeSpan.FromMilliseconds(tunerOpenAfter).Ticks;
+            return Interlocked.Increment(ref reads) is 1 ? 0 : TimeSpan.FromMilliseconds(tunerOpenAfter).Ticks;
         }
     }
 }
