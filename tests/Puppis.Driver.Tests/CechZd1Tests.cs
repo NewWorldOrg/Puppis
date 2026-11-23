@@ -786,7 +786,7 @@ public sealed class CechZd1StandbyTests
         Assert.False(standby.Holds(Device));
         Assert.Equal(bridgeStarts, bridge.WritesAt(0xF1010C).Count);
         Assert.Equal(identifications, demodulator.ReadFrom.Count(register => register is 896));
-        Assert.True(tuner.WritesTo(0x07).Count > calibrations);
+        Assert.Equal(calibrations, tuner.WritesTo(0x07).Count);
         Assert.Equal(0x0400, demodulator.Last(1286));
         Assert.Equal(0x03000000u, bridge.Word(0xD01040));
         Assert.Equal(TransportCapture.CoreRunning, bridge.Word(TransportCapture.FirstCore));

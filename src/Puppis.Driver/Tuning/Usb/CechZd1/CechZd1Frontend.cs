@@ -59,18 +59,21 @@ public sealed class CechZd1Frontend
         (338, [0x1461]),
     ];
 
-    private readonly IRegisterBus d;
+    private readonly UnchangedWriteSkippingBus d;
+    private readonly UnchangedWriteSkippingBus t;
     private readonly DevicePacing pacing;
     private readonly string path;
+    private readonly Dictionary<int, ChannelParameters> lockedBefore = [];
     private bool asleep;
 
     public CechZd1Frontend(IRegisterBus demodulatorBus, IRegisterBus tunerBus, DevicePacing pacing, string path)
     {
-        d = demodulatorBus;
+        d = new UnchangedWriteSkippingBus(demodulatorBus, Dib8000.TablesOfAChannel);
+        t = new UnchangedWriteSkippingBus(tunerBus, Dib0090.GainRamps);
         this.pacing = pacing.CountedOnItsOwn();
         this.path = path;
-        Demodulator = new Dib8000(demodulatorBus, this.pacing);
-        Tuner = new Dib0090(tunerBus, this.pacing);
+        Demodulator = new Dib8000(d, this.pacing);
+        Tuner = new Dib0090(t, this.pacing);
     }
 
     public DevicePacing Pacing => pacing;
@@ -85,6 +88,7 @@ public sealed class CechZd1Frontend
 
     public void Initialise()
     {
+        ForgetWhatWasWrittenAndLocked();
         Demodulator.Identify(path);
         d.Write(1025, 0x0100);
         d.Write(1287, 0x0003);
@@ -141,7 +145,7 @@ public sealed class CechZd1Frontend
 
         if (asleep)
         {
-            Wake();
+            WakeFromSleep();
             stages?.Mark("wake");
         }
 
@@ -155,12 +159,19 @@ public sealed class CechZd1Frontend
         stages?.Mark("AGC start-up");
 
         var search = new DemodulatorSearch(d, Demodulator, pacing);
-        SearchOutcome outcome = search.Run(new SearchTiming(timing, Tuner.RequestedKilohertz, kilohertz), path, stages);
+        lockedBefore.Remove(kilohertz, out ChannelParameters? remembered);
+        SearchOutcome outcome = search.Run(
+            new SearchTiming(timing, Tuner.RequestedKilohertz, kilohertz),
+            path,
+            stages,
+            remembered
+        );
         Channel = search.Written;
         Demodulator.TransportOutput(on: true);
 
         if (outcome is not SearchOutcome.Failed)
         {
+            lockedBefore[kilohertz] = search.Written;
             Demodulator.LedRed();
         }
 
@@ -214,14 +225,33 @@ public sealed class CechZd1Frontend
     public static int AgcReferenceFor(int widebandTarget) =>
         Math.Min(4095, ((widebandTarget * 8 * 18 / 33) + 1) / 2);
 
-    private void Wake()
+    private void WakeFromSleep()
+    {
+        bool tunerHeldItsRegisters = Wake();
+
+        if (!tunerHeldItsRegisters)
+        {
+            ForgetWhatWasWrittenAndLocked();
+        }
+    }
+
+    private bool Wake()
     {
         Demodulator.PowerAll();
         Demodulator.AdcOn();
         Demodulator.AdcSlowOn();
         Demodulator.Gpio(0, high: false);
-        Tuner.Wake();
+        bool tunerHeldItsRegisters = Tuner.Wake();
         asleep = false;
+
+        return tunerHeldItsRegisters;
+    }
+
+    private void ForgetWhatWasWrittenAndLocked()
+    {
+        d.Forget();
+        t.Forget();
+        lockedBefore.Clear();
     }
 
     private uint ConfigureTheTuner(int kilohertz, StageTimes? stages)
