@@ -9,7 +9,7 @@ driver を使う側との通信プロトコルは `Puppis.Contracts` として n
 
 ## 動かす
 
-イメージは `ghcr.io/newworldorg/puppis` にあり、`v0.4.0` のようなバージョンのタグと `latest` が使えます。\
+イメージは `ghcr.io/newworldorg/puppis` にあり、`v0.5.0` のようなバージョンのタグと `latest` が使えます。\
 driver は root で動き、設定ファイルのパスを `PUPPIS_DRIVER_CONFIG` で渡します。
 
 ```bash
@@ -22,7 +22,7 @@ docker run -d --privileged \
   -v driver-run:/run/carina \
   -v /srv/recordings:/srv/recordings \
   --device /dev/dvb/adapter0 \
-  ghcr.io/newworldorg/puppis:v0.4.0
+  ghcr.io/newworldorg/puppis:v0.5.0
 ```
 
 `/run/carina` は Carina の app と同じボリュームにし、`/run/pcscd` はホストの pcscd のディレクトリをそのまま渡します。
