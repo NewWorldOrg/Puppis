@@ -8,6 +8,8 @@ public sealed class LeasedTunerDevice(ITunerDevice tuner) : ITunerDevice
 
     public ISignalQualitySource? Quality => tuner.Quality;
 
+    public bool CarriesEveryProgramme => tuner.CarriesEveryProgramme;
+
     public byte[] Read(int count, CancellationToken cancellationToken) =>
         tuner.Read(count, cancellationToken);
 

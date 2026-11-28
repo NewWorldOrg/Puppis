@@ -145,14 +145,46 @@ public sealed class TunerSessionManagerTests : IDisposable
     }
 
     [Fact]
-    public void ALiveSessionHasItsTunerHoldTheHeadOnlyForWhatItHolds()
+    public void ALiveSessionThatNamesAServiceHasItsTunerHoldTheHeadForThatService()
     {
         HoldNotingDeviceFactory factory = new(Configuration);
         TunerSessionManager manager = Manager(Configuration, factory);
 
         StopAndWait(Begin(manager, "live-1", "adapter0", SessionPurpose.Live));
 
-        Assert.Equal([HeadHold.WhatIsHeld], factory.Holds);
+        HeadHold hold = Assert.Single(factory.Holds);
+        Assert.Equal(HeadHoldKind.WhatIsHeld, hold.Kind);
+        Assert.Equal(new TablesKey(TunerKind.Terrestrial, 55, 50001), Assert.IsType<LiveTables>(hold.Tables).Key);
+    }
+
+    [Fact]
+    public void ALiveSessionThatNamesNoServiceHasItsTunerHoldTheHeadForWhatItHoldsWithItsChannelsTables()
+    {
+        HoldNotingDeviceFactory factory = new(Configuration);
+        TunerSessionManager manager = Manager(Configuration, factory);
+
+        SessionStart start = manager.Begin(
+            Request("live-1", "adapter0", SessionPurpose.Live) with { Tuning = new TuningRequest(TunerKind.Terrestrial, 55) }
+        );
+        Assert.True(start.TryGetSession(out TunerSession? session));
+        StopAndWait(session);
+
+        HeadHold hold = Assert.Single(factory.Holds);
+        Assert.Equal(HeadHoldKind.WhatIsHeld, hold.Kind);
+        Assert.Equal(new TablesKey(TunerKind.Terrestrial, 55, null), Assert.IsType<LiveTables>(hold.Tables).Key);
+    }
+
+    [Fact]
+    public void EveryLiveSessionOfOneDriverRemembersItsTablesInTheSameMemory()
+    {
+        HoldNotingDeviceFactory factory = new(Configuration);
+        TunerSessionManager manager = Manager(Configuration, factory);
+
+        StopAndWait(Begin(manager, "live-1", "adapter0", SessionPurpose.Live));
+        StopAndWait(Begin(manager, "live-2", "adapter3", SessionPurpose.Live, channel: 27));
+
+        Assert.Equal(2, factory.Holds.Count);
+        Assert.Same(factory.Holds[0].Tables!.Memory, factory.Holds[1].Tables!.Memory);
     }
 
     [Fact]

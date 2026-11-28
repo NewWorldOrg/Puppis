@@ -26,6 +26,10 @@ public sealed class TransportStreamDescrambler : IDescrambler
 
     private const string EveryProgrammeCondition = "every-programme";
 
+    private const string ServiceCondition = "service";
+
+    private const byte PayloadPresent = 0x10;
+
     private readonly IConditionalAccess card;
 
     private readonly ILogger? logger;
@@ -33,6 +37,14 @@ public sealed class TransportStreamDescrambler : IDescrambler
     private readonly int holdLimit;
 
     private readonly HeadHold hold;
+
+    private readonly LiveTables? live;
+
+    private readonly int? service;
+
+    private readonly StreamTables? remembered;
+
+    private readonly HashSet<int> rememberedEcms = [];
 
     private readonly TimeProvider time;
 
@@ -62,6 +74,14 @@ public sealed class TransportStreamDescrambler : IDescrambler
 
     private HeadReport? headToReport;
 
+    private bool memoryToSettle;
+
+    private bool everyProgrammeReadable;
+
+    private int? everyProgrammeFrom;
+
+    private long bytesTaken;
+
     private bool disposed;
 
     public TransportStreamDescrambler(
@@ -84,7 +104,13 @@ public sealed class TransportStreamDescrambler : IDescrambler
         this.cardKind = cardKind;
         head = new HeadHoldTimes(this.time);
         map = new ProgramMap(card.CaSystemId);
+        live = this.hold.Tables;
+        service = live?.Key.ServiceId;
+        remembered = live?.Memory.Recall(live.Key);
+        rememberedEcms = [.. remembered?.EcmPids ?? []];
     }
+
+    public int EveryProgrammeFrom { get; private set; }
 
     public byte[] Descramble(ReadOnlySpan<byte> stream)
     {
@@ -101,6 +127,9 @@ public sealed class TransportStreamDescrambler : IDescrambler
             byte[] carried = partial;
             bool wasHolding = holding;
             bool wasReported = headReported;
+            bool wasReadable = everyProgrammeReadable;
+            bool wasSettling = memoryToSettle;
+            long taken = bytesTaken;
             byte[] readable;
 
             try
@@ -115,11 +144,15 @@ public sealed class TransportStreamDescrambler : IDescrambler
                 holding = wasHolding;
                 headReported = wasReported;
                 headToReport = null;
+                memoryToSettle = wasSettling;
+                everyProgrammeReadable = wasReadable;
+                bytesTaken = taken;
 
                 throw;
             }
 
             WriteTheHeadReport();
+            SettleTheMemory();
 
             return readable;
         }
@@ -145,16 +178,19 @@ public sealed class TransportStreamDescrambler : IDescrambler
         ByteShelf output = new();
         bool released = false;
         int position = NextAlignment(work, 0);
+        everyProgrammeFrom = everyProgrammeReadable ? 0 : null;
 
         while (position + PacketLength <= work.Length)
         {
             Span<byte> packet = work.AsSpan(position, PacketLength);
+            bytesTaken += PacketLength;
             Unscramble(packet, out bool unkeyed);
             released |= Pass(packet, unkeyed, output);
             position = NextAlignment(work, position + PacketLength);
         }
 
         partial = work[position..];
+        EveryProgrammeFrom = everyProgrammeFrom ?? output.Length;
 
         if (released)
         {
@@ -169,6 +205,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
     {
         if (!holding)
         {
+            NoteWhetherEveryProgrammeIsReadable(output);
             output.Append(packet);
 
             return false;
@@ -195,11 +232,67 @@ public sealed class TransportStreamDescrambler : IDescrambler
             );
         }
 
-        ReportTheHead(met);
+        byte[] tables = TablesInFront();
+        ReportTheHead(met, tables.Length / PacketLength);
+        memoryToSettle = live is not null;
         holding = false;
+        NoteWhetherEveryProgrammeIsReadable(output, met is not ServiceCondition);
+        output.Append(tables);
         output.Append(shelf.Written);
 
         return true;
+    }
+
+    private void NoteWhetherEveryProgrammeIsReadable(ByteShelf output, bool letGoForEveryProgramme = false)
+    {
+        if (everyProgrammeReadable || !(letGoForEveryProgramme || EveryProgrammeIsSettled() || bytesTaken >= holdLimit))
+        {
+            return;
+        }
+
+        everyProgrammeReadable = true;
+        everyProgrammeFrom = output.Length;
+    }
+
+    private byte[] TablesInFront()
+    {
+        if (live is not { PutsTablesInFront: true })
+        {
+            return [];
+        }
+
+        byte[] pat = map.PatSeen ? TableHead.Packets(PatPid, map.PatSections, FirstCounterOn(PatPid)) : [];
+        IEnumerable<byte[]> pmts = PmtsInFront()
+            .GroupBy(pmt => pmt.Pid)
+            .Select(onOnePid => TableHead.Packets(onOnePid.Key, [.. onOnePid.Select(pmt => pmt.Section)], FirstCounterOn(onOnePid.Key)));
+
+        return [.. pat, .. pmts.SelectMany(packets => packets)];
+    }
+
+    private IReadOnlyList<CarriedPmt> PmtsInFront()
+    {
+        if (service is not int id)
+        {
+            return map.PmtsRead;
+        }
+
+        return map.PmtOf(id) is { } section && map.PmtPidOf(id) is int pid ? [new CarriedPmt(pid, section)] : [];
+    }
+
+    private int? FirstCounterOn(int pid)
+    {
+        for (int offset = 0; offset < shelf.Length; offset += PacketLength)
+        {
+            ReadOnlySpan<byte> packet = shelf.At(offset, PacketLength);
+            bool carriesAPayload = (packet[1] & 0x80) is 0 && (packet[3] & PayloadPresent) is not 0;
+
+            if (carriesAPayload && PidOf(packet) == pid)
+            {
+                return packet[3] & 0x0F;
+            }
+        }
+
+        return null;
     }
 
     private static int NextAlignment(byte[] work, int from)
@@ -309,7 +402,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
 
     private void Read(int pid, ReadOnlySpan<byte> packet, int start, int adaptation)
     {
-        bool section = pid is PatPid || map.IsPmt(pid) || map.IsEcm(pid);
+        bool section = pid is PatPid || map.IsPmt(pid) || IsEcm(pid);
         if (!section || adaptation is 0x02)
         {
             return;
@@ -340,6 +433,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
         if (pid is PatPid)
         {
             map.ReadPat(section);
+            ForgetWhatIsNoLongerRead();
             NoteThePat();
         }
         else if (map.IsPmt(pid))
@@ -347,7 +441,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
             map.ReadPmt(section);
             NoteThePmt();
         }
-        else if (section[0] is EcmTableId && map.IsEcm(pid))
+        else if (section[0] is EcmTableId && IsEcm(pid))
         {
             Ask(pid, PsiSection.Body(section));
         }
@@ -358,6 +452,16 @@ public sealed class TransportStreamDescrambler : IDescrambler
             UnscrambleWhatWaited();
         }
     }
+
+    private void ForgetWhatIsNoLongerRead()
+    {
+        foreach (int pid in collectors.Keys.Where(pid => pid is not PatPid && !map.IsPmt(pid) && !IsEcm(pid)).ToList())
+        {
+            collectors.Remove(pid);
+        }
+    }
+
+    private bool IsEcm(int pid) => map.IsEcm(pid) || (holding && rememberedEcms.Contains(pid));
 
     private void LookBack()
     {
@@ -443,6 +547,11 @@ public sealed class TransportStreamDescrambler : IDescrambler
         {
             head.PmtNamingAnEcmSeen();
         }
+
+        if (service is int id && map.PmtOf(id) is not null)
+        {
+            head.ServicePmtSeen();
+        }
     }
 
     private void Ask(int pid, ReadOnlySpan<byte> body)
@@ -525,10 +634,24 @@ public sealed class TransportStreamDescrambler : IDescrambler
         );
     }
 
-    private string HoldName => hold is HeadHold.WhatIsHeld ? LiveCondition : EveryProgrammeCondition;
+    private string HeadTimes => service is null ? head.ToString() : head.WithTheServicePmt();
+
+    private string WhatIsPutInFront => service is null ? "the PAT and every PMT" : "the PAT and the service's PMT";
+
+    private string HoldName => (hold.Kind, service) switch
+    {
+        (_, int id) => $"{ServiceCondition} {id}",
+        (HeadHoldKind.WhatIsHeld, _) => LiveCondition,
+        _ => EveryProgrammeCondition,
+    };
 
     private string? ConditionMet()
     {
+        if (service is int id && !TheServiceIsGone(id))
+        {
+            return TheServiceCanBeRead(id) ? ServiceCondition : null;
+        }
+
         if (EveryProgrammeIsSettled())
         {
             return EveryProgrammeCondition;
@@ -537,7 +660,24 @@ public sealed class TransportStreamDescrambler : IDescrambler
         return EverythingHeldCanBeRead() ? LiveCondition : null;
     }
 
-    private void ReportTheHead(string? met)
+    private bool TheServiceIsGone(int id) => map.PatSeen && !map.Lists(id);
+
+    private bool TheServiceCanBeRead(int id)
+    {
+        if (map.PmtOf(id) is null || !Answered(map.EcmPidsOf(id)))
+        {
+            return false;
+        }
+
+        HashSet<int> carried = [.. map.StreamPidsOf(id)];
+
+        return HeldOn(carried).All(pid => Answered(map.EcmFor(pid)));
+    }
+
+    private IEnumerable<int> HeldOn(HashSet<int> pids) =>
+        waiting.Select(offset => PidOf(shelf.At(offset, PacketLength))).Where(pids.Contains);
+
+    private void ReportTheHead(string? met, int tablePackets)
     {
         if (headReported || logger is null)
         {
@@ -550,7 +690,8 @@ public sealed class TransportStreamDescrambler : IDescrambler
             head.SinceTheFirstByte.TotalMilliseconds,
             met,
             met is null ? WhatIsStillMissing() : string.Empty,
-            head.ToString()
+            HeadTimes,
+            tablePackets
         );
     }
 
@@ -573,13 +714,110 @@ public sealed class TransportStreamDescrambler : IDescrambler
             );
         }
 
+        string why = report.Met is null ? "it reached its size limit" : $"the {report.Met} condition was met";
+
+        if (live is null)
+        {
+            logger.LogInformation(
+                "The head of the stream, {Bytes} bytes, was handed on {Milliseconds:0.0} ms after the first byte was received under the {Hold} hold because {Why}: {Times}.",
+                report.Bytes,
+                report.HeldMilliseconds,
+                HoldName,
+                why,
+                report.Times
+            );
+
+            return;
+        }
+
         logger.LogInformation(
-            "The head of the stream, {Bytes} bytes, was handed on {Milliseconds:0.0} ms after the first byte was received under the {Hold} hold because {Why}: {Times}.",
+            "The head of the stream, {Bytes} bytes, was handed on {Milliseconds:0.0} ms after the first byte was received under the {Hold} hold because {Why}, {Memory}, and {TablePackets} packets of {Tables} were put in front of it: {Times}.",
             report.Bytes,
             report.HeldMilliseconds,
             HoldName,
-            report.Met is null ? "it reached its size limit" : $"the {report.Met} condition was met",
+            why,
+            remembered is null ? "with no tables remembered from an earlier opening" : "using the tables remembered from an earlier opening",
+            report.TablePackets,
+            WhatIsPutInFront,
             report.Times
+        );
+    }
+
+    private void SettleTheMemory()
+    {
+        if (!memoryToSettle || live is null || CarriedTables() is not { } settled)
+        {
+            return;
+        }
+
+        memoryToSettle = false;
+
+        if (settled.Carried is { } carried)
+        {
+            live.Memory.Remember(live.Key, carried);
+            CompareWithWhatWasRemembered(carried);
+
+            return;
+        }
+
+        live.Memory.Forget(live.Key);
+        ReportTheMemory(remembered is null ? null : ["the PAT does not list the service"], "forgotten");
+    }
+
+    private Settled? CarriedTables()
+    {
+        if (service is int id)
+        {
+            return ServiceTablesCarried(id);
+        }
+
+        return map.Complete && map.PmtsRead.Count > 0 ? new Settled(new StreamTables(map.PatSections, map.PmtsRead, map.EcmPids)) : null;
+    }
+
+    private Settled? ServiceTablesCarried(int id)
+    {
+        if (map.PmtOf(id) is { } pmt && map.PmtPidOf(id) is int pmtPid)
+        {
+            return new Settled(new StreamTables(map.PatSections, [new CarriedPmt(pmtPid, pmt)], map.EcmPidsOf(id)));
+        }
+
+        return TheServiceIsGone(id) ? new Settled(null) : null;
+    }
+
+    private void CompareWithWhatWasRemembered(StreamTables carried)
+    {
+        if (remembered is not null)
+        {
+            ReportTheMemory(remembered.DifferencesFrom(carried), "replaced by what it carried");
+        }
+    }
+
+    private void ReportTheMemory(IReadOnlyList<string>? differences, string outcome)
+    {
+        if (differences is null || logger is null || live is null)
+        {
+            return;
+        }
+
+        TablesKey key = live.Key;
+        string remembering = key.ServiceId is int id ? $"service {id} on {key.Kind} channel {key.PhysicalChannel}" : $"{key.Kind} channel {key.PhysicalChannel}";
+
+        if (differences.Count is 0)
+        {
+            logger.LogInformation(
+                "The tables remembered for {Remembering} matched the PAT and the {Pmts} this stream carried.",
+                remembering,
+                service is null ? "PMTs" : "PMT"
+            );
+
+            return;
+        }
+
+        logger.LogInformation(
+            "The tables remembered for {Remembering} differed from what this stream carried ({Differences}), so they were {Outcome}.",
+            remembering,
+            string.Join("; ", differences),
+            outcome
         );
     }
 
@@ -599,7 +837,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
             head.SinceTheLastBytes.TotalMilliseconds,
             HoldName,
             WhatIsStillMissing(),
-            head.ToString()
+            HeadTimes
         );
     }
 
@@ -608,6 +846,47 @@ public sealed class TransportStreamDescrambler : IDescrambler
 
     private List<string> StillMissing()
     {
+        if (service is not int id)
+        {
+            return StillMissingForEveryService();
+        }
+
+        if (TheServiceIsGone(id))
+        {
+            return [$"the PAT does not list service {id}", .. StillMissingForEveryService()];
+        }
+
+        return StillMissingFor(id);
+    }
+
+    private List<string> StillMissingFor(int id)
+    {
+        List<string> missing = [];
+
+        if (!map.PatSeen)
+        {
+            missing.Add("the PAT was not seen");
+        }
+        else if (map.PmtOf(id) is null)
+        {
+            missing.Add($"the PMT of service {id} on PID 0x{map.PmtPidOf(id):X4} was not seen");
+        }
+
+        missing.AddRange(map.EcmPidsOf(id).Where(TheCardGaveNoAnswerFor).Select(Unanswered));
+
+        List<int> untied = [.. HeldOn([.. map.StreamPidsOf(id)]).Where(pid => !Answered(map.EcmFor(pid)))];
+        if (untied.Count > 0)
+        {
+            missing.Add(
+                $"{untied.Count} held scrambled packets of service {id} were on PIDs tied to no answered ECM (PID {Named([.. untied.Distinct().Order()])})"
+            );
+        }
+
+        return missing;
+    }
+
+    private List<string> StillMissingForEveryService()
+    {
         List<string> missing = [];
 
         if (!map.PatSeen)
@@ -615,19 +894,19 @@ public sealed class TransportStreamDescrambler : IDescrambler
             missing.Add("the PAT was not seen");
         }
 
-        if (hold is HeadHold.EveryProgramme && map.PmtPidsNotRead is { Count: > 0 } unread)
+        if (hold.Kind is HeadHoldKind.EveryProgramme && map.PmtPidsNotRead is { Count: > 0 } unread)
         {
             missing.Add($"the PMT on PID {Named(unread)} was not seen");
         }
 
-        if (hold is HeadHold.WhatIsHeld && map.EcmPids.Count is 0)
+        if (hold.Kind is HeadHoldKind.WhatIsHeld && map.EcmPids.Count is 0)
         {
             missing.Add("no ECM PID is known");
         }
 
         missing.AddRange(map.EcmPids.Where(TheCardGaveNoAnswerFor).Order().Select(Unanswered));
 
-        if (hold is HeadHold.WhatIsHeld && HeldWithoutAnAnsweredEcm() is { Count: > 0 } untied)
+        if (hold.Kind is HeadHoldKind.WhatIsHeld && HeldWithoutAnAnsweredEcm() is { Count: > 0 } untied)
         {
             missing.Add(
                 $"{untied.Count} held scrambled packets were on PIDs tied to no answered ECM (PID {Named([.. untied.Distinct().Order()])})"
@@ -666,7 +945,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
     private bool EveryProgrammeIsSettled() => map.Complete && Answered(map.EcmPids);
 
     private bool EverythingHeldCanBeRead() =>
-        hold is HeadHold.WhatIsHeld
+        hold.Kind is HeadHoldKind.WhatIsHeld
         && map.PatSeen
         && map.EcmPids.Count > 0
         && Answered(map.EcmPids)
@@ -693,7 +972,9 @@ public sealed class TransportStreamDescrambler : IDescrambler
         card.Dispose();
     }
 
-    private sealed record HeadReport(int Bytes, double HeldMilliseconds, string? Met, string Missing, string Times);
+    private sealed record Settled(StreamTables? Carried);
+
+    private sealed record HeadReport(int Bytes, double HeldMilliseconds, string? Met, string Missing, string Times, int TablePackets);
 
     private sealed class EcmState
     {

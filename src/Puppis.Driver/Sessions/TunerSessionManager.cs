@@ -33,7 +33,8 @@ public sealed class TunerSessionManager(
     Func<DeviceSettings, bool?>? presence = null,
     TimeSpan? openLimit = null,
     ReceptionBook? reception = null,
-    TimeSpan? measurementStopLimit = null
+    TimeSpan? measurementStopLimit = null,
+    TableMemory? serviceTables = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
@@ -50,6 +51,8 @@ public sealed class TunerSessionManager(
 
     public static readonly TimeSpan LetGoLimit =
         DvbTunerSettings.Default.BytePatience + TimeSpan.FromSeconds(3);
+
+    private readonly TableMemory tables = serviceTables ?? new TableMemory();
 
     private readonly ConcurrentDictionary<SessionId, TunerSession> sessions = [];
     private readonly ConcurrentDictionary<SessionId, TaskCompletionSource> starting = [];
@@ -845,7 +848,7 @@ public sealed class TunerSessionManager(
                 settings,
                 request.Tuning,
                 request.Tune,
-                HeadHolds.For(request.Purpose),
+                HeadHolds.For(request.Purpose, request.Tuning, request.Tune, tables),
                 request.Purpose
             );
         }
@@ -960,7 +963,7 @@ public sealed class TunerSessionManager(
             );
         }
 
-        if (!host.Broadcaster.TrySubscribe(SeatFor(request.Purpose), out SessionSubscription? seat))
+        if (!host.Broadcaster.TrySubscribe(SeatFor(request.Purpose), out SessionSubscription? seat, WaitsForEveryProgramme(request.Purpose)))
         {
             claim.Leave();
 
@@ -1060,6 +1063,8 @@ public sealed class TunerSessionManager(
         );
     }
 
+    private static bool WaitsForEveryProgramme(SessionPurpose purpose) => purpose is not SessionPurpose.Live;
+
     private static SubscriberKind SeatFor(SessionPurpose purpose) =>
         purpose is SessionPurpose.Recording
             ? SubscriberKind.Recording
@@ -1070,7 +1075,8 @@ public sealed class TunerSessionManager(
         if (
             !taking.Broadcaster.TrySubscribe(
                 SubscriberKind.Piggyback,
-                out SessionSubscription? seat
+                out SessionSubscription? seat,
+                WaitsForEveryProgramme(outgoing.Purpose)
             )
             || !await outgoing.ReadFromInsteadAsync(
                 new PiggybackTunerDevice(taking, seat),
@@ -1603,7 +1609,8 @@ public sealed class TunerSessionManager(
                 !IsReadingThrough(other, leaving, out TunerSession? rider)
                 || !holder.Broadcaster.TrySubscribe(
                     SeatFor(rider.Purpose),
-                    out SessionSubscription? seat
+                    out SessionSubscription? seat,
+                    WaitsForEveryProgramme(rider.Purpose)
                 )
             )
             {

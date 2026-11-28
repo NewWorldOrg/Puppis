@@ -36,6 +36,8 @@ public sealed class DescramblingTunerDevice : ITunerDevice
 
     private bool closed;
 
+    private byte[] stillToHand = [];
+
     public DescramblingTunerDevice(
         ITunerDevice source,
         IDescrambler? descrambler,
@@ -68,6 +70,8 @@ public sealed class DescramblingTunerDevice : ITunerDevice
 
     public ISignalQualitySource? Quality => source.Quality;
 
+    public bool CarriesEveryProgramme { get; private set; } = true;
+
     public Task AskedForTheCard
     {
         get
@@ -81,6 +85,17 @@ public sealed class DescramblingTunerDevice : ITunerDevice
 
     public byte[] Read(int count, CancellationToken cancellationToken)
     {
+        if (stillToHand.Length > 0)
+        {
+            byte[] rest = stillToHand;
+            stillToHand = [];
+            CarriesEveryProgramme = true;
+
+            return rest;
+        }
+
+        CarriesEveryProgramme = true;
+
         while (true)
         {
             byte[] asRead = source.Read(count, cancellationToken);
@@ -110,12 +125,31 @@ public sealed class DescramblingTunerDevice : ITunerDevice
             {
                 ReportFirstReadable(readable.Length);
 
-                return readable;
+                return SplitAtEveryProgramme(readable, card.EveryProgrammeFrom);
             }
 
             scrambledReads++;
             cancellationToken.ThrowIfCancellationRequested();
         }
+    }
+
+    private byte[] SplitAtEveryProgramme(byte[] readable, int from)
+    {
+        if (from <= 0)
+        {
+            return readable;
+        }
+
+        CarriesEveryProgramme = false;
+
+        if (from < readable.Length)
+        {
+            stillToHand = readable[from..];
+
+            return readable[..from];
+        }
+
+        return readable;
     }
 
     private IDescrambler? TheCard()
@@ -181,7 +215,7 @@ public sealed class DescramblingTunerDevice : ITunerDevice
     {
         try
         {
-            return cards!.Open(hold);
+            return cards!.Open(hold.FromTheMiddle());
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {

@@ -482,10 +482,12 @@ public sealed class TunerSession : IDisposable
             while (!token.IsCancellationRequested && timeProvider.GetUtcNow() < EndsAt)
             {
                 byte[] chunk;
+                ITunerDevice reading;
 
                 try
                 {
-                    chunk = Reading(afterACut).Read(chunkSize, token);
+                    reading = Reading(afterACut);
+                    chunk = reading.Read(chunkSize, token);
                     afterACut = false;
                 }
                 catch (StreamCutException) when (AnotherStreamIsWaiting())
@@ -502,11 +504,16 @@ public sealed class TunerSession : IDisposable
                     );
                 }
 
-                WriteOut(chunk);
+                bool carriesEveryProgramme = reading.CarriesEveryProgramme;
+                bool takesIt = carriesEveryProgramme || Purpose is SessionPurpose.Live;
 
-                NoteTheHead();
+                if (takesIt)
+                {
+                    WriteOut(chunk);
+                    NoteTheHead();
+                }
 
-                Measure(chunk);
+                Measure(chunk, takesIt, carriesEveryProgramme);
 
                 quality?.ReadIfDue();
             }
@@ -679,24 +686,32 @@ public sealed class TunerSession : IDisposable
         }
     }
 
-    private void Measure(byte[] chunk)
+    private void Measure(byte[] chunk, bool counted, bool carriesEveryProgramme)
     {
         try
         {
-            foreach (TsPacket packet in packetReader.Read(chunk))
+            if (counted)
             {
-                Counters.Observe(packet);
+                Count(chunk);
             }
 
-            Interlocked.Exchange(ref discardedBytes, packetReader.DiscardedBytes);
-            Interlocked.Exchange(ref resyncs, packetReader.ResyncCount);
-
-            Broadcaster.Publish(chunk, stopping.Token);
+            Broadcaster.Publish(chunk, carriesEveryProgramme, stopping.Token);
         }
         catch (Exception error)
         {
             RecordFault(error);
         }
+    }
+
+    private void Count(byte[] chunk)
+    {
+        foreach (TsPacket packet in packetReader.Read(chunk))
+        {
+            Counters.Observe(packet);
+        }
+
+        Interlocked.Exchange(ref discardedBytes, packetReader.DiscardedBytes);
+        Interlocked.Exchange(ref resyncs, packetReader.ResyncCount);
     }
 
     private void ReportLostLock(
