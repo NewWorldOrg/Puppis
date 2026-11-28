@@ -46,6 +46,14 @@ public sealed class ProgramMap(int caSystemId)
     public IReadOnlyList<ReadOnlyMemory<byte>> PatSections =>
         [.. patBytes.OrderBy(part => part.Key).Select(part => (ReadOnlyMemory<byte>)part.Value)];
 
+    public IReadOnlyList<CarriedPmt> PmtsRead =>
+        [
+            .. pmtPids
+                .OrderBy(listed => listed.Key)
+                .Where(listed => pmtBytes.ContainsKey(listed.Key))
+                .Select(listed => new CarriedPmt(listed.Value, pmtBytes[listed.Key])),
+        ];
+
     public bool Lists(int programme) => pmtPids.ContainsKey(programme);
 
     public int? PmtPidOf(int programme) => pmtPids.TryGetValue(programme, out int pid) ? pid : null;

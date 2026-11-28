@@ -25,24 +25,34 @@ public sealed class HeadHoldTests
     [Fact]
     public void ALiveViewerWhoNamesAServiceIsHeldForThatServiceOnItsTunerKindAndChannel()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
 
         HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Satellite, 13, 7), memory);
 
         Assert.Equal(HeadHoldKind.WhatIsHeld, hold.Kind);
-        LiveService service = Assert.IsType<LiveService>(hold.Service);
-        Assert.Equal(new ServiceTablesKey(TunerKind.Satellite, 13, 7), service.Key);
+        LiveTables service = Assert.IsType<LiveTables>(hold.Tables);
+        Assert.Equal(new TablesKey(TunerKind.Satellite, 13, 7), service.Key);
         Assert.Same(memory, service.Memory);
         Assert.True(HeadHolds.ReadsFromTheLock(hold));
     }
 
     [Fact]
-    public void ALiveViewerWhoNamesNoServiceWaitsForWhatIsHeldAsBefore()
+    public void ALiveViewerWhoNamesNoServiceWaitsForWhatIsHeldAndHasTheTablesOfItsWholeChannelKept()
     {
-        Assert.Equal(
-            HeadHold.WhatIsHeld,
-            HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13), new ServiceTableMemory())
-        );
+        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13), new TableMemory());
+
+        Assert.Equal(HeadHoldKind.WhatIsHeld, hold.Kind);
+        Assert.Equal(new TablesKey(TunerKind.Terrestrial, 13, null), Assert.IsType<LiveTables>(hold.Tables).Key);
+    }
+
+    [Fact]
+    public void ALiveViewerTunedByTypeHasItsTablesKeptUnderTheTuneItGave()
+    {
+        TuneParams tune = TuneParams.Terrestrial(13);
+
+        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 99), tune, new TableMemory());
+
+        Assert.Equal(new TablesKey(TunerKind.Terrestrial, 13, null, tune), Assert.IsType<LiveTables>(hold.Tables).Key);
     }
 
     [Theory]
@@ -55,20 +65,20 @@ public sealed class HeadHoldTests
     {
         Assert.Equal(
             HeadHold.EveryProgramme,
-            HeadHolds.For(purpose, new TuningRequest(TunerKind.Terrestrial, 13, 7), new ServiceTableMemory())
+            HeadHolds.For(purpose, new TuningRequest(TunerKind.Terrestrial, 13, 7), new TableMemory())
         );
     }
 
     [Fact]
     public void AHoldOpenedPartWayThroughTheStreamPutsNoTablesInFrontAndIsOtherwiseTheSame()
     {
-        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13, 7), new ServiceTableMemory());
+        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13, 7), new TableMemory());
 
         HeadHold later = hold.FromTheMiddle();
 
-        Assert.True(hold.Service!.PutsTablesInFront);
-        Assert.False(later.Service!.PutsTablesInFront);
-        Assert.Equal(hold.Service.Key, later.Service.Key);
+        Assert.True(hold.Tables!.PutsTablesInFront);
+        Assert.False(later.Tables!.PutsTablesInFront);
+        Assert.Equal(hold.Tables.Key, later.Tables.Key);
         Assert.Equal(HeadHold.WhatIsHeld, HeadHold.WhatIsHeld.FromTheMiddle());
         Assert.Equal(HeadHold.EveryProgramme, HeadHold.EveryProgramme.FromTheMiddle());
     }

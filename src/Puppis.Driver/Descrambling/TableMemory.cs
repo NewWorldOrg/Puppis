@@ -2,35 +2,30 @@ using Puppis.Contracts;
 
 namespace Puppis.Driver.Descrambling;
 
-public sealed record ServiceTablesKey(TunerKind Kind, int PhysicalChannel, int ServiceId);
+public sealed record TablesKey(TunerKind Kind, int PhysicalChannel, int? ServiceId, TuneParams? Tune = null);
 
-public sealed class ServiceTables
+public sealed record CarriedPmt(int Pid, ReadOnlyMemory<byte> Section);
+
+public sealed class StreamTables
 {
-    public ServiceTables(
-        IEnumerable<ReadOnlyMemory<byte>> pat,
-        int pmtPid,
-        ReadOnlyMemory<byte> pmt,
-        IEnumerable<int> ecmPids
-    )
+    public StreamTables(IEnumerable<ReadOnlyMemory<byte>> pat, IEnumerable<CarriedPmt> pmts, IEnumerable<int> ecmPids)
     {
         ArgumentNullException.ThrowIfNull(pat);
+        ArgumentNullException.ThrowIfNull(pmts);
         ArgumentNullException.ThrowIfNull(ecmPids);
 
         Pat = [.. pat.Select(section => (ReadOnlyMemory<byte>)section.ToArray())];
-        PmtPid = pmtPid;
-        Pmt = pmt.ToArray();
+        Pmts = [.. pmts.Select(pmt => pmt with { Section = pmt.Section.ToArray() })];
         EcmPids = [.. ecmPids.Distinct().Order()];
     }
 
     public IReadOnlyList<ReadOnlyMemory<byte>> Pat { get; }
 
-    public int PmtPid { get; }
-
-    public ReadOnlyMemory<byte> Pmt { get; }
+    public IReadOnlyList<CarriedPmt> Pmts { get; }
 
     public IReadOnlyList<int> EcmPids { get; }
 
-    public IReadOnlyList<string> DifferencesFrom(ServiceTables carried)
+    public IReadOnlyList<string> DifferencesFrom(StreamTables carried)
     {
         ArgumentNullException.ThrowIfNull(carried);
 
@@ -41,15 +36,14 @@ public sealed class ServiceTables
             differences.Add($"the PAT, version {VersionOf(Pat)} remembered and {VersionOf(carried.Pat)} carried");
         }
 
-        if (PmtPid != carried.PmtPid)
+        IReadOnlyList<int> pids = Pids(Pmts);
+        IReadOnlyList<int> carriedPids = Pids(carried.Pmts);
+        if (!pids.SequenceEqual(carriedPids))
         {
-            differences.Add($"the PMT PID, 0x{PmtPid:X4} remembered and 0x{carried.PmtPid:X4} carried");
+            differences.Add($"the PMT PIDs, {Named(pids)} remembered and {Named(carriedPids)} carried");
         }
 
-        if (!Pmt.Span.SequenceEqual(carried.Pmt.Span))
-        {
-            differences.Add($"the PMT, version {VersionOf([Pmt])} remembered and {VersionOf([carried.Pmt])} carried");
-        }
+        differences.AddRange(Pmts.Join(carried.Pmts, pmt => pmt.Pid, pmt => pmt.Pid, Changed).OfType<string>());
 
         if (!EcmPids.SequenceEqual(carried.EcmPids))
         {
@@ -58,6 +52,13 @@ public sealed class ServiceTables
 
         return differences;
     }
+
+    private static string? Changed(CarriedPmt remembered, CarriedPmt carried) =>
+        remembered.Section.Span.SequenceEqual(carried.Section.Span)
+            ? null
+            : $"the PMT on PID 0x{remembered.Pid:X4}, version {VersionOf([remembered.Section])} remembered and {VersionOf([carried.Section])} carried";
+
+    private static IReadOnlyList<int> Pids(IReadOnlyList<CarriedPmt> pmts) => [.. pmts.Select(pmt => pmt.Pid)];
 
     private static bool SameSections(IReadOnlyList<ReadOnlyMemory<byte>> one, IReadOnlyList<ReadOnlyMemory<byte>> other) =>
         one.Count == other.Count && one.Zip(other).All(pair => pair.First.Span.SequenceEqual(pair.Second.Span));
@@ -69,7 +70,7 @@ public sealed class ServiceTables
         pids.Count is 0 ? "none" : string.Join(", ", pids.Select(pid => $"0x{pid:X4}"));
 }
 
-public sealed class ServiceTableMemory
+public sealed class TableMemory
 {
     public const int DefaultCapacity = 64;
 
@@ -77,11 +78,11 @@ public sealed class ServiceTableMemory
 
     private readonly Lock gate = new();
 
-    private readonly Dictionary<ServiceTablesKey, (ServiceTables Tables, long Used)> remembered = [];
+    private readonly Dictionary<TablesKey, (StreamTables Tables, long Used)> remembered = [];
 
     private long uses;
 
-    public ServiceTableMemory(int capacity = DefaultCapacity)
+    public TableMemory(int capacity = DefaultCapacity)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
 
@@ -99,11 +100,11 @@ public sealed class ServiceTableMemory
         }
     }
 
-    public ServiceTables? Recall(ServiceTablesKey key)
+    public StreamTables? Recall(TablesKey key)
     {
         lock (gate)
         {
-            if (!remembered.TryGetValue(key, out (ServiceTables Tables, long Used) entry))
+            if (!remembered.TryGetValue(key, out (StreamTables Tables, long Used) entry))
             {
                 return null;
             }
@@ -114,7 +115,7 @@ public sealed class ServiceTableMemory
         }
     }
 
-    public void Remember(ServiceTablesKey key, ServiceTables tables)
+    public void Remember(TablesKey key, StreamTables tables)
     {
         ArgumentNullException.ThrowIfNull(tables);
 
@@ -129,7 +130,7 @@ public sealed class ServiceTableMemory
         }
     }
 
-    public void Forget(ServiceTablesKey key)
+    public void Forget(TablesKey key)
     {
         lock (gate)
         {

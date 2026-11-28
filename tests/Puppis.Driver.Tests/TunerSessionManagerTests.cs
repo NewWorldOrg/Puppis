@@ -154,11 +154,11 @@ public sealed class TunerSessionManagerTests : IDisposable
 
         HeadHold hold = Assert.Single(factory.Holds);
         Assert.Equal(HeadHoldKind.WhatIsHeld, hold.Kind);
-        Assert.Equal(new ServiceTablesKey(TunerKind.Terrestrial, 55, 50001), Assert.IsType<LiveService>(hold.Service).Key);
+        Assert.Equal(new TablesKey(TunerKind.Terrestrial, 55, 50001), Assert.IsType<LiveTables>(hold.Tables).Key);
     }
 
     [Fact]
-    public void ALiveSessionThatNamesNoServiceHasItsTunerHoldTheHeadOnlyForWhatItHolds()
+    public void ALiveSessionThatNamesNoServiceHasItsTunerHoldTheHeadForWhatItHoldsWithItsChannelsTables()
     {
         HoldNotingDeviceFactory factory = new(Configuration);
         TunerSessionManager manager = Manager(Configuration, factory);
@@ -169,7 +169,9 @@ public sealed class TunerSessionManagerTests : IDisposable
         Assert.True(start.TryGetSession(out TunerSession? session));
         StopAndWait(session);
 
-        Assert.Equal([HeadHold.WhatIsHeld], factory.Holds);
+        HeadHold hold = Assert.Single(factory.Holds);
+        Assert.Equal(HeadHoldKind.WhatIsHeld, hold.Kind);
+        Assert.Equal(new TablesKey(TunerKind.Terrestrial, 55, null), Assert.IsType<LiveTables>(hold.Tables).Key);
     }
 
     [Fact]
@@ -182,7 +184,7 @@ public sealed class TunerSessionManagerTests : IDisposable
         StopAndWait(Begin(manager, "live-2", "adapter3", SessionPurpose.Live, channel: 27));
 
         Assert.Equal(2, factory.Holds.Count);
-        Assert.Same(factory.Holds[0].Service!.Memory, factory.Holds[1].Service!.Memory);
+        Assert.Same(factory.Holds[0].Tables!.Memory, factory.Holds[1].Tables!.Memory);
     }
 
     [Fact]

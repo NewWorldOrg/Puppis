@@ -103,7 +103,7 @@ public sealed class EveryProgrammeSeatTests : IDisposable
         byte[] third = stream.Input[(first.Length + second.Length)..];
         var source = new ChunkByChunkTunerDevice([first, second, third]);
         var cards = new HoldKeepingCards();
-        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, Channel, Service), new ServiceTableMemory());
+        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, Channel, Service), new TableMemory());
 
         using var device = new DescramblingTunerDevice(source, descrambler: null, cards, clock, hold: hold);
 
@@ -113,7 +113,7 @@ public sealed class EveryProgrammeSeatTests : IDisposable
         await device.AskedForTheCard;
         output.AddRange(device.Read(third.Length, CancellationToken.None));
 
-        Assert.False(Assert.Single(cards.Holds).Service!.PutsTablesInFront);
+        Assert.False(Assert.Single(cards.Holds).Tables!.PutsTablesInFront);
         Assert.Equal(stream.Output, output);
         SessionCounters counted = Counted([.. output]);
         Assert.Equal(0, counted.Drops);

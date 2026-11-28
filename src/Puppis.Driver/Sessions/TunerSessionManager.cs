@@ -34,7 +34,7 @@ public sealed class TunerSessionManager(
     TimeSpan? openLimit = null,
     ReceptionBook? reception = null,
     TimeSpan? measurementStopLimit = null,
-    ServiceTableMemory? serviceTables = null
+    TableMemory? serviceTables = null
 ) : IHostedService
 {
     public const int RetainedSessions = 64;
@@ -52,7 +52,7 @@ public sealed class TunerSessionManager(
     public static readonly TimeSpan LetGoLimit =
         DvbTunerSettings.Default.BytePatience + TimeSpan.FromSeconds(3);
 
-    private readonly ServiceTableMemory tables = serviceTables ?? new ServiceTableMemory();
+    private readonly TableMemory tables = serviceTables ?? new TableMemory();
 
     private readonly ConcurrentDictionary<SessionId, TunerSession> sessions = [];
     private readonly ConcurrentDictionary<SessionId, TaskCompletionSource> starting = [];
@@ -848,7 +848,7 @@ public sealed class TunerSessionManager(
                 settings,
                 request.Tuning,
                 request.Tune,
-                HeadHolds.For(request.Purpose, request.Tuning, tables),
+                HeadHolds.For(request.Purpose, request.Tuning, request.Tune, tables),
                 request.Purpose
             );
         }

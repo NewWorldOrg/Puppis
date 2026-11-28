@@ -30,7 +30,7 @@ public sealed class ServiceHeadHoldTests
 
     private const int PacketLength = SyntheticScrambledStream.PacketLength;
 
-    private static readonly ServiceTablesKey Key = new(TunerKind.Terrestrial, Channel, Service);
+    private static readonly TablesKey Key = new(TunerKind.Terrestrial, Channel, Service);
 
     private static readonly byte[] FirstEcm = Encoding.ASCII.GetBytes("synthetic ecm one");
 
@@ -41,7 +41,7 @@ public sealed class ServiceHeadHoldTests
     {
         SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out int headPackets);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _);
 
         Assert.Equal(
             [.. InFront(stream, (0, 15), (1, 15)), .. Head(stream.Output, headPackets)],
@@ -75,7 +75,7 @@ public sealed class ServiceHeadHoldTests
             .Scrambled(VideoPid, FirstEcm, odd: false, seed: 11)
             .Ecm(EcmPid, FirstEcm);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _);
 
         Assert.Empty(descrambler.Descramble(Head(stream.Input, headPackets)));
         Assert.Equal([.. InFront(stream, (0, 15), (4, 15)), .. stream.Output], descrambler.Descramble(After(stream.Input, headPackets)));
@@ -90,7 +90,7 @@ public sealed class ServiceHeadHoldTests
             .Pmt(PmtPid, Service, null, [(VideoPid, null)])
             .Clear(VideoPid, 21);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection card);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection card);
 
         Assert.Equal([.. InFront(stream, (0, 15), (2, 15)), .. stream.Output], descrambler.Descramble(stream.Input));
         Assert.Empty(card.EcmBodies);
@@ -99,7 +99,7 @@ public sealed class ServiceHeadHoldTests
     [Fact]
     public void AServiceThePatDoesNotListIsHeldTheWayALiveHoldIsWithOnlyThePatInFrontAndIsForgotten()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         Remembered(memory, EcmPid);
         SyntheticScrambledStream stream = new SyntheticScrambledStream()
             .Pat((OtherService, OtherPmtPid))
@@ -128,7 +128,7 @@ public sealed class ServiceHeadHoldTests
             .Ecm(EcmPid, FirstEcm);
         stream.Pat((Service, PmtPid), (OtherService, OtherPmtPid)).Pmt(PmtPid, Service, null, streams);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _);
         byte[] output = descrambler.Descramble(stream.Input);
 
         Assert.Equal([.. InFront(stream, (0, 12), (1, 13), (2, 14)), .. stream.Output], output);
@@ -143,14 +143,14 @@ public sealed class ServiceHeadHoldTests
     {
         SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out _);
         byte[] whole;
-        using (TransportStreamDescrambler once = Open(new ServiceTableMemory(), out FakeCardConnection _))
+        using (TransportStreamDescrambler once = Open(new TableMemory(), out FakeCardConnection _))
         {
             whole = once.Descramble(stream.Input);
         }
 
         foreach (int chunk in new[] { 1, 7, 188, 500 })
         {
-            using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+            using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _);
             List<byte> output = [];
             for (int offset = 0; offset < stream.Input.Length; offset += chunk)
             {
@@ -164,7 +164,7 @@ public sealed class ServiceHeadHoldTests
     [Fact]
     public void AnOpeningRemembersThePatThePmtAndTheEcmPidsOfItsServiceUnderItsTunerKindChannelAndService()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out _);
 
         using (TransportStreamDescrambler descrambler = Open(memory, out FakeCardConnection _))
@@ -172,10 +172,11 @@ public sealed class ServiceHeadHoldTests
             descrambler.Descramble(stream.Input);
         }
 
-        ServiceTables tables = Assert.IsType<ServiceTables>(memory.Recall(Key));
+        StreamTables tables = Assert.IsType<StreamTables>(memory.Recall(Key));
         Assert.Equal(SectionIn(stream.Input, 0), Assert.Single(tables.Pat).ToArray());
-        Assert.Equal(SectionIn(stream.Input, 1), tables.Pmt.ToArray());
-        Assert.Equal(PmtPid, tables.PmtPid);
+        CarriedPmt pmt = Assert.Single(tables.Pmts);
+        Assert.Equal(SectionIn(stream.Input, 1), pmt.Section.ToArray());
+        Assert.Equal(PmtPid, pmt.Pid);
         Assert.Equal([EcmPid], tables.EcmPids);
         Assert.Null(memory.Recall(Key with { PhysicalChannel = Channel + 1 }));
         Assert.Null(memory.Recall(Key with { Kind = TunerKind.Satellite }));
@@ -185,7 +186,7 @@ public sealed class ServiceHeadHoldTests
     [Fact]
     public void AnOpeningThatIsNotLetGoRemembersNothing()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         SyntheticScrambledStream stream = new SyntheticScrambledStream()
             .Pat((Service, PmtPid))
             .Pmt(PmtPid, Service, EcmPid, [(VideoPid, null)])
@@ -202,7 +203,7 @@ public sealed class ServiceHeadHoldTests
     [Fact]
     public void WithRememberedTablesTheCardIsAskedForTheEcmAsItPassesBeforeThePatAndThePmt()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         Remembered(memory, EcmPid);
         SyntheticScrambledStream stream = new SyntheticScrambledStream()
             .Scrambled(VideoPid, FirstEcm, odd: false, seed: 60)
@@ -231,7 +232,7 @@ public sealed class ServiceHeadHoldTests
             .Scrambled(VideoPid, FirstEcm, odd: false, seed: 60)
             .Ecm(EcmPid, FirstEcm);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection card);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection card);
 
         Assert.Empty(descrambler.Descramble(stream.Input));
         Assert.Empty(card.EcmBodies);
@@ -240,7 +241,7 @@ public sealed class ServiceHeadHoldTests
     [Fact]
     public void ARememberedEcmPidThatNoLongerCarriesTheServiceNeverUnscramblesItAndTheMemoryIsReplaced()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         Remembered(memory, OtherEcmPid);
         SyntheticScrambledStream stream = new SyntheticScrambledStream()
             .Ecm(OtherEcmPid, SecondEcm)
@@ -259,13 +260,13 @@ public sealed class ServiceHeadHoldTests
             descrambler.Descramble(After(stream.Input, beforeItsEcm))
         );
         Assert.Equal([SecondEcm, FirstEcm], card.EcmBodies);
-        Assert.Equal([EcmPid], Assert.IsType<ServiceTables>(memory.Recall(Key)).EcmPids);
+        Assert.Equal([EcmPid], Assert.IsType<StreamTables>(memory.Recall(Key)).EcmPids);
     }
 
     [Fact]
     public void ARememberedEcmPidIsListenedToOnlyWhileTheHeadIsHeld()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         Remembered(memory, OtherEcmPid);
         SyntheticScrambledStream stream = new SyntheticScrambledStream()
             .Pat((Service, PmtPid))
@@ -287,7 +288,7 @@ public sealed class ServiceHeadHoldTests
             .Pmt(PmtPid, Service, EcmPid, [(VideoPid, null)])
             .Scrambled(VideoPid, FirstEcm, odd: false, seed: 80);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _);
 
         Assert.Empty(descrambler.Descramble(stream.Input));
         Assert.Equal(stream.Input, descrambler.WhatItCouldNotRead());
@@ -302,7 +303,7 @@ public sealed class ServiceHeadHoldTests
             .LeftScrambled(VideoPid, FirstEcm, odd: false, seed: 90)
             .LeftScrambled(VideoPid, FirstEcm, odd: true, seed: 91);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _, holdLimit: 4 * PacketLength);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _, holdLimit: 4 * PacketLength);
 
         Assert.Equal([.. InFront(stream, (0, 15), (1, 15)), .. stream.Output], descrambler.Descramble(stream.Input));
     }
@@ -312,7 +313,7 @@ public sealed class ServiceHeadHoldTests
     {
         SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out int headPackets);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _);
 
         byte[] head = descrambler.Descramble(Head(stream.Input, headPackets));
         Assert.Equal(head.Length, descrambler.EveryProgrammeFrom);
@@ -343,7 +344,7 @@ public sealed class ServiceHeadHoldTests
             .LeftScrambled(OtherVideoPid, SecondEcm, odd: false, seed: 100)
             .LeftScrambled(OtherVideoPid, SecondEcm, odd: true, seed: 101);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _, holdLimit: 4 * PacketLength);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _, holdLimit: 4 * PacketLength);
 
         Assert.Equal([.. InFront(stream, (0, 15), (1, 15)), .. stream.Output], descrambler.Descramble(stream.Input));
         Assert.Equal(5 * PacketLength, descrambler.EveryProgrammeFrom);
@@ -353,7 +354,7 @@ public sealed class ServiceHeadHoldTests
     public void ADescramblerOpenedPartWayThroughTheStreamPutsNoTablesInFront()
     {
         SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out _);
-        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, Channel, Service), new ServiceTableMemory());
+        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, Channel, Service), new TableMemory());
 
         using TransportStreamDescrambler descrambler = OpenWithout(hold.FromTheMiddle(), out FakeCardConnection _);
 
@@ -372,7 +373,7 @@ public sealed class ServiceHeadHoldTests
         int beforeTheNewPmt = stream.PacketCount;
         stream.Pmt(OtherPmtPid, Service, EcmPid, [(VideoPid, null), (AudioPid, null)]);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _);
 
         Assert.Empty(descrambler.Descramble(Head(stream.Input, beforeTheNewPmt)));
         Assert.Equal(
@@ -393,7 +394,7 @@ public sealed class ServiceHeadHoldTests
             .Pmt(OtherPmtPid, Service, EcmPid, [(VideoPid, null)])
             .Scrambled(VideoPid, FirstEcm, odd: true, seed: 121);
 
-        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+        using TransportStreamDescrambler descrambler = Open(new TableMemory(), out FakeCardConnection _);
 
         Assert.Equal([.. InFront(stream, (0, 15), (1, 15)), .. stream.Output], descrambler.Descramble(stream.Input));
     }
@@ -425,7 +426,7 @@ public sealed class ServiceHeadHoldTests
     [InlineData(SessionPurpose.Logo)]
     public void EveryOtherPurposeWithAServiceIsHeldAndHandedOnAsBefore(SessionPurpose purpose)
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out int headPackets, theOtherIsHandedOnScrambled: false);
         HeadHold hold = HeadHolds.For(purpose, new TuningRequest(TunerKind.Terrestrial, Channel, Service), memory);
 
@@ -457,7 +458,7 @@ public sealed class ServiceHeadHoldTests
             .Scrambled(VideoPid, FirstEcm, odd: false, seed: 5);
     }
 
-    private static void Remembered(ServiceTableMemory memory, int ecmPid)
+    private static void Remembered(TableMemory memory, int ecmPid)
     {
         SyntheticScrambledStream earlier = new SyntheticScrambledStream()
             .Pat((Service, PmtPid), (OtherService, OtherPmtPid))
@@ -505,7 +506,7 @@ public sealed class ServiceHeadHoldTests
     private static byte[] After(byte[] stream, int packets) => stream[(packets * PacketLength)..];
 
     private static TransportStreamDescrambler Open(
-        ServiceTableMemory memory,
+        TableMemory memory,
         out FakeCardConnection card,
         int holdLimit = TransportStreamDescrambler.LongestHold
     ) =>

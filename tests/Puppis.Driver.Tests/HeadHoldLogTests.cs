@@ -91,7 +91,7 @@ public sealed class HeadHoldLogTests
     [Fact]
     public void ALiveServiceHeadSaysTheServiceConditionLetItGoWithNothingRememberedAndHowManyTablePacketsWentInFront()
     {
-        IReadOnlyList<string> lines = OpenTheService(new ServiceTableMemory(), [(VideoPid, null)]);
+        IReadOnlyList<string> lines = OpenTheService(new TableMemory(), [(VideoPid, null)]);
 
         Assert.Equal(
             [
@@ -105,7 +105,7 @@ public sealed class HeadHoldLogTests
     [Fact]
     public void ALiveServiceHeadOpenedAgainSaysItUsedTheRememberedTablesAndThatTheyMatched()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         OpenTheService(memory, [(VideoPid, null)]);
 
         IReadOnlyList<string> lines = OpenTheService(memory, [(VideoPid, null)]);
@@ -123,13 +123,13 @@ public sealed class HeadHoldLogTests
     [Fact]
     public void RememberedTablesThatDifferFromWhatTheStreamCarriedAreSaidToHaveBeenReplaced()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         OpenTheService(memory, [(VideoPid, null), (OtherVideoPid, null)]);
 
         IReadOnlyList<string> lines = OpenTheService(memory, [(VideoPid, null)]);
 
         Assert.Equal(
-            "Information The tables remembered for service 1 on Terrestrial channel 13 differed from what this stream carried (the PMT, version 0 remembered and 0 carried), so they were replaced by what it carried.",
+            "Information The tables remembered for service 1 on Terrestrial channel 13 differed from what this stream carried (the PMT on PID 0x0101, version 0 remembered and 0 carried), so they were replaced by what it carried.",
             lines[^1]
         );
     }
@@ -137,7 +137,7 @@ public sealed class HeadHoldLogTests
     [Fact]
     public void ALiveServiceHeadAtItsLimitSaysWhatOfItsServiceWasStillMissing()
     {
-        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new ServiceTableMemory()), limitInPackets: 3);
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new TableMemory()), limitInPackets: 3);
 
         using (descrambler)
         {
@@ -153,7 +153,7 @@ public sealed class HeadHoldLogTests
     [Fact]
     public void ALiveServiceHeadAtItsLimitSaysWhenTheServicesPmtWasNotSeen()
     {
-        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new ServiceTableMemory()), limitInPackets: 2);
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new TableMemory()), limitInPackets: 2);
 
         using (descrambler)
         {
@@ -169,7 +169,7 @@ public sealed class HeadHoldLogTests
     [Fact]
     public void ALiveServiceHeadAtItsLimitSaysWhenThePatDoesNotListTheService()
     {
-        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new ServiceTableMemory()), limitInPackets: 2);
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new TableMemory()), limitInPackets: 2);
 
         using (descrambler)
         {
@@ -185,7 +185,7 @@ public sealed class HeadHoldLogTests
     [Fact]
     public void RememberedTablesOfAServiceThePatNoLongerListsAreSaidToHaveBeenForgotten()
     {
-        ServiceTableMemory memory = new();
+        TableMemory memory = new();
         OpenTheService(memory, [(VideoPid, null)]);
         (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(memory));
 
@@ -204,7 +204,7 @@ public sealed class HeadHoldLogTests
     [Fact]
     public void ALiveServiceHeadStillHeldWhenClosedSaysWhenTheServicesPmtCame()
     {
-        (TransportStreamDescrambler descrambler, SteppedClock clock, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new ServiceTableMemory()));
+        (TransportStreamDescrambler descrambler, SteppedClock clock, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new TableMemory()));
 
         Assert.Empty(descrambler.Descramble(new SyntheticScrambledStream().Pat((1, PmtPid)).Input));
         Assert.Empty(descrambler.Descramble(After(clock, 10, new SyntheticScrambledStream().Pmt(PmtPid, 1, EcmPid, [(VideoPid, null)]))));
@@ -217,10 +217,10 @@ public sealed class HeadHoldLogTests
         );
     }
 
-    private static HeadHold ServiceHold(ServiceTableMemory memory) =>
+    private static HeadHold ServiceHold(TableMemory memory) =>
         HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13, 1), memory);
 
-    private static IReadOnlyList<string> OpenTheService(ServiceTableMemory memory, IReadOnlyList<(int Pid, int? Ecm)> streams)
+    private static IReadOnlyList<string> OpenTheService(TableMemory memory, IReadOnlyList<(int Pid, int? Ecm)> streams)
     {
         (TransportStreamDescrambler descrambler, SteppedClock clock, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(memory));
 
