@@ -232,16 +232,16 @@ public sealed class TransportStreamDescrambler : IDescrambler
         ReportTheHead(met, tables.Length / PacketLength);
         memoryToSettle = service is not null;
         holding = false;
-        NoteWhetherEveryProgrammeIsReadable(output);
+        NoteWhetherEveryProgrammeIsReadable(output, met is not ServiceCondition);
         output.Append(tables);
         output.Append(shelf.Written);
 
         return true;
     }
 
-    private void NoteWhetherEveryProgrammeIsReadable(ByteShelf output)
+    private void NoteWhetherEveryProgrammeIsReadable(ByteShelf output, bool letGoForEveryProgramme = false)
     {
-        if (everyProgrammeReadable || !(EveryProgrammeIsSettled() || bytesTaken >= holdLimit))
+        if (everyProgrammeReadable || !(letGoForEveryProgramme || EveryProgrammeIsSettled() || bytesTaken >= holdLimit))
         {
             return;
         }

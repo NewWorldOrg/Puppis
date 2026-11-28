@@ -381,6 +381,42 @@ public sealed class ServiceHeadHoldTests
         );
     }
 
+    [Fact]
+    public void TheServicesPacketsRightAfterThePatMovesItsPmtAreStillUnscrambled()
+    {
+        SyntheticScrambledStream stream = new SyntheticScrambledStream()
+            .Pat((Service, PmtPid))
+            .Pmt(PmtPid, Service, EcmPid, [(VideoPid, null)])
+            .Ecm(EcmPid, FirstEcm)
+            .Pat((Service, OtherPmtPid))
+            .Scrambled(VideoPid, FirstEcm, odd: false, seed: 120)
+            .Pmt(OtherPmtPid, Service, EcmPid, [(VideoPid, null)])
+            .Scrambled(VideoPid, FirstEcm, odd: true, seed: 121);
+
+        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+
+        Assert.Equal([.. InFront(stream, (0, 15), (1, 15)), .. stream.Output], descrambler.Descramble(stream.Input));
+    }
+
+    [Fact]
+    public void UnderALiveHoldWithNoServiceAllThatIsHandedOnIsReadableByEveryProgramme()
+    {
+        SyntheticScrambledStream stream = new SyntheticScrambledStream()
+            .Pat((Service, PmtPid), (OtherService, OtherPmtPid))
+            .Pmt(PmtPid, Service, EcmPid, [(VideoPid, null)])
+            .Scrambled(VideoPid, FirstEcm, odd: false, seed: 130)
+            .Ecm(EcmPid, FirstEcm);
+        int headPackets = stream.PacketCount;
+        stream.LeftScrambled(OtherVideoPid, SecondEcm, odd: false, seed: 131);
+
+        using TransportStreamDescrambler descrambler = OpenWithout(HeadHold.WhatIsHeld, out FakeCardConnection _);
+
+        Assert.Equal(Head(stream.Output, headPackets), descrambler.Descramble(Head(stream.Input, headPackets)));
+        Assert.Equal(0, descrambler.EveryProgrammeFrom);
+        Assert.Equal(After(stream.Output, headPackets), descrambler.Descramble(After(stream.Input, headPackets)));
+        Assert.Equal(0, descrambler.EveryProgrammeFrom);
+    }
+
     [Theory]
     [InlineData(SessionPurpose.Recording)]
     [InlineData(SessionPurpose.Survey)]

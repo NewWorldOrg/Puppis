@@ -163,6 +163,31 @@ public sealed class EveryProgrammeSeatTests : IDisposable
     }
 
     [Fact]
+    public void ARecordingThatJoinsALiveSessionNamingNoServiceWritesFromWhereItWasHandedOnAsBefore()
+    {
+        GatedTunerDevice source = new();
+        TunerSessionManager manager = Manager(source);
+        SyntheticScrambledStream stream = new SyntheticScrambledStream()
+            .Pat((Service, PmtPid), (OtherService, OtherPmtPid))
+            .Pmt(PmtPid, Service, EcmPid, [(VideoPid, null)])
+            .Scrambled(VideoPid, FirstEcm, odd: false, seed: 1)
+            .Ecm(EcmPid, FirstEcm);
+        byte[] head = stream.Input;
+        for (int seed = 2; seed < 8; seed++)
+        {
+            stream.Scrambled(VideoPid, FirstEcm, odd: seed % 2 is 0, seed: seed);
+        }
+
+        TunerSession live = Started(manager, Request("live-1", SessionPurpose.Live, service: null));
+        source.Feed(head);
+        Assert.True(SpinWait.SpinUntil(() => live.Counters.Snapshot().Packets > 0, Deadlock));
+        TunerSession recording = Started(manager, Request("rec-1", SessionPurpose.Recording, service: null));
+        source.Feed(stream.Input[head.Length..]);
+
+        AssertTheRecordingHadNoScrambledPacket(live, recording, theLiveSawScrambledPackets: false);
+    }
+
+    [Fact]
     public void ARecordingReadingATunerDirectlyCountsNothingThatDoesNotCarryEveryProgrammeAndALiveSessionStillDoes()
     {
         SessionCounters recorded = CountedBy(SessionPurpose.Recording);
@@ -200,7 +225,7 @@ public sealed class EveryProgrammeSeatTests : IDisposable
         return session.Counters.Snapshot();
     }
 
-    private static void AssertTheRecordingHadNoScrambledPacket(TunerSession live, TunerSession recording)
+    private static void AssertTheRecordingHadNoScrambledPacket(TunerSession live, TunerSession recording, bool theLiveSawScrambledPackets = true)
     {
         Assert.True(SpinWait.SpinUntil(() => recording.Counters.Snapshot().Packets >= 2, Deadlock));
         recording.Stop();
@@ -209,7 +234,7 @@ public sealed class EveryProgrammeSeatTests : IDisposable
         Assert.True(live.Completion.Wait(Deadlock));
 
         Assert.Equal(0, recording.Counters.Snapshot().ScrambledPackets);
-        Assert.True(live.Counters.Snapshot().ScrambledPackets > 0);
+        Assert.Equal(theLiveSawScrambledPackets, live.Counters.Snapshot().ScrambledPackets > 0);
     }
 
     private static IReadOnlyList<byte[]> Parts()
@@ -257,12 +282,12 @@ public sealed class EveryProgrammeSeatTests : IDisposable
             NullLogger<TunerSessionManager>.Instance
         );
 
-    private static StartSessionRequest Request(string sessionId, SessionPurpose purpose) =>
+    private static StartSessionRequest Request(string sessionId, SessionPurpose purpose, int? service = Service) =>
         new()
         {
             SessionId = SessionId.Parse(sessionId),
             Purpose = purpose,
-            Tuning = new TuningRequest(TunerKind.Terrestrial, Channel, Service),
+            Tuning = new TuningRequest(TunerKind.Terrestrial, Channel, service),
             DeviceId = "adapter0",
             OutputRoot = purpose is SessionPurpose.Recording ? "primary" : null,
             RecordingId = purpose is SessionPurpose.Recording ? $"k-{sessionId}" : null,
