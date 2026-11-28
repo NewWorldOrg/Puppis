@@ -182,6 +182,25 @@ public sealed class HeadHoldLogTests
         );
     }
 
+    [Fact]
+    public void RememberedTablesOfAServiceThePatNoLongerListsAreSaidToHaveBeenForgotten()
+    {
+        ServiceTableMemory memory = new();
+        OpenTheService(memory, [(VideoPid, null)]);
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(memory));
+
+        using (descrambler)
+        {
+            descrambler.Descramble(new SyntheticScrambledStream().Pat((2, OtherPmtPid)).Pmt(OtherPmtPid, 2, EcmPid, [(OtherVideoPid, null)]).Ecm(EcmPid, FirstEcm).Input);
+        }
+
+        Assert.Equal(
+            "Information The tables remembered for service 1 on Terrestrial channel 13 differed from what this stream carried (the PAT does not list the service), so they were forgotten.",
+            log.Lines.Last()
+        );
+        Assert.Equal(0, memory.Count);
+    }
+
     private static HeadHold ServiceHold(ServiceTableMemory memory) =>
         HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13, 1), memory);
 
