@@ -18,6 +18,12 @@ public sealed class ProgramMap(int caSystemId)
 
     private readonly Dictionary<int, int?> programEcms = [];
 
+    private readonly Dictionary<int, byte[]> patBytes = [];
+
+    private readonly Dictionary<int, byte[]> pmtBytes = [];
+
+    private Dictionary<int, IReadOnlyList<int>> ecmsByProgramme = [];
+
     private int patVersion = -1;
 
     private Dictionary<int, int> pmtPids = [];
@@ -36,6 +42,21 @@ public sealed class ProgramMap(int caSystemId)
 
     public IReadOnlyList<int> PmtPidsNotRead =>
         [.. pmtPids.Where(listed => !programs.ContainsKey(listed.Key)).Select(listed => listed.Value).Distinct().Order()];
+
+    public IReadOnlyList<ReadOnlyMemory<byte>> PatSections =>
+        [.. patBytes.OrderBy(part => part.Key).Select(part => (ReadOnlyMemory<byte>)part.Value)];
+
+    public bool Lists(int programme) => pmtPids.ContainsKey(programme);
+
+    public int? PmtPidOf(int programme) => pmtPids.TryGetValue(programme, out int pid) ? pid : null;
+
+    public ReadOnlyMemory<byte>? PmtOf(int programme) =>
+        pmtBytes.TryGetValue(programme, out byte[]? section) ? new ReadOnlyMemory<byte>(section) : (ReadOnlyMemory<byte>?)null;
+
+    public IReadOnlyList<int> EcmPidsOf(int programme) => ecmsByProgramme.GetValueOrDefault(programme) ?? [];
+
+    public IReadOnlyList<int> StreamPidsOf(int programme) =>
+        programs.TryGetValue(programme, out IReadOnlyList<(int Pid, int? Ecm)>? streams) ? [.. streams.Select(stream => stream.Pid)] : [];
 
     public bool IsPmt(int pid) => pmtPids.ContainsValue(pid);
 
@@ -62,6 +83,7 @@ public sealed class ProgramMap(int caSystemId)
         if (version != patVersion)
         {
             patSections.Clear();
+            patBytes.Clear();
             patVersion = version;
         }
 
@@ -78,6 +100,7 @@ public sealed class ProgramMap(int caSystemId)
         }
 
         patSections[section[6]] = listed;
+        patBytes[section[6]] = Kept(patBytes.GetValueOrDefault(section[6]), section);
         Dictionary<int, int> merged = [];
         foreach ((int programme, int pid) in patSections.OrderBy(part => part.Key).SelectMany(part => part.Value))
         {
@@ -90,6 +113,7 @@ public sealed class ProgramMap(int caSystemId)
         {
             programs.Remove(gone);
             programEcms.Remove(gone);
+            pmtBytes.Remove(gone);
         }
 
         Rebuild();
@@ -135,8 +159,12 @@ public sealed class ProgramMap(int caSystemId)
 
         programs[programme] = streams;
         programEcms[programme] = programEcm;
+        pmtBytes[programme] = Kept(pmtBytes.GetValueOrDefault(programme), section);
         Rebuild();
     }
+
+    private static byte[] Kept(byte[]? held, ReadOnlySpan<byte> section) =>
+        held is not null && section.SequenceEqual(held) ? held : section.ToArray();
 
     private int? EcmIn(ReadOnlySpan<byte> descriptors)
     {
@@ -164,6 +192,13 @@ public sealed class ProgramMap(int caSystemId)
     {
         Dictionary<int, int> byPid = [];
         HashSet<int> ecms = [.. programEcms.Values.OfType<int>()];
+        Dictionary<int, IReadOnlyList<int>> byProgramme = [];
+
+        foreach ((int programme, IReadOnlyList<(int Pid, int? Ecm)> streams) in programs)
+        {
+            int?[] named = [programEcms.GetValueOrDefault(programme), .. streams.Select(stream => stream.Ecm)];
+            byProgramme[programme] = [.. named.OfType<int>().Distinct().Order()];
+        }
 
         foreach ((int pid, int? ecm) in programs.Values.SelectMany(streams => streams))
         {
@@ -176,5 +211,6 @@ public sealed class ProgramMap(int caSystemId)
 
         ecmByPid = byPid;
         ecmPids = ecms;
+        ecmsByProgramme = byProgramme;
     }
 }

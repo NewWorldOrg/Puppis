@@ -10,6 +10,8 @@ public sealed class HeadHoldTimes(TimeProvider time)
 
     public TimeSpan? PmtNamingAnEcm { get; private set; }
 
+    public TimeSpan? ServicePmt { get; private set; }
+
     public TimeSpan? Ecm { get; private set; }
 
     public TimeSpan? Answer { get; private set; }
@@ -37,12 +39,17 @@ public sealed class HeadHoldTimes(TimeProvider time)
 
     public void PmtNamingAnEcmSeen() => PmtNamingAnEcm ??= SinceTheFirstByte;
 
+    public void ServicePmtSeen() => ServicePmt ??= SinceTheFirstByte;
+
     public void EcmSeen() => Ecm ??= SinceTheFirstByte;
 
     public void Answered() => Answer ??= SinceTheFirstByte;
 
     public override string ToString() =>
         $"PAT {After(Pat)}, first PMT naming an ECM PID {After(PmtNamingAnEcm)}, first ECM {After(Ecm)}, first answer from the card {After(Answer)}";
+
+    public string WithTheServicePmt() =>
+        $"PAT {After(Pat)}, the service's PMT {After(ServicePmt)}, first PMT naming an ECM PID {After(PmtNamingAnEcm)}, first ECM {After(Ecm)}, first answer from the card {After(Answer)}";
 
     private static string After(TimeSpan? seen) =>
         seen is { } after ? $"after {after.TotalMilliseconds:0.0} ms" : "not seen";

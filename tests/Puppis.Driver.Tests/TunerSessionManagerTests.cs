@@ -145,14 +145,44 @@ public sealed class TunerSessionManagerTests : IDisposable
     }
 
     [Fact]
-    public void ALiveSessionHasItsTunerHoldTheHeadOnlyForWhatItHolds()
+    public void ALiveSessionThatNamesAServiceHasItsTunerHoldTheHeadForThatService()
     {
         HoldNotingDeviceFactory factory = new(Configuration);
         TunerSessionManager manager = Manager(Configuration, factory);
 
         StopAndWait(Begin(manager, "live-1", "adapter0", SessionPurpose.Live));
 
+        HeadHold hold = Assert.Single(factory.Holds);
+        Assert.Equal(HeadHoldKind.WhatIsHeld, hold.Kind);
+        Assert.Equal(new ServiceTablesKey(TunerKind.Terrestrial, 55, 50001), Assert.IsType<LiveService>(hold.Service).Key);
+    }
+
+    [Fact]
+    public void ALiveSessionThatNamesNoServiceHasItsTunerHoldTheHeadOnlyForWhatItHolds()
+    {
+        HoldNotingDeviceFactory factory = new(Configuration);
+        TunerSessionManager manager = Manager(Configuration, factory);
+
+        SessionStart start = manager.Begin(
+            Request("live-1", "adapter0", SessionPurpose.Live) with { Tuning = new TuningRequest(TunerKind.Terrestrial, 55) }
+        );
+        Assert.True(start.TryGetSession(out TunerSession? session));
+        StopAndWait(session);
+
         Assert.Equal([HeadHold.WhatIsHeld], factory.Holds);
+    }
+
+    [Fact]
+    public void EveryLiveSessionOfOneDriverRemembersItsTablesInTheSameMemory()
+    {
+        HoldNotingDeviceFactory factory = new(Configuration);
+        TunerSessionManager manager = Manager(Configuration, factory);
+
+        StopAndWait(Begin(manager, "live-1", "adapter0", SessionPurpose.Live));
+        StopAndWait(Begin(manager, "live-2", "adapter3", SessionPurpose.Live, channel: 27));
+
+        Assert.Equal(2, factory.Holds.Count);
+        Assert.Same(factory.Holds[0].Service!.Memory, factory.Holds[1].Service!.Memory);
     }
 
     [Fact]

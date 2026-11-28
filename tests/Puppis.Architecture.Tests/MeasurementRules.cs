@@ -18,6 +18,7 @@ public static partial class MeasurementRules
 
     public static readonly IReadOnlyList<string> AllowedToTakeTheStreamApart =
     [
+        "Puppis.Driver/Descrambling/TableHead.cs",
         "Puppis.Driver/Descrambling/TransportStreamDescrambler.cs",
         "Puppis.Driver/Sessions/TunerSession.cs",
         "Puppis.Driver/Transport/ContinuityCounterTracker.cs",

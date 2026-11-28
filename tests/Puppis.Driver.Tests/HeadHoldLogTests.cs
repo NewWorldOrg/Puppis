@@ -1,5 +1,6 @@
 using System.Text;
 
+using Puppis.Contracts;
 using Puppis.Driver.CardLending;
 using Puppis.Driver.Descrambling;
 
@@ -85,6 +86,117 @@ public sealed class HeadHoldLogTests
             ],
             log.Lines
         );
+    }
+
+    [Fact]
+    public void ALiveServiceHeadSaysTheServiceConditionLetItGoWithNothingRememberedAndHowManyTablePacketsWentInFront()
+    {
+        IReadOnlyList<string> lines = OpenTheService(new ServiceTableMemory(), [(VideoPid, null)]);
+
+        Assert.Equal(
+            [
+                "Information The first ECM, on PID 0x0901, was answered by the local card in 42.5 ms, 72.5 ms after the first byte was received.",
+                "Information The head of the stream, 564 bytes, was handed on 72.5 ms after the first byte was received under the service 1 hold because the service condition was met, with no tables remembered from an earlier opening, and 2 packets of the PAT and the service's PMT were put in front of it: PAT after 0.0 ms, the service's PMT after 10.0 ms, first PMT naming an ECM PID after 10.0 ms, first ECM after 30.0 ms, first answer from the card after 72.5 ms.",
+            ],
+            lines
+        );
+    }
+
+    [Fact]
+    public void ALiveServiceHeadOpenedAgainSaysItUsedTheRememberedTablesAndThatTheyMatched()
+    {
+        ServiceTableMemory memory = new();
+        OpenTheService(memory, [(VideoPid, null)]);
+
+        IReadOnlyList<string> lines = OpenTheService(memory, [(VideoPid, null)]);
+
+        Assert.Equal(
+            [
+                "Information The first ECM, on PID 0x0901, was answered by the local card in 42.5 ms, 72.5 ms after the first byte was received.",
+                "Information The head of the stream, 564 bytes, was handed on 72.5 ms after the first byte was received under the service 1 hold because the service condition was met, using the tables remembered from an earlier opening, and 2 packets of the PAT and the service's PMT were put in front of it: PAT after 0.0 ms, the service's PMT after 10.0 ms, first PMT naming an ECM PID after 10.0 ms, first ECM after 30.0 ms, first answer from the card after 72.5 ms.",
+                "Information The tables remembered for service 1 on Terrestrial channel 13 matched the PAT and the PMT this stream carried.",
+            ],
+            lines
+        );
+    }
+
+    [Fact]
+    public void RememberedTablesThatDifferFromWhatTheStreamCarriedAreSaidToHaveBeenReplaced()
+    {
+        ServiceTableMemory memory = new();
+        OpenTheService(memory, [(VideoPid, null), (OtherVideoPid, null)]);
+
+        IReadOnlyList<string> lines = OpenTheService(memory, [(VideoPid, null)]);
+
+        Assert.Equal(
+            "Information The tables remembered for service 1 on Terrestrial channel 13 differed from what this stream carried (the PMT, version 0 remembered and 0 carried), so they were replaced by what it carried.",
+            lines[^1]
+        );
+    }
+
+    [Fact]
+    public void ALiveServiceHeadAtItsLimitSaysWhatOfItsServiceWasStillMissing()
+    {
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new ServiceTableMemory()), limitInPackets: 3);
+
+        using (descrambler)
+        {
+            descrambler.Descramble(new SyntheticScrambledStream().Pat((1, PmtPid)).Pmt(PmtPid, 1, EcmPid, [(VideoPid, null)]).Scrambled(VideoPid, FirstEcm, odd: false, seed: 1).Input);
+        }
+
+        Assert.Equal(
+            "Warning The head of the stream reached its size limit under the service 1 hold, 0.0 ms after the first byte was received, with this still missing: the ECM on PID 0x0901 had no answer (an ECM was not seen on it and the card was asked 0 times); 1 held scrambled packets of service 1 were on PIDs tied to no answered ECM (PID 0x0111).",
+            LimitWarning(log)
+        );
+    }
+
+    [Fact]
+    public void ALiveServiceHeadAtItsLimitSaysWhenTheServicesPmtWasNotSeen()
+    {
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new ServiceTableMemory()), limitInPackets: 2);
+
+        using (descrambler)
+        {
+            descrambler.Descramble(new SyntheticScrambledStream().Pat((1, PmtPid)).Scrambled(VideoPid, FirstEcm, odd: false, seed: 1).Input);
+        }
+
+        Assert.Equal(
+            "Warning The head of the stream reached its size limit under the service 1 hold, 0.0 ms after the first byte was received, with this still missing: the PMT of service 1 on PID 0x0101 was not seen.",
+            LimitWarning(log)
+        );
+    }
+
+    [Fact]
+    public void ALiveServiceHeadAtItsLimitSaysWhenThePatDoesNotListTheService()
+    {
+        (TransportStreamDescrambler descrambler, _, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new ServiceTableMemory()), limitInPackets: 2);
+
+        using (descrambler)
+        {
+            descrambler.Descramble(new SyntheticScrambledStream().Pat((2, OtherPmtPid)).Scrambled(OtherVideoPid, FirstEcm, odd: false, seed: 1).Input);
+        }
+
+        Assert.Equal(
+            "Warning The head of the stream reached its size limit under the service 1 hold, 0.0 ms after the first byte was received, with this still missing: the PAT does not list service 1; no ECM PID is known; 1 held scrambled packets were on PIDs tied to no answered ECM (PID 0x0121).",
+            LimitWarning(log)
+        );
+    }
+
+    private static HeadHold ServiceHold(ServiceTableMemory memory) =>
+        HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13, 1), memory);
+
+    private static IReadOnlyList<string> OpenTheService(ServiceTableMemory memory, IReadOnlyList<(int Pid, int? Ecm)> streams)
+    {
+        (TransportStreamDescrambler descrambler, SteppedClock clock, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(memory));
+
+        using (descrambler)
+        {
+            Assert.Empty(descrambler.Descramble(new SyntheticScrambledStream().Pat((1, PmtPid), (2, OtherPmtPid)).Input));
+            Assert.Empty(descrambler.Descramble(After(clock, 10, new SyntheticScrambledStream().Pmt(PmtPid, 1, EcmPid, streams))));
+            Assert.NotEmpty(descrambler.Descramble(After(clock, 20, new SyntheticScrambledStream().Ecm(EcmPid, FirstEcm))));
+        }
+
+        return [.. log.Lines];
     }
 
     [Fact]
