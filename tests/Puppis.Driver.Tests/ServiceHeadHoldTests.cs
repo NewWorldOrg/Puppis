@@ -307,6 +307,80 @@ public sealed class ServiceHeadHoldTests
         Assert.Equal([.. InFront(stream, (0, 15), (1, 15)), .. stream.Output], descrambler.Descramble(stream.Input));
     }
 
+    [Fact]
+    public void EveryProgrammeIsReadableOnlyFromThePacketAtWhichTheLastProgrammeCanBeRead()
+    {
+        SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out int headPackets);
+
+        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+
+        byte[] head = descrambler.Descramble(Head(stream.Input, headPackets));
+        Assert.Equal(head.Length, descrambler.EveryProgrammeFrom);
+        descrambler.Descramble(After(stream.Input, headPackets));
+        Assert.Equal(PacketLength, descrambler.EveryProgrammeFrom);
+        descrambler.Descramble(new SyntheticScrambledStream().Clear(0x0130, 1).Input);
+        Assert.Equal(0, descrambler.EveryProgrammeFrom);
+    }
+
+    [Fact]
+    public void UnderTheEveryProgrammeHoldAllThatIsHandedOnIsReadableByEveryProgramme()
+    {
+        SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out _, theOtherIsHandedOnScrambled: false);
+
+        using TransportStreamDescrambler descrambler = OpenWithout(HeadHold.EveryProgramme, out FakeCardConnection _);
+
+        Assert.Equal(stream.Output, descrambler.Descramble(stream.Input));
+        Assert.Equal(0, descrambler.EveryProgrammeFrom);
+    }
+
+    [Fact]
+    public void OnceAsMuchAsTheHoldMayKeepHasPassedEveryProgrammeCountsAsReadableAsTheEveryProgrammeHoldWouldHaveLetItGo()
+    {
+        SyntheticScrambledStream stream = new SyntheticScrambledStream()
+            .Pat((Service, PmtPid), (OtherService, OtherPmtPid))
+            .Pmt(PmtPid, Service, EcmPid, [(VideoPid, null)])
+            .Ecm(EcmPid, FirstEcm)
+            .LeftScrambled(OtherVideoPid, SecondEcm, odd: false, seed: 100)
+            .LeftScrambled(OtherVideoPid, SecondEcm, odd: true, seed: 101);
+
+        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _, holdLimit: 4 * PacketLength);
+
+        Assert.Equal([.. InFront(stream, (0, 15), (1, 15)), .. stream.Output], descrambler.Descramble(stream.Input));
+        Assert.Equal(5 * PacketLength, descrambler.EveryProgrammeFrom);
+    }
+
+    [Fact]
+    public void ADescramblerOpenedPartWayThroughTheStreamPutsNoTablesInFront()
+    {
+        SyntheticScrambledStream stream = WithAnotherProgrammeStillToCome(out _);
+        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, Channel, Service), new ServiceTableMemory());
+
+        using TransportStreamDescrambler descrambler = OpenWithout(hold.FromTheMiddle(), out FakeCardConnection _);
+
+        Assert.Equal(stream.Output, descrambler.Descramble(stream.Input));
+    }
+
+    [Fact]
+    public void APmtThatMovesToAnotherPidIsWaitedForAgainAndTheOldOneIsNotPutInFront()
+    {
+        SyntheticScrambledStream stream = new SyntheticScrambledStream()
+            .Pat((Service, PmtPid))
+            .Pmt(PmtPid, Service, EcmPid, [(VideoPid, null)])
+            .Pat((Service, OtherPmtPid))
+            .Scrambled(VideoPid, FirstEcm, odd: false, seed: 110)
+            .Ecm(EcmPid, FirstEcm);
+        int beforeTheNewPmt = stream.PacketCount;
+        stream.Pmt(OtherPmtPid, Service, EcmPid, [(VideoPid, null), (AudioPid, null)]);
+
+        using TransportStreamDescrambler descrambler = Open(new ServiceTableMemory(), out FakeCardConnection _);
+
+        Assert.Empty(descrambler.Descramble(Head(stream.Input, beforeTheNewPmt)));
+        Assert.Equal(
+            [.. WithCounter(stream.Input.AsSpan(2 * PacketLength, PacketLength), 15), .. InFront(stream, (5, 15)), .. stream.Output],
+            descrambler.Descramble(After(stream.Input, beforeTheNewPmt))
+        );
+    }
+
     [Theory]
     [InlineData(SessionPurpose.Recording)]
     [InlineData(SessionPurpose.Survey)]

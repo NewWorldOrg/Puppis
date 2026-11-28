@@ -107,9 +107,10 @@ public sealed class ProgramMap(int caSystemId)
             merged[programme] = pid;
         }
 
+        Dictionary<int, int> before = pmtPids;
         pmtPids = merged;
 
-        foreach (int gone in programs.Keys.Where(programme => !pmtPids.ContainsKey(programme)).ToList())
+        foreach (int gone in programs.Keys.Where(programme => Moved(before, programme)).ToList())
         {
             programs.Remove(gone);
             programEcms.Remove(gone);
@@ -162,6 +163,9 @@ public sealed class ProgramMap(int caSystemId)
         pmtBytes[programme] = Kept(pmtBytes.GetValueOrDefault(programme), section);
         Rebuild();
     }
+
+    private bool Moved(Dictionary<int, int> before, int programme) =>
+        !pmtPids.TryGetValue(programme, out int pid) || before.GetValueOrDefault(programme, pid) != pid;
 
     private static byte[] Kept(byte[]? held, ReadOnlySpan<byte> section) =>
         held is not null && section.SequenceEqual(held) ? held : section.ToArray();

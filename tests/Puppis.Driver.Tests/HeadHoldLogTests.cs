@@ -201,6 +201,22 @@ public sealed class HeadHoldLogTests
         Assert.Equal(0, memory.Count);
     }
 
+    [Fact]
+    public void ALiveServiceHeadStillHeldWhenClosedSaysWhenTheServicesPmtCame()
+    {
+        (TransportStreamDescrambler descrambler, SteppedClock clock, CapturingLogger<TransportStreamDescrambler> log) = Open(ServiceHold(new ServiceTableMemory()));
+
+        Assert.Empty(descrambler.Descramble(new SyntheticScrambledStream().Pat((1, PmtPid)).Input));
+        Assert.Empty(descrambler.Descramble(After(clock, 10, new SyntheticScrambledStream().Pmt(PmtPid, 1, EcmPid, [(VideoPid, null)]))));
+        clock.Advance(TimeSpan.FromMilliseconds(5));
+        descrambler.Dispose();
+
+        Assert.Equal(
+            "Information The head of the stream, 376 bytes, was still held when the descrambler was closed, 15.0 ms after the first byte was received and 5.0 ms after the last, under the service 1 hold, with this still missing: the ECM on PID 0x0901 had no answer (an ECM was not seen on it and the card was asked 0 times); PAT after 0.0 ms, the service's PMT after 10.0 ms, first PMT naming an ECM PID after 10.0 ms, first ECM not seen, first answer from the card not seen.",
+            Assert.Single(log.Lines)
+        );
+    }
+
     private static HeadHold ServiceHold(ServiceTableMemory memory) =>
         HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13, 1), memory);
 

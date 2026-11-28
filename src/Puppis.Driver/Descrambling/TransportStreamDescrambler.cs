@@ -74,6 +74,12 @@ public sealed class TransportStreamDescrambler : IDescrambler
 
     private bool memoryToSettle;
 
+    private bool everyProgrammeReadable;
+
+    private int? everyProgrammeFrom;
+
+    private long bytesTaken;
+
     private bool disposed;
 
     public TransportStreamDescrambler(
@@ -101,6 +107,8 @@ public sealed class TransportStreamDescrambler : IDescrambler
         rememberedEcms = [.. remembered?.EcmPids ?? []];
     }
 
+    public int EveryProgrammeFrom { get; private set; }
+
     public byte[] Descramble(ReadOnlySpan<byte> stream)
     {
         lock (gate)
@@ -116,6 +124,8 @@ public sealed class TransportStreamDescrambler : IDescrambler
             byte[] carried = partial;
             bool wasHolding = holding;
             bool wasReported = headReported;
+            bool wasReadable = everyProgrammeReadable;
+            long taken = bytesTaken;
             byte[] readable;
 
             try
@@ -131,6 +141,8 @@ public sealed class TransportStreamDescrambler : IDescrambler
                 headReported = wasReported;
                 headToReport = null;
                 memoryToSettle = false;
+                everyProgrammeReadable = wasReadable;
+                bytesTaken = taken;
 
                 throw;
             }
@@ -162,16 +174,19 @@ public sealed class TransportStreamDescrambler : IDescrambler
         ByteShelf output = new();
         bool released = false;
         int position = NextAlignment(work, 0);
+        everyProgrammeFrom = everyProgrammeReadable ? 0 : null;
 
         while (position + PacketLength <= work.Length)
         {
             Span<byte> packet = work.AsSpan(position, PacketLength);
+            bytesTaken += PacketLength;
             Unscramble(packet, out bool unkeyed);
             released |= Pass(packet, unkeyed, output);
             position = NextAlignment(work, position + PacketLength);
         }
 
         partial = work[position..];
+        EveryProgrammeFrom = everyProgrammeFrom ?? output.Length;
 
         if (released)
         {
@@ -186,6 +201,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
     {
         if (!holding)
         {
+            NoteWhetherEveryProgrammeIsReadable(output);
             output.Append(packet);
 
             return false;
@@ -216,15 +232,27 @@ public sealed class TransportStreamDescrambler : IDescrambler
         ReportTheHead(met, tables.Length / PacketLength);
         memoryToSettle = service is not null;
         holding = false;
+        NoteWhetherEveryProgrammeIsReadable(output);
         output.Append(tables);
         output.Append(shelf.Written);
 
         return true;
     }
 
+    private void NoteWhetherEveryProgrammeIsReadable(ByteShelf output)
+    {
+        if (everyProgrammeReadable || !(EveryProgrammeIsSettled() || bytesTaken >= holdLimit))
+        {
+            return;
+        }
+
+        everyProgrammeReadable = true;
+        everyProgrammeFrom = output.Length;
+    }
+
     private byte[] TablesInFront()
     {
-        if (service is null)
+        if (service is not { PutsTablesInFront: true })
         {
             return [];
         }
@@ -392,6 +420,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
         if (pid is PatPid)
         {
             map.ReadPat(section);
+            ForgetWhatIsNoLongerRead();
             NoteThePat();
         }
         else if (map.IsPmt(pid))
@@ -408,6 +437,14 @@ public sealed class TransportStreamDescrambler : IDescrambler
         {
             LookBack();
             UnscrambleWhatWaited();
+        }
+    }
+
+    private void ForgetWhatIsNoLongerRead()
+    {
+        foreach (int pid in collectors.Keys.Where(pid => pid is not PatPid && !map.IsPmt(pid) && !IsEcm(pid)).ToList())
+        {
+            collectors.Remove(pid);
         }
     }
 
@@ -584,6 +621,8 @@ public sealed class TransportStreamDescrambler : IDescrambler
         );
     }
 
+    private string HeadTimes => service is null ? head.ToString() : head.WithTheServicePmt();
+
     private string HoldName => (hold.Kind, service) switch
     {
         (_, { } watched) => $"{ServiceCondition} {watched.Key.ServiceId}",
@@ -637,7 +676,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
             head.SinceTheFirstByte.TotalMilliseconds,
             met,
             met is null ? WhatIsStillMissing() : string.Empty,
-            service is null ? head.ToString() : head.WithTheServicePmt(),
+            HeadTimes,
             tablePackets
         );
     }
@@ -770,7 +809,7 @@ public sealed class TransportStreamDescrambler : IDescrambler
             head.SinceTheLastBytes.TotalMilliseconds,
             HoldName,
             WhatIsStillMissing(),
-            head.ToString()
+            HeadTimes
         );
     }
 

@@ -19,6 +19,8 @@ public sealed class DescramblingException(string message, DescramblingFailure fa
 
 public interface IDescrambler : IDisposable
 {
+    int EveryProgrammeFrom => 0;
+
     byte[] Descramble(ReadOnlySpan<byte> stream);
 
     byte[] WhatItCouldNotRead();

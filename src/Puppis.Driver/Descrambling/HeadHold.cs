@@ -9,13 +9,15 @@ public enum HeadHoldKind
     WhatIsHeld,
 }
 
-public sealed record LiveService(ServiceTablesKey Key, ServiceTableMemory Memory);
+public sealed record LiveService(ServiceTablesKey Key, ServiceTableMemory Memory, bool PutsTablesInFront = true);
 
 public sealed record HeadHold(HeadHoldKind Kind, LiveService? Service = null)
 {
     public static readonly HeadHold EveryProgramme = new(HeadHoldKind.EveryProgramme);
 
     public static readonly HeadHold WhatIsHeld = new(HeadHoldKind.WhatIsHeld);
+
+    public HeadHold FromTheMiddle() => Service is null ? this : this with { Service = Service with { PutsTablesInFront = false } };
 }
 
 public static class HeadHolds

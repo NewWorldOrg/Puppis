@@ -19,6 +19,8 @@ public interface ITunerDevice : IDisposable
 
     ISignalQualitySource? Quality => null;
 
+    bool CarriesEveryProgramme => true;
+
     byte[] Read(int count, CancellationToken cancellationToken);
 }
 

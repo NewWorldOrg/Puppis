@@ -963,7 +963,7 @@ public sealed class TunerSessionManager(
             );
         }
 
-        if (!host.Broadcaster.TrySubscribe(SeatFor(request.Purpose), out SessionSubscription? seat))
+        if (!host.Broadcaster.TrySubscribe(SeatFor(request.Purpose), out SessionSubscription? seat, WaitsForEveryProgramme(request.Purpose)))
         {
             claim.Leave();
 
@@ -1063,6 +1063,8 @@ public sealed class TunerSessionManager(
         );
     }
 
+    private static bool WaitsForEveryProgramme(SessionPurpose purpose) => purpose is not SessionPurpose.Live;
+
     private static SubscriberKind SeatFor(SessionPurpose purpose) =>
         purpose is SessionPurpose.Recording
             ? SubscriberKind.Recording
@@ -1073,7 +1075,8 @@ public sealed class TunerSessionManager(
         if (
             !taking.Broadcaster.TrySubscribe(
                 SubscriberKind.Piggyback,
-                out SessionSubscription? seat
+                out SessionSubscription? seat,
+                WaitsForEveryProgramme(outgoing.Purpose)
             )
             || !await outgoing.ReadFromInsteadAsync(
                 new PiggybackTunerDevice(taking, seat),
@@ -1606,7 +1609,8 @@ public sealed class TunerSessionManager(
                 !IsReadingThrough(other, leaving, out TunerSession? rider)
                 || !holder.Broadcaster.TrySubscribe(
                     SeatFor(rider.Purpose),
-                    out SessionSubscription? seat
+                    out SessionSubscription? seat,
+                    WaitsForEveryProgramme(rider.Purpose)
                 )
             )
             {

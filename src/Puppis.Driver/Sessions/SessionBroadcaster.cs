@@ -22,11 +22,14 @@ public sealed class SessionSubscription
 {
     private long droppedChunks;
 
-    internal SessionSubscription(SubscriberKind kind, Channel<byte[]> channel)
+    internal SessionSubscription(SubscriberKind kind, Channel<byte[]> channel, bool waitsForEveryProgramme)
     {
         Kind = kind;
         Channel = channel;
+        WaitsForEveryProgramme = waitsForEveryProgramme;
     }
+
+    public bool WaitsForEveryProgramme { get; }
 
     public int Wire { get; internal set; }
 
@@ -136,18 +139,19 @@ public sealed class SessionBroadcaster(
 
     public bool TrySubscribe(
         SubscriberKind kind,
-        [NotNullWhen(true)] out SessionSubscription? subscription
+        [NotNullWhen(true)] out SessionSubscription? subscription,
+        bool waitsForEveryProgramme = false
     )
     {
-        subscription = Attach(kind, subscriberLimit, acceptClosed: false);
+        subscription = Attach(kind, subscriberLimit, acceptClosed: false, waitsForEveryProgramme);
 
         return subscription is not null;
     }
 
-    public SessionSubscription Subscribe(SubscriberKind kind) =>
-        Attach(kind, int.MaxValue, acceptClosed: true)!;
+    public SessionSubscription Subscribe(SubscriberKind kind, bool waitsForEveryProgramme = false) =>
+        Attach(kind, int.MaxValue, acceptClosed: true, waitsForEveryProgramme)!;
 
-    private SessionSubscription? Attach(SubscriberKind kind, int limit, bool acceptClosed)
+    private SessionSubscription? Attach(SubscriberKind kind, int limit, bool acceptClosed, bool waitsForEveryProgramme)
     {
         SessionSubscription? subscription = null;
 
@@ -178,7 +182,7 @@ public sealed class SessionBroadcaster(
                 }
             );
 
-        subscription = new SessionSubscription(kind, channel);
+        subscription = new SessionSubscription(kind, channel, waitsForEveryProgramme);
 
         lock (gate)
         {
@@ -239,7 +243,10 @@ public sealed class SessionBroadcaster(
         }
     }
 
-    public void Publish(ReadOnlySpan<byte> chunk, CancellationToken cancellationToken = default)
+    public void Publish(ReadOnlySpan<byte> chunk, CancellationToken cancellationToken = default) =>
+        Publish(chunk, carriesEveryProgramme: true, cancellationToken);
+
+    public void Publish(ReadOnlySpan<byte> chunk, bool carriesEveryProgramme, CancellationToken cancellationToken = default)
     {
         if (subscriptions.IsEmpty)
         {
@@ -248,7 +255,7 @@ public sealed class SessionBroadcaster(
 
         byte[] copy = chunk.ToArray();
 
-        foreach (KeyValuePair<SessionSubscription, byte> entry in subscriptions)
+        foreach (KeyValuePair<SessionSubscription, byte> entry in subscriptions.Where(entry => carriesEveryProgramme || !entry.Key.WaitsForEveryProgramme))
         {
             try
             {

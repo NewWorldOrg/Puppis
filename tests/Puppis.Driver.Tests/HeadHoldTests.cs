@@ -60,6 +60,20 @@ public sealed class HeadHoldTests
     }
 
     [Fact]
+    public void AHoldOpenedPartWayThroughTheStreamPutsNoTablesInFrontAndIsOtherwiseTheSame()
+    {
+        HeadHold hold = HeadHolds.For(SessionPurpose.Live, new TuningRequest(TunerKind.Terrestrial, 13, 7), new ServiceTableMemory());
+
+        HeadHold later = hold.FromTheMiddle();
+
+        Assert.True(hold.Service!.PutsTablesInFront);
+        Assert.False(later.Service!.PutsTablesInFront);
+        Assert.Equal(hold.Service.Key, later.Service.Key);
+        Assert.Equal(HeadHold.WhatIsHeld, HeadHold.WhatIsHeld.FromTheMiddle());
+        Assert.Equal(HeadHold.EveryProgramme, HeadHold.EveryProgramme.FromTheMiddle());
+    }
+
+    [Fact]
     public void ALiveViewerIsReadFromTheLock()
     {
         Assert.True(HeadHolds.ReadsFromTheLock(HeadHolds.For(SessionPurpose.Live)));
